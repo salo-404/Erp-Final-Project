@@ -38,6 +38,29 @@ enum ReservationStatus {
   CANCELLED
 }
 
+enum UserRole {
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+
+// ====================
+// USER
+// ====================
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  approvedTransactions InventoryTransaction[]
+}
+
 
 // ====================
 // PRODUCT
@@ -82,10 +105,11 @@ model Warehouse {
 // ====================
 
 model WarehouseInventory {
-  id          Int @id @default(autoincrement())
-  productId   Int
-  warehouseId Int
-  onHand      Int @default(0)
+  id               Int @id @default(autoincrement())
+  productId        Int
+  warehouseId      Int
+  onHand           Int @default(0)
+  reorderThreshold Int @default(0)
 
   product   Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
   warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
@@ -112,11 +136,16 @@ model InventoryTransaction {
   partyName   String?
   documentUrl String?
 
+  approvedById Int?
+  approvedAt   DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   sourceWarehouse      Warehouse? @relation("SourceWarehouse", fields: [sourceWarehouseId], references: [id], onDelete: Restrict)
   destinationWarehouse Warehouse? @relation("DestinationWarehouse", fields: [destinationWarehouseId], references: [id], onDelete: Restrict)
+
+  approvedBy User? @relation(fields: [approvedById], references: [id], onDelete: Restrict)
 
   items          InventoryTransactionItem[]
   stockMovements StockMovement[]
