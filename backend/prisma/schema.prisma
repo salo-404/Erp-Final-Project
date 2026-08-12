@@ -44,6 +44,12 @@ enum UserRole {
   EMPLOYEE
 }
 
+enum DocumentReviewStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
 
 // ====================
 // USER
@@ -59,6 +65,21 @@ model User {
   updatedAt    DateTime @updatedAt
 
   approvedTransactions InventoryTransaction[]
+  reviewedDocuments    PendingDocumentReview[] @relation("DocumentReviewer")
+}
+
+
+// ====================
+// SUPPLIER
+// ====================
+
+model Supplier {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  email     String
+  createdAt DateTime @default(now())
+
+  transactions InventoryTransaction[]
 }
 
 
@@ -85,11 +106,11 @@ model Product {
 // ====================
 
 model Warehouse {
-  id        Int      @id @default(autoincrement())
-  name      String
+  id          Int      @id @default(autoincrement())
+  name        String
+  location    String?
   maxCapacity Int?
-  location  String?
-  createdAt DateTime @default(now())
+  createdAt   DateTime @default(now())
 
   inventories WarehouseInventory[]
 
@@ -131,10 +152,15 @@ model InventoryTransaction {
   sourceWarehouseId      Int?
   destinationWarehouseId Int?
 
+  supplierId Int?
+
   expectedDate DateTime?
   actualDate   DateTime?
 
-  partyName   String?
+  // OUTGOING customer name.
+  // INCOMING uses supplierId instead.
+  partyName String?
+
   documentUrl String?
 
   approvedById Int?
@@ -146,11 +172,14 @@ model InventoryTransaction {
   sourceWarehouse      Warehouse? @relation("SourceWarehouse", fields: [sourceWarehouseId], references: [id], onDelete: Restrict)
   destinationWarehouse Warehouse? @relation("DestinationWarehouse", fields: [destinationWarehouseId], references: [id], onDelete: Restrict)
 
-  approvedBy User? @relation(fields: [approvedById], references: [id], onDelete: Restrict)
+  supplier   Supplier? @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  approvedBy User?     @relation(fields: [approvedById], references: [id], onDelete: Restrict)
 
   items          InventoryTransactionItem[]
   stockMovements StockMovement[]
   reservations   Reservation[]
+
+  documentReview PendingDocumentReview?
 }
 
 
@@ -205,4 +234,49 @@ model Reservation {
   transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
   product     Product              @relation(fields: [productId], references: [id], onDelete: Restrict)
   warehouse   Warehouse            @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+}
+
+
+// ====================
+// PENDING DOCUMENT REVIEW
+// ====================
+
+model PendingDocumentReview {
+  id Int @id @default(autoincrement())
+
+  // PDF/image is already stored in S3.
+  documentUrl String
+
+  // Whether AI believes this will become an
+  // INCOMING or OUTGOING transaction.
+  transactionType InventoryTransactionType
+
+  // Temporary AI-extracted information.
+  extractedPartyName    String?
+  extractedSupplierName String?
+  extractedDate         DateTime?
+
+  // Temporary extracted line items.
+  // Example:
+  // [
+  //   { "product": "Laptop", "quantity": 20, "price": 500 },
+  //   { "product": "Mouse", "quantity": 50, "price": 20 }
+  // ]
+  extractedItems Json
+
+  status DocumentReviewStatus @default(PENDING_REVIEW)
+
+  reviewedById Int?
+  reviewedAt   DateTime?
+
+  // Filled only after approval and creation
+  // of the real InventoryTransaction.
+  transactionId Int? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reviewedBy User? @relation("DocumentReviewer",fields: [reviewedById],references: [id],onDelete: Restrict)
+
+  transaction InventoryTransaction? @relation( fields: [transactionId], references: [id], onDelete: SetNull)
 }
