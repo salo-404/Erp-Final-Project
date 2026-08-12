@@ -19,7 +19,7 @@ enum InventoryTransactionType {
 }
 
 enum InventoryTransactionStatus {
-  EXPECTED
+  PENDING
   COMPLETED
   CANCELLED
 }
@@ -125,7 +125,7 @@ model WarehouseInventory {
 model InventoryTransaction {
   id                     Int                        @id @default(autoincrement())
   type                   InventoryTransactionType
-  status                 InventoryTransactionStatus @default(EXPECTED)
+  status                 InventoryTransactionStatus @default(PENDING)
 
   sourceWarehouseId      Int?
   destinationWarehouseId Int?
