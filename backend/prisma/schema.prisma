@@ -64,8 +64,7 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  approvedTransactions InventoryTransaction[]
-  reviewedDocuments    PendingDocumentReview[] @relation("DocumentReviewer")
+  reviewedDocuments PendingDocumentReview[] @relation("DocumentReviewer")
 }
 
 
@@ -163,17 +162,14 @@ model InventoryTransaction {
 
   documentUrl String?
 
-  approvedById Int?
-  approvedAt   DateTime?
-
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sourceWarehouse      Warehouse? @relation("SourceWarehouse", fields: [sourceWarehouseId], references: [id], onDelete: Restrict)
-  destinationWarehouse Warehouse? @relation("DestinationWarehouse", fields: [destinationWarehouseId], references: [id], onDelete: Restrict)
+  sourceWarehouse      Warehouse? @relation("SourceWarehouse",fields: [sourceWarehouseId],references: [id],onDelete: Restrict)
 
-  supplier   Supplier? @relation(fields: [supplierId], references: [id], onDelete: Restrict)
-  approvedBy User?     @relation(fields: [approvedById], references: [id], onDelete: Restrict)
+  destinationWarehouse Warehouse? @relation("DestinationWarehouse",fields: [destinationWarehouseId],references: [id],onDelete: Restrict)
+
+  supplier Supplier? @relation(fields: [supplierId],references: [id],onDelete: Restrict)
 
   items          InventoryTransactionItem[]
   stockMovements StockMovement[]
@@ -194,8 +190,9 @@ model InventoryTransactionItem {
   quantity      Int
   price         Decimal?
 
-  transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-  product     Product              @relation(fields: [productId], references: [id], onDelete: Restrict)
+  transaction InventoryTransaction @relation(fields: [transactionId],references: [id],onDelete: Cascade)
+
+  product Product @relation(fields: [productId],references: [id],onDelete: Restrict)
 }
 
 
@@ -212,9 +209,11 @@ model StockMovement {
   transactionId Int?
   createdAt     DateTime          @default(now())
 
-  product     Product               @relation(fields: [productId], references: [id], onDelete: Restrict)
-  warehouse   Warehouse             @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
-  transaction InventoryTransaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId],references: [id],onDelete: Restrict)
+
+  warehouse Warehouse @relation(fields: [warehouseId],references: [id],onDelete: Restrict)
+
+  transaction InventoryTransaction? @relation(fields: [transactionId],references: [id],onDelete: Restrict)
 }
 
 
@@ -231,9 +230,11 @@ model Reservation {
   status        ReservationStatus @default(ACTIVE)
   createdAt     DateTime          @default(now())
 
-  transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
-  product     Product              @relation(fields: [productId], references: [id], onDelete: Restrict)
-  warehouse   Warehouse            @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  transaction InventoryTransaction @relation(fields: [transactionId],references: [id],onDelete: Restrict)
+
+  product Product @relation(fields: [productId],references: [id],onDelete: Restrict)
+
+  warehouse Warehouse @relation(fields: [warehouseId],references: [id],onDelete: Restrict)
 }
 
 
@@ -247,8 +248,8 @@ model PendingDocumentReview {
   // PDF/image is already stored in S3.
   documentUrl String
 
-  // Whether AI believes this will become an
-  // INCOMING or OUTGOING transaction.
+  // Whether AI believes this will become
+  // an INCOMING or OUTGOING transaction.
   transactionType InventoryTransactionType
 
   // Temporary AI-extracted information.
@@ -269,7 +270,7 @@ model PendingDocumentReview {
   reviewedById Int?
   reviewedAt   DateTime?
 
-  // Filled only after approval and creation
+  // Filled after approval and creation
   // of the real InventoryTransaction.
   transactionId Int? @unique
 
@@ -278,5 +279,5 @@ model PendingDocumentReview {
 
   reviewedBy User? @relation("DocumentReviewer",fields: [reviewedById],references: [id],onDelete: Restrict)
 
-  transaction InventoryTransaction? @relation( fields: [transactionId], references: [id], onDelete: SetNull)
+  transaction InventoryTransaction? @relation( fields: [transactionId],references: [id],onDelete: SetNull)
 }
