@@ -87,6 +87,7 @@ model Product {
 model Warehouse {
   id        Int      @id @default(autoincrement())
   name      String
+  maxCapacity Int?
   location  String?
   createdAt DateTime @default(now())
 
