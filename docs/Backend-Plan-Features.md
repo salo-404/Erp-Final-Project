@@ -52,6 +52,18 @@ All business rules belong in services.
 
 Use Prisma `$transaction()` for operations affecting multiple records.
 
+Any operation that writes to multiple related tables must be atomic so partial updates cannot occur.
+
+This includes:
+
+- transaction + transaction items
+- transaction + reservations
+- stock movement + warehouse inventory update
+- document approval + transaction creation
+- new product creation during document approval
+- transaction completion
+- transaction cancellation where reservations are involved
+
 ### Concurrency
 
 `$transaction()` alone is not considered sufficient.
@@ -71,6 +83,8 @@ SELECT ... FOR UPDATE
 ```
 
 through Prisma `$queryRaw` inside an interactive `$transaction()`.
+
+This prevents two simultaneous requests from both seeing the same available stock and reserving/using it.
 
 ### Lock ordering
 
@@ -266,9 +280,11 @@ Used for:
 
 Functions:
 
+```
 reserve()
 release()
 fulfill()
+```
 
 Before creating/updating a reservation:
 
@@ -354,27 +370,34 @@ Lock inventory rows
 ↓
 Check available stock
 ↓
-Create transaction/items
+Create PENDING OUTGOING transaction/items
 ↓
-Create reservations
+Create ACTIVE reservations
 ↓
-Commit
+COMMIT
 ```
 
 Everything is atomic.
+
+No physical stock movement happens when the outgoing transaction is created.
 
 ---
 
 ## Create Transfer
 
+```
 createTransfer()
+```
 
 Validation:
 
+```
 sourceWarehouseId !== destinationWarehouseId
+```
 
 Flow:
 
+```
 Validate
 ↓
 Lock source inventory rows
@@ -385,7 +408,8 @@ Create PENDING TRANSFER transaction/items
 ↓
 Create ACTIVE reservations at source warehouse
 ↓
-Commit
+COMMIT
+```
 
 The stock is NOT physically moved when the transfer is created.
 
@@ -403,13 +427,62 @@ update()
 
 Only `PENDING` transactions can be edited.
 
-For OUTGOING transactions:
+### OUTGOING
 
-- quantity increases → verify additional availability and increase reservation
-- quantity decreases → release reservation difference
-- warehouse changes → release old reservation and create new one after availability check
+If quantity changes:
 
-All changes are atomic.
+```
+quantity increases
+→ verify additional availability
+→ increase reservation
+```
+
+```
+quantity decreases
+→ release reservation difference
+```
+
+If source warehouse changes:
+
+```
+release old reservation
+→ verify availability in new warehouse
+→ create new reservation
+```
+
+### TRANSFER
+
+Because pending transfers also reserve source stock, reservation synchronization is required when a transfer is edited.
+
+If quantity changes:
+
+```
+quantity increases
+→ verify additional source availability
+→ increase reservation
+```
+
+```
+quantity decreases
+→ release reservation difference
+```
+
+If source warehouse changes:
+
+```
+release old source reservation
+→ verify availability in new source warehouse
+→ create new reservation
+```
+
+If destination warehouse changes:
+
+```
+validate destination != source
+→ update destination
+```
+
+All transaction/item/reservation changes are atomic.
 
 ---
 
@@ -450,8 +523,14 @@ Create INCOMING movement
 ↓
 Increase onHand
 ↓
+Set actualDate
+↓
+Transaction = COMPLETED
+↓
 COMMIT
 ```
+
+This is the point where incoming goods physically become part of warehouse inventory.
 
 ---
 
@@ -462,13 +541,19 @@ Claim transaction
 ↓
 Lock inventory rows
 ↓
-Validate reservation/availability
+Validate ACTIVE reservation
+↓
+Re-check source stock
 ↓
 Create OUTGOING movement
 ↓
 Decrease onHand
 ↓
 Fulfill reservation
+↓
+Set actualDate
+↓
+Transaction = COMPLETED
 ↓
 COMMIT
 ```
@@ -477,6 +562,7 @@ COMMIT
 
 ## TRANSFER
 
+```
 Claim transaction
 ↓
 Lock source/destination inventory rows
@@ -484,17 +570,21 @@ Lock source/destination inventory rows
 Validate ACTIVE source reservations
 ↓
 Re-check source stock
+```
 
 If reservation is invalid or source stock is insufficient:
 
+```
 409 Conflict
 Transaction remains PENDING
 No movement created
 Reservation remains ACTIVE
 ROLLBACK
+```
 
 If sufficient:
 
+```
 Create TRANSFER_OUT
 ↓
 Decrease source onHand
@@ -505,9 +595,12 @@ Increase destination onHand
 ↓
 Fulfill source reservation
 ↓
+Set actualDate
+↓
 Transaction = COMPLETED
 ↓
 COMMIT
+```
 
 Source and destination inventory rows are locked in deterministic order.
 
@@ -526,9 +619,13 @@ Use the same conditional state-transition protection.
 ### OUTGOING
 
 ```
-Release reservation
+Claim PENDING transaction
 ↓
-CANCELLED
+Release source reservation
+↓
+Transaction = CANCELLED
+↓
+COMMIT
 ```
 
 No stock movement.
@@ -536,7 +633,11 @@ No stock movement.
 ### INCOMING
 
 ```
-CANCELLED
+Claim PENDING transaction
+↓
+Transaction = CANCELLED
+↓
+COMMIT
 ```
 
 No stock movement.
@@ -544,10 +645,18 @@ No stock movement.
 ### TRANSFER
 
 ```
-CANCELLED
+Claim PENDING transaction
+↓
+Release source reservation
+↓
+Transaction = CANCELLED
+↓
+COMMIT
 ```
 
-No stock movement because the transfer has not happened yet.
+No stock movement because the transfer has not physically happened yet.
+
+Everything is atomic.
 
 ---
 
@@ -566,7 +675,7 @@ Human Review
 ↓
 Product Matching
 ↓
-Warehouse Selection
+Warehouse Confirmation
 ↓
 Approve / Reject
 ```
@@ -592,6 +701,22 @@ Maximum:
 
 Invalid files are rejected before S3/AI processing.
 
+Upload flow:
+
+```
+Browser uploads invoice
+↓
+NestJS validates file
+↓
+Upload to S3
+↓
+Store document URL/reference
+↓
+Create PendingDocumentReview
+↓
+Run AI extraction
+```
+
 ---
 
 ## Duplicate Documents
@@ -610,12 +735,19 @@ Extract:
 
 - supplier
 - date
+- destination warehouse from invoice when available
 - products
 - quantities
 - prices
 - invoice information
 
 Extraction is provisional until human review.
+
+The extracted warehouse should be matched against existing ERP warehouses.
+
+The reviewer confirms or corrects the warehouse before approval.
+
+If the invoice does not contain a usable warehouse, the reviewer manually selects one.
 
 ### Extraction failure
 
@@ -650,6 +782,8 @@ Fuzzy matching must use a predefined/tested similarity threshold.
 Ambiguous matches require human selection.
 
 No product can remain unresolved when approval is submitted.
+
+The LLM/AI can suggest matches, but the final product mapping is confirmed before database changes are made.
 
 ---
 
@@ -706,16 +840,20 @@ All inside the same database transaction.
 
 # 18. Document Approval
 
-Approval means the invoice has been reviewed **and the stock is officially received**.
+Approval means the human has reviewed and accepted the AI-extracted invoice information.
 
-Therefore approval directly completes the incoming transaction.
+Approval does **NOT** mean the products have physically arrived.
+
+Therefore, approving a supplier invoice creates a **PENDING INCOMING transaction**.
 
 Flow:
 
 ```
 Validate review = PENDING_REVIEW
 ↓
-Validate warehouse
+Confirm/match destination warehouse
+↓
+Resolve supplier
 ↓
 Resolve all products
 ↓
@@ -723,22 +861,44 @@ Create new products if required
 ↓
 Create INCOMING transaction
 ↓
+Transaction = PENDING
+↓
 Create transaction items
 ↓
-Create INCOMING stock movements
-↓
-Increase warehouse stock
-↓
-Transaction = COMPLETED
-↓
 Document = APPROVED
+↓
+Set reviewedById / reviewedAt
+↓
+Link transactionId
 ↓
 COMMIT
 ```
 
-There is **no second manual `complete()` step** for an approved incoming invoice.
+No `StockMovement` is created during invoice approval.
 
-Everything is atomic.
+`WarehouseInventory.onHand` does NOT change during approval.
+
+Later, when the products physically arrive:
+
+```
+complete(transactionId)
+```
+
+is called.
+
+That completion then:
+
+```
+Create INCOMING StockMovements
+↓
+Increase WarehouseInventory.onHand
+↓
+Set actualDate
+↓
+Transaction = COMPLETED
+```
+
+Everything affecting multiple records is atomic.
 
 If anything fails:
 
@@ -750,7 +910,13 @@ ROLLBACK
 
 # 19. Invoice Warehouse
 
-The reviewer selects the destination warehouse during approval.
+The AI attempts to extract the destination warehouse from the invoice.
+
+During review, the extracted warehouse is matched against an existing ERP Warehouse.
+
+The reviewer confirms or corrects the warehouse before approving the document.
+
+If no usable warehouse can be determined from the invoice, the reviewer selects one manually.
 
 Conceptually:
 
@@ -763,7 +929,15 @@ approve(
 )
 ```
 
-No `warehouseId` needs to be added to `PendingDocumentReview`.
+The final confirmed `warehouseId` becomes the:
+
+```
+destinationWarehouseId
+```
+
+of the resulting PENDING INCOMING transaction.
+
+No additional warehouse field is required on `InventoryTransaction` because `destinationWarehouseId` already exists.
 
 ---
 
@@ -786,6 +960,10 @@ rejectionReason
 
 Already approved/rejected documents cannot be processed again.
 
+A rejected invoice does not create an inventory transaction and does not modify stock.
+
+The uploaded S3 document may remain stored for audit/history purposes.
+
 ---
 
 # 21. Stock Insights
@@ -796,14 +974,29 @@ getStockoutRisk()
 getConsumptionAnomalies()
 ```
 
-Stockout risk can use:
+### Dead Stock
+
+Products with no relevant movement during a configured period, for example 60 days.
+
+### Stockout Risk
+
+Can use:
 
 - available stock
-- consumption rate
-- pending incoming
-- expected delivery
+- historical consumption rate
+- pending incoming quantities
+- expected delivery dates
+- reorder threshold
 
 NestJS calculates the numbers.
+
+The LLM does not calculate stockout risk itself.
+
+### Consumption Anomalies
+
+Compare recent consumption against historical behavior and flag unusual spikes or drops.
+
+Deterministic calculations remain in NestJS.
 
 ---
 
@@ -824,6 +1017,18 @@ getSupplierComparison()
 
 All deterministic calculations remain in NestJS.
 
+AgentCore can interpret and explain the calculated results.
+
+Examples:
+
+```
+NestJS:
+"Product X sales increased 32%"
+
+Agent:
+"Product X is showing strong recent demand and may require earlier restocking."
+```
+
 ---
 
 # 23. Email / Calendar
@@ -838,6 +1043,20 @@ Agent decides **what** should be sent.
 
 EmailService decides **how** to send it.
 
+Example:
+
+```
+Backend calculations
+↓
+Agent determines restocking recommendation
+↓
+Agent decides recommendation should be sent
+↓
+EmailService sends email
+```
+
+Email code remains separate from agent reasoning.
+
 ### Calendar
 
 ```
@@ -845,6 +1064,20 @@ CalendarService
 ```
 
 Handles external calendar API communication.
+
+For shipment reminders:
+
+```
+Transaction expectedDate
+↓
+Reminder logic
+↓
+CalendarService
+↓
+External calendar API
+```
+
+The integration implementation is separate from the business/agent logic.
 
 ---
 
@@ -866,12 +1099,25 @@ compare_suppliers
 get_sales_trends
 ```
 
+Tool definitions call controlled backend functionality rather than giving the agent unrestricted database access.
+
 AgentCore cannot:
 
 - run raw SQL
-- modify stock
+- directly modify stock
 - complete/cancel transactions
 - delete records
+
+Deterministic calculations remain in NestJS.
+
+The agent handles:
+
+- natural-language understanding
+- deciding which tools to call
+- combining tool results
+- explaining results
+- recommendations
+- deciding when appropriate integrations such as email should be invoked
 
 ---
 
@@ -880,13 +1126,39 @@ AgentCore cannot:
 The application is built **once**, then deployed locally and on AWS using environment-specific configuration.
 
 ```
-Local:
-React → NestJS → PostgreSQL → Python AgentCore
+LOCAL
+
+React
+↓
+NestJS
+↓
+Prisma
+↓
+PostgreSQL
+
+NestJS
+├── S3
+└── Python AgentCore
+```
 
 AWS:
-Frontend → NestJS → RDS
-                    ├── S3
-                    └── AgentCore
+
+```
+Internet
+↓
+Frontend
+↓
+ALB / API entry
+↓
+NestJS on ECS Fargate
+↓
+Prisma
+↓
+RDS PostgreSQL
+
+NestJS
+├── S3
+└── AgentCore
 ```
 
 Expected AWS services:
@@ -894,14 +1166,27 @@ Expected AWS services:
 ```
 PostgreSQL → RDS
 Documents → S3
-NestJS → AWS compute
+NestJS → ECS/Fargate
+Backend image → ECR
 AgentCore → AWS deployment
 Frontend → AWS hosting
 Email → SES/provider
 Calendar → External API
 ```
 
-No second implementation for AWS.
+RDS should remain private.
+
+The backend can also run in private subnets.
+
+Backend → RDS communication occurs privately inside the VPC.
+
+RDS security group should allow PostgreSQL port `5432` from the backend/Fargate security group.
+
+The backend does not need internet access merely to communicate with RDS.
+
+NAT Gateway or appropriate VPC endpoints are required only where private resources need outbound access to external/AWS services.
+
+No second backend implementation is created for AWS.
 
 ---
 
@@ -917,11 +1202,121 @@ S3_BUCKET
 AGENTCORE_URL
 ```
 
+Additional integration-specific secrets/configuration can also be environment variables or stored in an appropriate secret-management service.
+
 Never hardcode credentials, URLs, or AWS resources.
+
+### DATABASE_URL
+
+The same backend code works against different PostgreSQL environments by changing `DATABASE_URL`.
+
+Local PostgreSQL:
+
+```
+postgresql://...@localhost:5432/mini_erp
+```
+
+Docker Compose:
+
+```
+postgresql://...@postgres:5432/mini_erp
+```
+
+AWS:
+
+```
+postgresql://...@<RDS-ENDPOINT>:5432/mini_erp
+```
+
+`DATABASE_URL` is used both by:
+
+```
+Prisma migrations
++
+NestJS/Prisma runtime database access
+```
 
 ---
 
-# 27. Build Order
+# 27. Local Docker / Testing
+
+After the backend is implemented:
+
+```
+Create backend Dockerfile
+↓
+Create docker-compose.yml
+↓
+Backend container
++
+PostgreSQL container
+↓
+Run Prisma migrations
+↓
+Seed test database
+↓
+Test endpoints using Postman
+```
+
+The seed should contain enough realistic data to test:
+
+- users/roles
+- warehouses
+- products
+- suppliers
+- warehouse inventory
+- historical incoming transactions
+- historical outgoing transactions
+- transfers
+- stock movements
+- reservations
+- supplier statistics
+- stock insights
+- analytics
+
+The goal is to verify business logic before AWS deployment.
+
+---
+
+# 28. AWS Deployment Flow
+
+After local testing succeeds:
+
+```
+Create/configure VPC
+↓
+Private subnets
+↓
+Create RDS PostgreSQL
+↓
+Configure security groups
+↓
+Set production DATABASE_URL
+↓
+Run Prisma migrations against RDS
+↓
+Build backend Docker image
+↓
+Push image to ECR
+↓
+Deploy NestJS on ECS Fargate
+↓
+Connect Fargate → RDS privately
+↓
+Configure S3 / AgentCore / integrations
+↓
+Expose backend through appropriate API/ALB architecture
+↓
+End-to-end production testing
+```
+
+RDS replaces the local PostgreSQL container in production.
+
+The application does not deploy a PostgreSQL Docker container to RDS.
+
+---
+
+# 29. Build Order
 
 ```
 1. Prisma
@@ -939,30 +1334,112 @@ Never hardcode credentials, URLs, or AWS resources.
 13. Analytics
 14. Email
 15. Calendar
-16. AgentCore
-17. AWS Infrastructure
-18. Deployment & testing
+16. AgentCore integration
+17. Docker / local full-system testing
+18. AWS Infrastructure
+19. Deployment & production testing
 ```
 
 ---
 
-# 28. Final Rules
+# 30. Final Rules
 
 ### 🔒 Database
 
-**Frozen. No further DB changes.**
+**Frozen. No further DB changes currently required.**
 
 ### 🔒 Stock
 
 Only stock movement logic changes `onHand`.
 
+### 🔒 Available Stock
+
+```
+available = onHand - ACTIVE reservations
+```
+
 ### 🔒 Reservations
 
-Only OUTGOING uses reservations.
+Both:
+
+```
+OUTGOING
+TRANSFER
+```
+
+reserve stock at their source warehouse while PENDING.
+
+### 🔒 Incoming
+
+Creating a PENDING incoming transaction does not change stock.
+
+Stock increases only on `complete()`.
+
+### 🔒 Outgoing
+
+Creating a PENDING outgoing transaction reserves stock.
+
+Physical stock decreases only on `complete()`.
 
 ### 🔒 Transfers
 
-No reservation; availability is rechecked under row lock during completion.
+Creating a transfer does NOT physically move stock.
+
+A PENDING transfer creates ACTIVE source reservations.
+
+Physical:
+
+```
+TRANSFER_OUT
++
+TRANSFER_IN
+```
+
+movements happen only on completion.
+
+Cancellation releases source reservations without changing `onHand`.
+
+### 🔒 Invoice Approval
+
+Approving a supplier invoice means:
+
+```
+AI extraction accepted
++
+products resolved
++
+warehouse confirmed
++
+PENDING INCOMING transaction created
+```
+
+It does **NOT** mean goods have physically arrived.
+
+Therefore:
+
+```
+APPROVE INVOICE
+≠
+CHANGE STOCK
+```
+
+Later:
+
+```
+COMPLETE INCOMING
+=
+CHANGE STOCK
+```
+
+### 🔒 Invoice Warehouse
+
+AI attempts to extract the destination warehouse from the invoice.
+
+The reviewer confirms/corrects the match.
+
+If unavailable, the reviewer selects the warehouse manually.
+
+The confirmed warehouse becomes the incoming transaction's `destinationWarehouseId`.
 
 ### 🔒 Concurrency
 
@@ -976,40 +1453,46 @@ SELECT ... FOR UPDATE
 Prisma $transaction()
 ```
 
-### 🔒 Multiple inventory rows
+where appropriate.
 
-Always lock in deterministic `productId` order.
+### 🔒 Multiple Inventory Rows
 
-### 🔒 Invoice approval
+Always lock inventory rows in deterministic `productId` order.
 
-Approval **posts the incoming stock immediately** and creates a `COMPLETED` incoming transaction.
+### 🔒 Atomicity
+
+Related writes either all succeed or all fail.
+
+Never allow partial:
+
+- reservations
+- movements
+- transaction items
+- inventory changes
+- document approvals
+
+### 🔒 New Invoice Products
+
+Invoice review supports:
+
+```
+EXISTING
+or
+CREATE
+```
+
+New products are created atomically as part of approval when necessary.
 
 ### 🔒 AI
 
-AI is not the source of truth for inventory numbers.
+AI is not the source of truth for inventory calculations.
+
+NestJS computes deterministic values.
+
+AgentCore interprets, reasons, recommends, and orchestrates controlled tools.
 
 ### 🔒 AWS
 
 Same backend code locally and in production.
 
----
-
-## Final status
-
-| Issue | Resolution | DB change |
-| --- | --- | --- |
-| AI extraction failure | `REJECTED` + `rejectionReason` | ❌ |
-| New product creation | Explicit `EXISTING` / `CREATE` DTO | ❌ |
-| Role permissions | Defined role matrix | ❌ |
-| Concurrency | Conditional updates + row locking | ❌ |
-| Transfer race | Lock + recheck at completion | ❌ |
-| File validation | PDF/JPG/JPEG/PNG, max 10 MB | ❌ |
-| Duplicate invoice | Hash-based protection where supported | ❌ |
-| Raw SQL locking | `$queryRaw` inside interactive `$transaction()` | ❌ |
-| Deadlocks | Stable productId lock ordering | ❌ |
-| Invoice warehouse | Reviewer selects during approval | ❌ |
-| Invoice approval | Directly posts stock + COMPLETED transaction | ❌ |
-| Capacity | Informational, null-safe | ❌ |
-| `rejectionReason` | Already added | ✅ |
-
-**This is the version I would use as the coding baseline.**
+Environment/configuration changes, not business logic.
