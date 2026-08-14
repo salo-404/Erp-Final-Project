@@ -1,6 +1,6 @@
 # Mini ERP — Backend Architecture & Implementation Plan
 
-## 1. Core Modules
+# 1. Core Modules
 
 ```
 auth/
@@ -88,7 +88,7 @@ This prevents two simultaneous requests from both seeing the same available stoc
 
 ### Lock ordering
 
-Whenever multiple inventory rows are locked, sort them by a stable key such as `productId` before acquiring locks.
+Whenever multiple inventory rows are locked, sort them by **warehouseId + productId** together — not productId alone. A single product can have multiple `WarehouseInventory` rows (one per warehouse), so productId alone doesn't produce a unique, consistent lock order across warehouses. Ordering by both fields guarantees any two concurrent operations touching overlapping rows always acquire locks in the same order, preventing deadlocks.
 
 This applies to:
 
@@ -121,7 +121,7 @@ validateUser()
 login()
 ```
 
-JWT authentication.
+JWT authentication. Passwords are hashed before storage.
 
 ### UsersService
 
@@ -137,17 +137,17 @@ Roles:
 
 ```
 ADMIN
-MANAGER
 EMPLOYEE
 ```
 
+There is no MANAGER role — this was evaluated and dropped since no permission in this system genuinely required a tier between EMPLOYEE and ADMIN.
+
 ### Permissions
 
-- **ADMIN:** full access
-- **MANAGER:** operational management, transaction completion/cancellation, document approval
-- **EMPLOYEE:** normal operational/read access, but no approval, completion, cancellation, or deletion
+- **ADMIN:** full administrative access, including user management, document approval/rejection, transaction completion/cancellation, sensitive deletes where allowed, and normal ERP entity management
+- **EMPLOYEE:** normal operational/read access, including viewing inventory/products/warehouses/suppliers, creating pending transactions, uploading documents, and using normal ERP functionality — no approval, completion, cancellation, or deletion rights
 
-Deletion of historical entities is ADMIN-only.
+Guards enforce permissions based on `User.role`. Deletion of historical entities is ADMIN-only.
 
 ---
 
@@ -182,6 +182,8 @@ findOne()
 getCatalog()
 ```
 
+`getCatalog()` returns the products/inventory associated with a warehouse.
+
 Warehouse capacity calculation belongs to `WarehouseInventoryService` to avoid duplicate implementations.
 
 ### Delete
@@ -199,19 +201,65 @@ remove()
 findAll()
 findOne()
 getTransactionHistory()
+rankSuppliers()
+getBestSupplier()
 getSupplierStats()
 compareSuppliers()
 ```
 
-Supplier statistics are calculated by NestJS:
+Supplier statistics are calculated dynamically by NestJS from historical INCOMING transactions/items — never stored as a permanent score:
 
 - average price
 - on-time %
+- late %
 - cancellation rate
 - purchase frequency
 - supplied products
+- last purchase date
 
-AgentCore only explains/recommends from these values.
+AgentCore only explains/recommends from these values; it does not calculate them.
+
+## rankSuppliers()
+
+Ranks suppliers dynamically using historical INCOMING transaction data.
+
+Possible ranking inputs:
+
+- average product price
+- on-time percentage
+- late percentage
+- cancellation rate
+- purchase frequency
+- products supplied
+- last purchase date
+
+The backend calculates the ranking deterministically.
+
+No permanent supplier score is stored in the database.
+
+## getBestSupplier()
+
+Returns the best supplier for a requested product or restocking need.
+
+Possible inputs:
+
+- productId
+- required quantity
+- preferred delivery date
+
+Flow:
+
+```
+get candidate suppliers
+↓
+calculate supplier statistics
+↓
+rank suppliers
+↓
+return the best matching supplier
+```
+
+The result can later be interpreted by AgentCore when generating a purchase recommendation.
 
 ---
 
@@ -224,25 +272,53 @@ getAvailable()
 getLowStockProducts()
 getWarehouseCapacity()
 setReorderThreshold()
+findBestWarehouseForOrder()
 ```
 
 Available stock:
 
 ```
-available = onHand - active reservations
+available = onHand - SUM(ACTIVE reservations)
 ```
 
-`onHand` is changed only through stock movement operations.
+`onHand` is changed only through stock movement operations — never directly through this module.
 
 ### Capacity
 
 ```
-usedCapacity / maxCapacity
+usedCapacity = SUM(onHand)
+utilization = usedCapacity / maxCapacity
 ```
 
-If `maxCapacity = null`, return capacity/utilization as not configured.
+If `maxCapacity = null`, return capacity/utilization as **not configured**.
 
 Capacity is **informational**, not a hard limit.
+
+### findBestWarehouseForOrder()
+
+Used for customer OUTGOING orders, to automatically route the order to the closest warehouse that can fulfill it.
+
+Inputs:
+
+- deliveryCountry
+- deliveryRegion
+- required products/quantities
+
+Flow:
+
+```
+Get warehouses
+↓
+Check available stock
+↓
+Eliminate warehouses that cannot fulfill the order
+↓
+Compare remaining warehouse locations with the customer delivery location
+↓
+Return/recommend the closest suitable warehouse
+```
+
+Geographic distance can later use a geocoding/distance API; for now, matching is based on `deliveryCountry`/`deliveryRegion` against `Warehouse.location`. The selected warehouse becomes the outgoing transaction's `sourceWarehouseId`.
 
 ---
 
@@ -267,6 +343,18 @@ atomically.
 
 No normal endpoint should directly modify `onHand`.
 
+`getLedger()` is read-only, filterable by product, warehouse, transaction, movement type, and date.
+
+Movement types:
+
+```
+INCOMING
+OUTGOING
+TRANSFER_IN
+TRANSFER_OUT
+ADJUSTMENT
+```
+
 ---
 
 # 9. Reservations
@@ -277,6 +365,8 @@ Used for:
 
 - OUTGOING transactions
 - TRANSFER transactions at the source warehouse
+
+Not used for INCOMING.
 
 Functions:
 
@@ -293,7 +383,7 @@ Before creating/updating a reservation:
 3. Verify quantity.
 4. Create/update reservation.
 
-For multiple products, lock rows in sorted `productId` order.
+For multiple products, lock rows in sorted `warehouseId + productId` order.
 
 ### OUTGOING
 
@@ -336,6 +426,8 @@ CANCELLED
 
 No `CONFIRMED` status.
 
+`deliveryCountry` and `deliveryRegion` on `InventoryTransaction` represent where an OUTGOING customer order is going. `sourceWarehouseId` represents which warehouse fulfills it.
+
 ---
 
 ## Create Incoming
@@ -347,11 +439,14 @@ createIncoming()
 Creates:
 
 ```
-INCOMING
-PENDING
+type = INCOMING
+status = PENDING
+supplierId required
+destinationWarehouseId required
+partyName = null
 ```
 
-No stock change until the incoming transaction is completed.
+Also creates transaction items. No reservation. No stock change until the incoming transaction is completed.
 
 ---
 
@@ -359,6 +454,18 @@ No stock change until the incoming transaction is completed.
 
 ```
 createOutgoing()
+```
+
+Typical data: `partyName` (customer), `deliveryCountry`, `deliveryRegion`, `sourceWarehouseId`, items, `expectedDate`.
+
+If warehouse routing is automatic:
+
+```
+deliveryCountry + deliveryRegion
+↓
+findBestWarehouseForOrder()
+↓
+sourceWarehouseId
 ```
 
 Flow:
@@ -377,9 +484,7 @@ Create ACTIVE reservations
 COMMIT
 ```
 
-Everything is atomic.
-
-No physical stock movement happens when the outgoing transaction is created.
+Everything is atomic. No physical stock movement happens when the outgoing transaction is created.
 
 ---
 
@@ -411,11 +516,7 @@ Create ACTIVE reservations at source warehouse
 COMMIT
 ```
 
-The stock is NOT physically moved when the transfer is created.
-
-The reservation only prevents the source stock from being used elsewhere while the transfer is pending.
-
-Everything is atomic.
+The stock is NOT physically moved when the transfer is created. The reservation only prevents the source stock from being used elsewhere while the transfer is pending. Everything is atomic.
 
 ---
 
@@ -440,6 +541,14 @@ quantity increases
 ```
 quantity decreases
 → release reservation difference
+```
+
+If product changes:
+
+```
+release old reservation
+→ validate new product
+→ reserve new product
 ```
 
 If source warehouse changes:
@@ -558,8 +667,6 @@ Transaction = COMPLETED
 COMMIT
 ```
 
----
-
 ## TRANSFER
 
 ```
@@ -602,19 +709,13 @@ Transaction = COMPLETED
 COMMIT
 ```
 
-Source and destination inventory rows are locked in deterministic order.
-
-The physical stock movement happens only when the transfer is completed, not when it is created.
-
-Everything is atomic. If any step fails, the entire operation is rolled back.
+Source and destination inventory rows are locked in deterministic (`warehouseId + productId`) order. The physical stock movement happens only when the transfer is completed, not when it is created. Everything is atomic — if any step fails, the entire operation is rolled back.
 
 ---
 
 # 13. Cancel Transaction
 
-Only `PENDING` transactions can be cancelled.
-
-Use the same conditional state-transition protection.
+Only `PENDING` transactions can be cancelled. Use the same conditional state-transition protection.
 
 ### OUTGOING
 
@@ -654,13 +755,34 @@ Transaction = CANCELLED
 COMMIT
 ```
 
-No stock movement because the transfer has not physically happened yet.
-
-Everything is atomic.
+No stock movement because the transfer has not physically happened yet. Everything is atomic.
 
 ---
 
-# 14. Document Review
+# 14. Reads
+
+```
+findAll(filters)
+findOne(id)
+getUpcomingDeliveries()
+getOverdueTransactions()
+```
+
+Examples:
+
+```
+upcoming:
+PENDING + expectedDate in future
+
+overdue:
+PENDING + expectedDate < now
+```
+
+These read purely from `InventoryTransaction` state — no AI involved — and feed the shipment calendar reminder feature directly.
+
+---
+
+# 15. Document Review
 
 Flow:
 
@@ -680,9 +802,7 @@ Warehouse Confirmation
 Approve / Reject
 ```
 
----
-
-## Upload
+### Upload
 
 Allowed:
 
@@ -717,37 +837,42 @@ Create PendingDocumentReview
 Run AI extraction
 ```
 
----
-
-## Duplicate Documents
+### Duplicate Documents
 
 Use a document hash where practical to detect accidental duplicate uploads.
 
-For the capstone, duplicate detection is a reliability feature and must not require a new database field.
-
-If the finalized schema cannot persist a hash cleanly, document the limitation rather than changing the DB.
+For the capstone, duplicate detection is a reliability feature and must not require a new database field. If the finalized schema cannot persist a hash cleanly, document the limitation rather than changing the DB.
 
 ---
 
-# 15. AI Extraction
+# 16. AI Extraction
 
 Extract:
 
-- supplier
+- transaction type
+- supplier/customer
 - date
 - destination warehouse from invoice when available
+- delivery country
+- delivery region
 - products
 - quantities
 - prices
 - invoice information
 
-Extraction is provisional until human review.
+Staging fields on `PendingDocumentReview`:
 
-The extracted warehouse should be matched against existing ERP warehouses.
+```
+extractedPartyName
+extractedSupplierName
+extractedDate
+extractedWarehouseName
+extractedDeliveryCountry
+extractedDeliveryRegion
+extractedItems
+```
 
-The reviewer confirms or corrects the warehouse before approval.
-
-If the invoice does not contain a usable warehouse, the reviewer manually selects one.
+Extraction is provisional until human review. The extracted warehouse should be matched against existing ERP warehouses. The reviewer confirms or corrects the warehouse before approval. If the invoice does not contain a usable warehouse, the reviewer manually selects one.
 
 ### Extraction failure
 
@@ -757,15 +882,14 @@ If extraction fails or times out:
 
 ```
 status = REJECTED
-rejectionReason =
-"System extraction failed: <reason>"
+rejectionReason = "System extraction failed: <reason>"
 ```
 
 This prevents a failed document from remaining indefinitely as `PENDING_REVIEW`.
 
 ---
 
-# 16. Product Matching
+# 17. Product Matching
 
 Order:
 
@@ -777,17 +901,11 @@ Fuzzy suggestion
 Human confirmation
 ```
 
-Fuzzy matching must use a predefined/tested similarity threshold.
-
-Ambiguous matches require human selection.
-
-No product can remain unresolved when approval is submitted.
-
-The LLM/AI can suggest matches, but the final product mapping is confirmed before database changes are made.
+Fuzzy matching must use a predefined/tested similarity threshold. Ambiguous matches require human selection. No product can remain unresolved when approval is submitted. The LLM/AI can suggest matches, but the final product mapping is confirmed before database changes are made.
 
 ---
 
-# 17. New Product During Approval
+# 18. New Product During Approval
 
 `correctedItems` must explicitly distinguish:
 
@@ -838,7 +956,7 @@ All inside the same database transaction.
 
 ---
 
-# 18. Document Approval
+# 19. Document Approval
 
 Approval means the human has reviewed and accepted the AI-extracted invoice information.
 
@@ -874,9 +992,7 @@ Link transactionId
 COMMIT
 ```
 
-No `StockMovement` is created during invoice approval.
-
-`WarehouseInventory.onHand` does NOT change during approval.
+No `StockMovement` is created during invoice approval. `WarehouseInventory.onHand` does NOT change during approval.
 
 Later, when the products physically arrive:
 
@@ -884,9 +1000,7 @@ Later, when the products physically arrive:
 complete(transactionId)
 ```
 
-is called.
-
-That completion then:
+is called. That completion then:
 
 ```
 Create INCOMING StockMovements
@@ -898,25 +1012,37 @@ Set actualDate
 Transaction = COMPLETED
 ```
 
-Everything affecting multiple records is atomic.
+Everything affecting multiple records is atomic. If anything fails: ROLLBACK.
 
-If anything fails:
+### OUTGOING Customer Document Approval
+
+For an OUTGOING customer document, approval follows the same human-review principle but creates a pending outgoing transaction:
 
 ```
-ROLLBACK
+Resolve customer + delivery location
+↓
+Determine/confirm suitable source warehouse
+↓
+Create PENDING OUTGOING transaction
+↓
+Create transaction items
+↓
+Create ACTIVE source reservations
+↓
+Document = APPROVED
+↓
+COMMIT
 ```
+
+If automatic warehouse routing is used, `findBestWarehouseForOrder()` chooses the closest suitable warehouse that has enough available stock. Approval still does not physically remove stock — physical stock decreases later through `complete(transactionId)`.
 
 ---
 
-# 19. Invoice Warehouse
+# 20. Invoice Warehouse
 
 The AI attempts to extract the destination warehouse from the invoice.
 
-During review, the extracted warehouse is matched against an existing ERP Warehouse.
-
-The reviewer confirms or corrects the warehouse before approving the document.
-
-If no usable warehouse can be determined from the invoice, the reviewer selects one manually.
+During review, the extracted warehouse is matched against an existing ERP Warehouse. The reviewer confirms or corrects the warehouse before approving the document. If no usable warehouse can be determined from the invoice, the reviewer selects one manually.
 
 Conceptually:
 
@@ -929,19 +1055,11 @@ approve(
 )
 ```
 
-The final confirmed `warehouseId` becomes the:
-
-```
-destinationWarehouseId
-```
-
-of the resulting PENDING INCOMING transaction.
-
-No additional warehouse field is required on `InventoryTransaction` because `destinationWarehouseId` already exists.
+The final confirmed `warehouseId` becomes the `destinationWarehouseId` of the resulting PENDING INCOMING transaction. No additional warehouse field is required on `InventoryTransaction` because `destinationWarehouseId` already exists.
 
 ---
 
-# 20. Document Rejection
+# 21. Document Rejection
 
 ```
 reject()
@@ -958,20 +1076,18 @@ reviewedAt
 rejectionReason
 ```
 
-Already approved/rejected documents cannot be processed again.
-
-A rejected invoice does not create an inventory transaction and does not modify stock.
-
-The uploaded S3 document may remain stored for audit/history purposes.
+Already approved/rejected documents cannot be processed again. A rejected invoice does not create an inventory transaction and does not modify stock. The uploaded S3 document may remain stored for audit/history purposes.
 
 ---
 
-# 21. Stock Insights
+# 22. Stock Insights
 
 ```
 getDeadStock()
 getStockoutRisk()
 getConsumptionAnomalies()
+getRestockRecommendations()
+getTransferRecommendations()
 ```
 
 ### Dead Stock
@@ -988,19 +1104,86 @@ Can use:
 - expected delivery dates
 - reorder threshold
 
-NestJS calculates the numbers.
-
-The LLM does not calculate stockout risk itself.
+NestJS calculates the numbers. The LLM does not calculate stockout risk itself.
 
 ### Consumption Anomalies
 
-Compare recent consumption against historical behavior and flag unusual spikes or drops.
+Compare recent consumption against historical behavior and flag unusual spikes or drops. Deterministic calculations remain in NestJS.
 
-Deterministic calculations remain in NestJS.
+### getRestockRecommendations()
+
+Generates deterministic restocking recommendations for products that are low in stock or at risk of stocking out.
+
+Can use:
+
+- onHand
+- ACTIVE reservations
+- available stock
+- reorderThreshold
+- historical consumption rate
+- stockout risk
+- pending INCOMING quantities
+- expected incoming dates
+- supplier history
+
+Flow:
+
+```
+calculate current available stock
+↓
+calculate recent/historical consumption
+↓
+check pending incoming stock
+↓
+calculate stockout risk
+↓
+determine whether restocking is needed
+↓
+estimate recommended reorder quantity
+↓
+optionally call getBestSupplier()
+```
+
+The backend calculates the recommendation inputs and quantities.
+
+AgentCore can explain the recommendation and decide whether it should be emailed.
+
+### getTransferRecommendations()
+
+Detects when stock should be moved between warehouses instead of purchasing new stock.
+
+Can use:
+
+- available stock by warehouse
+- reorderThreshold
+- warehouse demand
+- recent consumption
+- stockout risk
+- excess stock in other warehouses
+
+Flow:
+
+```
+identify warehouse with shortage/risk
+↓
+check same product in other warehouses
+↓
+eliminate warehouses without sufficient excess stock
+↓
+compare available quantities and locations
+↓
+recommend source warehouse
+↓
+recommend destination warehouse
+↓
+recommend transfer quantity
+```
+
+This function only recommends a transfer. It does not create or complete an `InventoryTransaction` automatically.
 
 ---
 
-# 22. Analytics
+# 23. Analytics
 
 ```
 getTopSellingProducts()
@@ -1015,23 +1198,19 @@ getProductDemand()
 getSupplierComparison()
 ```
 
-All deterministic calculations remain in NestJS.
+All deterministic calculations remain in NestJS. AgentCore can interpret and explain the calculated results.
 
-AgentCore can interpret and explain the calculated results.
-
-Examples:
+Example:
 
 ```
-NestJS:
-"Product X sales increased 32%"
+NestJS: "Product X sales increased 32%"
 
-Agent:
-"Product X is showing strong recent demand and may require earlier restocking."
+Agent: "Product X is showing strong recent demand and may require earlier restocking."
 ```
 
 ---
 
-# 23. Email / Calendar
+# 24. Email / Calendar
 
 ### Email
 
@@ -1039,9 +1218,7 @@ Agent:
 EmailService
 ```
 
-Agent decides **what** should be sent.
-
-EmailService decides **how** to send it.
+Agent decides **what** should be sent. EmailService decides **how** to send it.
 
 Example:
 
@@ -1081,7 +1258,7 @@ The integration implementation is separate from the business/agent logic.
 
 ---
 
-# 24. AgentCore
+# 25. AgentCore
 
 NestJS communicates with the Python AgentCore service.
 
@@ -1091,12 +1268,25 @@ AgentCore can use controlled read/analysis tools such as:
 get_inventory
 get_available_stock
 get_low_stock_products
+
 get_transactions
+get_upcoming_deliveries
 get_stock_history
 get_stockout_risk
+
+get_restock_recommendations
+get_transfer_recommendations
+
 get_supplier_stats
 compare_suppliers
+rank_suppliers
+get_best_supplier
+
 get_sales_trends
+get_top_selling_products
+get_lowest_selling_products
+
+find_best_warehouse
 ```
 
 Tool definitions call controlled backend functionality rather than giving the agent unrestricted database access.
@@ -1108,9 +1298,7 @@ AgentCore cannot:
 - complete/cancel transactions
 - delete records
 
-Deterministic calculations remain in NestJS.
-
-The agent handles:
+Deterministic calculations remain in NestJS. The agent handles:
 
 - natural-language understanding
 - deciding which tools to call
@@ -1119,9 +1307,11 @@ The agent handles:
 - recommendations
 - deciding when appropriate integrations such as email should be invoked
 
+Write tools can be added later, after permissions and human-confirmation flows are explicitly defined.
+
 ---
 
-# 25. AWS Architecture
+# 26. AWS Architecture
 
 The application is built **once**, then deployed locally and on AWS using environment-specific configuration.
 
@@ -1174,23 +1364,15 @@ Email → SES/provider
 Calendar → External API
 ```
 
-RDS should remain private.
+RDS should remain private. The backend can also run in private subnets. Backend → RDS communication occurs privately inside the VPC. RDS security group should allow PostgreSQL port `5432` from the backend/Fargate security group.
 
-The backend can also run in private subnets.
-
-Backend → RDS communication occurs privately inside the VPC.
-
-RDS security group should allow PostgreSQL port `5432` from the backend/Fargate security group.
-
-The backend does not need internet access merely to communicate with RDS.
-
-NAT Gateway or appropriate VPC endpoints are required only where private resources need outbound access to external/AWS services.
+The backend does not need internet access merely to communicate with RDS. NAT Gateway or appropriate VPC endpoints are required only where private resources need outbound access to external/AWS services.
 
 No second backend implementation is created for AWS.
 
 ---
 
-# 26. Configuration
+# 27. Configuration
 
 Use environment variables:
 
@@ -1202,9 +1384,7 @@ S3_BUCKET
 AGENTCORE_URL
 ```
 
-Additional integration-specific secrets/configuration can also be environment variables or stored in an appropriate secret-management service.
-
-Never hardcode credentials, URLs, or AWS resources.
+Additional integration-specific secrets/configuration can also be environment variables or stored in an appropriate secret-management service. Never hardcode credentials, URLs, or AWS resources.
 
 ### DATABASE_URL
 
@@ -1228,17 +1408,11 @@ AWS:
 postgresql://...@<RDS-ENDPOINT>:5432/mini_erp
 ```
 
-`DATABASE_URL` is used both by:
-
-```
-Prisma migrations
-+
-NestJS/Prisma runtime database access
-```
+`DATABASE_URL` is used both by Prisma migrations and NestJS/Prisma runtime database access.
 
 ---
 
-# 27. Local Docker / Testing
+# 28. Local Docker / Testing
 
 After the backend is implemented:
 
@@ -1247,9 +1421,7 @@ Create backend Dockerfile
 ↓
 Create docker-compose.yml
 ↓
-Backend container
-+
-PostgreSQL container
+Backend container + PostgreSQL container
 ↓
 Run Prisma migrations
 ↓
@@ -1260,7 +1432,7 @@ Test endpoints using Postman
 
 The seed should contain enough realistic data to test:
 
-- users/roles
+- users/roles (ADMIN + EMPLOYEE)
 - warehouses
 - products
 - suppliers
@@ -1278,7 +1450,7 @@ The goal is to verify business logic before AWS deployment.
 
 ---
 
-# 28. AWS Deployment Flow
+# 29. AWS Deployment Flow
 
 After local testing succeeds:
 
@@ -1310,13 +1482,11 @@ Expose backend through appropriate API/ALB architecture
 End-to-end production testing
 ```
 
-RDS replaces the local PostgreSQL container in production.
-
-The application does not deploy a PostgreSQL Docker container to RDS.
+RDS replaces the local PostgreSQL container in production. The application does not deploy a PostgreSQL Docker container to RDS.
 
 ---
 
-# 29. Build Order
+# 30. Build Order
 
 ```
 1. Prisma
@@ -1342,7 +1512,11 @@ The application does not deploy a PostgreSQL Docker container to RDS.
 
 ---
 
-# 30. Final Rules
+# 31. Final Rules
+
+### 🔒 Roles
+
+ADMIN / EMPLOYEE only. There is no MANAGER role.
 
 ### 🔒 Database
 
@@ -1360,139 +1534,64 @@ available = onHand - ACTIVE reservations
 
 ### 🔒 Reservations
 
-Both:
-
-```
-OUTGOING
-TRANSFER
-```
-
-reserve stock at their source warehouse while PENDING.
+Both OUTGOING and TRANSFER reserve stock at their source warehouse while PENDING.
 
 ### 🔒 Incoming
 
-Creating a PENDING incoming transaction does not change stock.
-
-Stock increases only on `complete()`.
+Creating a PENDING incoming transaction does not change stock. Stock increases only on `complete()`.
 
 ### 🔒 Outgoing
 
-Creating a PENDING outgoing transaction reserves stock.
-
-Physical stock decreases only on `complete()`.
+Creating a PENDING outgoing transaction reserves stock. Physical stock decreases only on `complete()`.
 
 ### 🔒 Transfers
 
-Creating a transfer does NOT physically move stock.
+Creating a transfer does NOT physically move stock. A PENDING transfer creates ACTIVE source reservations.
 
-A PENDING transfer creates ACTIVE source reservations.
-
-Physical:
-
-```
-TRANSFER_OUT
-+
-TRANSFER_IN
-```
-
-movements happen only on completion.
-
-Cancellation releases source reservations without changing `onHand`.
+Physical TRANSFER_OUT + TRANSFER_IN movements happen only on completion. Cancellation releases source reservations without changing `onHand`.
 
 ### 🔒 Invoice Approval
 
-Approving a supplier invoice means:
+Approving a supplier invoice means: AI extraction accepted + products resolved + warehouse confirmed + PENDING INCOMING transaction created.
 
-```
-AI extraction accepted
-+
-products resolved
-+
-warehouse confirmed
-+
-PENDING INCOMING transaction created
-```
-
-It does **NOT** mean goods have physically arrived.
-
-Therefore:
-
-```
-APPROVE INVOICE
-≠
-CHANGE STOCK
-```
-
-Later:
-
-```
-COMPLETE INCOMING
-=
-CHANGE STOCK
-```
+It does **NOT** mean goods have physically arrived. Therefore: APPROVE INVOICE ≠ CHANGE STOCK. Later: COMPLETE INCOMING = CHANGE STOCK.
 
 ### 🔒 Invoice Warehouse
 
-AI attempts to extract the destination warehouse from the invoice.
+AI attempts to extract the destination warehouse from the invoice. The reviewer confirms/corrects the match. If unavailable, the reviewer selects the warehouse manually. The confirmed warehouse becomes the incoming transaction's `destinationWarehouseId`.
 
-The reviewer confirms/corrects the match.
+### 🔒 Customer Destination
 
-If unavailable, the reviewer selects the warehouse manually.
+For OUTGOING customer orders, `deliveryCountry` + `deliveryRegion` represent where the customer order is going.
 
-The confirmed warehouse becomes the incoming transaction's `destinationWarehouseId`.
+### 🔒 Order Source
+
+`sourceWarehouseId` represents the warehouse that fulfills the outgoing order.
+
+### 🔒 Warehouse Routing
+
+Automatic warehouse selection uses available stock + customer delivery location through `findBestWarehouseForOrder()` to recommend the closest suitable warehouse that can fulfill the order.
 
 ### 🔒 Concurrency
 
-Use:
-
-```
-Conditional UPDATE
-+
-SELECT ... FOR UPDATE
-+
-Prisma $transaction()
-```
-
-where appropriate.
+Use conditional UPDATE + `SELECT ... FOR UPDATE` + Prisma `$transaction()` where appropriate.
 
 ### 🔒 Multiple Inventory Rows
 
-Always lock inventory rows in deterministic `productId` order.
+Always lock inventory rows in deterministic `warehouseId + productId` order.
 
 ### 🔒 Atomicity
 
-Related writes either all succeed or all fail.
-
-Never allow partial:
-
-- reservations
-- movements
-- transaction items
-- inventory changes
-- document approvals
+Related writes either all succeed or all fail. Never allow partial reservations, movements, transaction items, inventory changes, or document approvals.
 
 ### 🔒 New Invoice Products
 
-Invoice review supports:
-
-```
-EXISTING
-or
-CREATE
-```
-
-New products are created atomically as part of approval when necessary.
+Invoice review supports EXISTING or CREATE. New products are created atomically as part of approval when necessary.
 
 ### 🔒 AI
 
-AI is not the source of truth for inventory calculations.
-
-NestJS computes deterministic values.
-
-AgentCore interprets, reasons, recommends, and orchestrates controlled tools.
+AI is not the source of truth for inventory calculations. NestJS computes deterministic values. AgentCore interprets, reasons, recommends, and orchestrates controlled tools.
 
 ### 🔒 AWS
 
-Same backend code locally and in production.
-
-Environment/configuration changes, not business logic.
+Same backend code locally and in production. Environment/configuration changes, not business logic.
