@@ -1,0 +1,270 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ====================
+// ENUMS
+// ====================
+
+enum InventoryTransactionType {
+  INCOMING
+  OUTGOING
+  TRANSFER
+}
+
+enum InventoryTransactionStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+enum StockMovementType {
+  INCOMING
+  OUTGOING
+  TRANSFER_IN
+  TRANSFER_OUT
+  ADJUSTMENT
+}
+
+enum ReservationStatus {
+  ACTIVE
+  FULFILLED
+  CANCELLED
+}
+
+enum UserRole {
+  ADMIN
+  EMPLOYEE
+}
+
+enum DocumentReviewStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
+// ====================
+// USER
+// ====================
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  reviewedDocuments PendingDocumentReview[] @relation("DocumentReviewer")
+}
+
+// ====================
+// SUPPLIER
+// ====================
+
+model Supplier {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  email     String
+  createdAt DateTime @default(now())
+
+  transactions InventoryTransaction[]
+}
+
+// ====================
+// PRODUCT
+// ====================
+
+model Product {
+  id          Int      @id @default(autoincrement())
+  name        String
+  category    String?
+  description String?
+  createdAt   DateTime @default(now())
+
+  inventories      WarehouseInventory[]
+  transactionItems InventoryTransactionItem[]
+  stockMovements   StockMovement[]
+  reservations     Reservation[]
+}
+
+// ====================
+// WAREHOUSE
+// ====================
+
+model Warehouse {
+  id          Int      @id @default(autoincrement())
+  name        String
+  location    String?
+  maxCapacity Int?
+  createdAt   DateTime @default(now())
+
+  inventories WarehouseInventory[]
+
+  sourceTransactions      InventoryTransaction[] @relation("SourceWarehouse")
+  destinationTransactions InventoryTransaction[] @relation("DestinationWarehouse")
+
+  stockMovements StockMovement[]
+  reservations   Reservation[]
+}
+
+// ====================
+// WAREHOUSE INVENTORY
+// ====================
+
+model WarehouseInventory {
+  id               Int @id @default(autoincrement())
+  productId        Int
+  warehouseId      Int
+  onHand           Int @default(0)
+  reorderThreshold Int @default(0)
+
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@unique([productId, warehouseId])
+}
+
+// ====================
+// INVENTORY TRANSACTION
+// ====================
+
+model InventoryTransaction {
+  id     Int                        @id @default(autoincrement())
+  type   InventoryTransactionType
+  status InventoryTransactionStatus @default(PENDING)
+
+  sourceWarehouseId      Int?
+  destinationWarehouseId Int?
+
+  supplierId Int?
+
+  deliveryCountry String?
+  deliveryRegion  String?
+
+  expectedDate DateTime?
+  actualDate   DateTime?
+
+  // OUTGOING customer name.
+  // INCOMING uses supplierId instead.
+  partyName String?
+
+  documentUrl String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sourceWarehouse      Warehouse? @relation("SourceWarehouse", fields: [sourceWarehouseId], references: [id], onDelete: Restrict)
+  destinationWarehouse Warehouse? @relation("DestinationWarehouse", fields: [destinationWarehouseId], references: [id], onDelete: Restrict)
+  supplier             Supplier?  @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+
+  items          InventoryTransactionItem[]
+  stockMovements StockMovement[]
+  reservations   Reservation[]
+
+  documentReview PendingDocumentReview?
+}
+
+// ====================
+// INVENTORY TRANSACTION ITEM
+// ====================
+
+model InventoryTransactionItem {
+  id            Int      @id @default(autoincrement())
+  transactionId Int
+  productId     Int
+  quantity      Int
+  price         Decimal?
+
+  transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  product     Product              @relation(fields: [productId], references: [id], onDelete: Restrict)
+}
+
+// ====================
+// STOCK MOVEMENT
+// ====================
+
+model StockMovement {
+  id            Int               @id @default(autoincrement())
+  productId     Int
+  warehouseId   Int
+  type          StockMovementType
+  quantity      Int
+  transactionId Int?
+  createdAt     DateTime          @default(now())
+
+  product     Product               @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse   Warehouse             @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  transaction InventoryTransaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+}
+
+// ====================
+// RESERVATION
+// ====================
+
+model Reservation {
+  id            Int               @id @default(autoincrement())
+  transactionId Int
+  productId     Int
+  warehouseId   Int
+  quantity      Int
+  status        ReservationStatus @default(ACTIVE)
+  createdAt     DateTime          @default(now())
+
+  transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  product     Product              @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse   Warehouse            @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+}
+
+// ====================
+// PENDING DOCUMENT REVIEW
+// ====================
+
+model PendingDocumentReview {
+  id Int @id @default(autoincrement())
+
+  // PDF/image is already stored in S3.
+  documentUrl String
+
+  // Whether AI believes this will become
+  // an INCOMING or OUTGOING transaction.
+  transactionType InventoryTransactionType
+
+  // Temporary AI-extracted information.
+  extractedPartyName       String?
+  extractedSupplierName    String?
+  extractedDate            DateTime?
+  extractedWarehouseName   String?
+  extractedDeliveryCountry String?
+  extractedDeliveryRegion  String?
+
+  // Temporary extracted line items.
+  // Example:
+  // [
+  //   { "product": "Laptop", "quantity": 20, "price": 500 },
+  //   { "product": "Mouse", "quantity": 50, "price": 20 }
+  // ]
+  extractedItems Json
+
+  status          DocumentReviewStatus @default(PENDING_REVIEW)
+  rejectionReason String?
+
+  reviewedById Int?
+  reviewedAt   DateTime?
+
+  // Filled after approval and creation
+  // of the real InventoryTransaction.
+  transactionId Int? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reviewedBy  User?                 @relation("DocumentReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  transaction InventoryTransaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+}
