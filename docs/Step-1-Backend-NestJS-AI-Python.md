@@ -22,7 +22,7 @@ For the current MVP:
 - `Features-Functions.md`
 - This document
 
-Older AI concepts such as the Supervisor/multi-agent architecture are considered future scope unless explicitly approved by the team.
+The Supervisor/multi-agent architecture defined in `AI-Architecture.md` (Inventory, Risk & Insights, Procurement, Invoice, Fulfillment agents under a Supervisor) is the intended design for the AI layer and is being kept, not discarded. It is sequenced after the backend core is stable (see Phase 7 in the build order) so it doesn't force premature schema or API changes, but it is not future scope in the sense of "maybe, if approved later" — it is the plan for the AI engineer's side of the project.
 
 ---
 
@@ -1101,9 +1101,9 @@ ai-agent/
 └── main.py
 ```
 
-### MVP
+### MVP entry point
 
-Use:
+The AI layer starts as:
 
 ```
 Single AgentCore
@@ -1113,7 +1113,9 @@ Read-only tools
 NestJS API
 ```
 
-The older architecture containing:
+so the AI engineer has a working, read-only integration against the finalized backend tool contract as early as possible.
+
+### Target architecture
 
 ```
 Supervisor Agent
@@ -1124,7 +1126,7 @@ Invoice Agent
 Fulfillment Agent
 ```
 
-is future scope and should not drive the current NestJS implementation.
+This multi-agent design is being kept as the intended AI architecture, not dropped. It is built on top of the same NestJS tool contract (§24/§25) and does not require changes to the backend beyond what's already planned — it is sequenced after the backend core is stable so backend work isn't blocked or reshaped by AI-side complexity.
 
 ---
 
@@ -1276,10 +1278,10 @@ These are deterministic backend capabilities or integrations that primarily supp
 - Recommendations
 - AI explanations
 - Email/calendar decisions
+- Supervisor / multi-agent architecture (Inventory, Risk & Insights, Procurement, Invoice, Fulfillment agents under a Supervisor) — kept as the target design, built after the backend core
 
 ### 🔴 Future — not MVP
 
-- Supervisor / multi-agent architecture
 - Forecasting models
 - Pick-path optimization
 - Advanced AI memory
