@@ -30,6 +30,41 @@ When older feature ideas conflict with the finalized backend plan, `Backend-Plan
 
 > NestJS owns database access, deterministic calculations, validation, permissions, transaction state, and all writes. AgentCore owns natural-language understanding, tool selection, orchestration, combination of backend results, recommendations, and explanations.
 
+**Backend/NestJS owns:**
+
+- PostgreSQL
+- Prisma
+- database access
+- validation
+- authentication
+- authorization
+- deterministic calculations
+- inventory state
+- reservations
+- stock movements
+- transaction state
+- all ERP writes
+- S3/document persistence
+- business rules
+- concurrency/atomicity
+
+**AI/AgentCore owns:**
+
+- Supervisor orchestration
+- specialist-agent routing
+- natural-language understanding
+- tool selection
+- combining backend results
+- recommendations
+- explanations
+- AI invoice extraction
+- AI/fuzzy matching suggestions
+- evidence/risk/alternative presentation
+
+> AgentCore tools wrap or consume NestJS backend capabilities. They must not duplicate authoritative backend calculations.
+
+> AgentCore never accesses PostgreSQL directly, never uses Prisma directly, never executes SQL, and never modifies ERP state directly.
+
 An AgentCore tool may wrap a NestJS function, but it must not duplicate the backend calculation.
 
 The basic architecture is:
@@ -758,19 +793,23 @@ Explain
 Generate a proposed payload
 ```
 
-AgentCore may not:
+AgentCore must NOT directly:
 
 ```text
-Create or complete transfers
-Create or complete inventory transactions
-Cancel transactions
-Modify stock
-Delete records
-Approve documents
-Reject documents
-Send email automatically
-Create calendar events automatically
+complete transactions
+cancel transactions
+approve documents
+reject documents
+reserve stock
+release reservations
+fulfill reservations
+modify inventory
+create/update/delete ERP records
+send email automatically
+create calendar events automatically
 ```
+
+unless a future human-confirmation and permission system is explicitly designed and approved.
 
 ### Email and calendar behavior
 

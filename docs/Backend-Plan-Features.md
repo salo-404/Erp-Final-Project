@@ -1,5 +1,11 @@
 # Mini ERP — Backend Architecture & Implementation Plan
 
+## Scope Note
+
+This document is the **authoritative NestJS backend implementation plan**. It defines the database-backed capabilities, API functions, and business rules that NestJS owns and enforces.
+
+Its deterministic functions (see §25 AgentCore) may later be consumed as tools by the multi-agent AgentCore system. This document does **not** contain AI agent implementation details — for the Supervisor/specialist-agent architecture, see `AI-Architecture.md`; for the ownership boundary and tool contracts between NestJS and AgentCore, see `AI-Backend-Scope.md`.
+
 # 1. Core Modules
 
 ```
@@ -1260,7 +1266,9 @@ The integration implementation is separate from the business/agent logic.
 
 # 25. AgentCore
 
-NestJS communicates with the Python AgentCore service.
+NestJS communicates with the Python AgentCore service. This section lists only the backend-owned capabilities exposed to AgentCore as tools — it is the consumption surface, not the AI architecture.
+
+The confirmed AI architecture is a Supervisor Agent coordinating specialist agents (Inventory, Risk & Insights, Procurement, Invoice, Fulfillment); that design, its agent responsibilities, and its internal orchestration are defined in `AI-Architecture.md`, not here. The tool-by-tool contract (request/response shape, which agent owns which tool) is defined in `AI-Backend-Scope.md`.
 
 AgentCore can use controlled read/analysis tools such as:
 
