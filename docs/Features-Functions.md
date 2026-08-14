@@ -1,90 +1,66 @@
-# Mini ERP — Features & Requirements
+# Mini ERP — Backend Feature Checklist
 
-## Core Features Requested in the Original Project
-
-### 🔐 Authentication & Users
-
-- User accounts
-- JWT authentication
-- Role-based access control
-- Two finalized roles:
-    - `ADMIN`
-    - `EMPLOYEE`
+This is the list to keep separately as the backend feature checklist.
 
 ---
 
-### 📦 Products
+## 🟢 A. CORE / REQUIRED — originally asked
+
+These are the actual ERP capabilities you were expected to build.
+
+### Authentication & Users
+
+- JWT authentication
+- User management
+- Role-based access
+    - ADMIN
+    - EMPLOYEE
+
+### Products
 
 - Product CRUD
 - Product catalog
-- Product information management
-- Products shared across warehouses
-- New-product creation during invoice/document review
+- Product validation
 
----
-
-### 🏭 Warehouses
+### Warehouses
 
 - Warehouse CRUD
-- Independent inventory per warehouse
-- Warehouse catalog
-- Warehouse location
-- Warehouse capacity/utilization
-- Automatic warehouse selection for customer orders
+- Independent warehouse catalog
+- Warehouse-specific inventory
 
----
+### Suppliers
 
-### 📊 Warehouse Inventory
+- Supplier CRUD
+- Supplier information
+- Supplier transaction history
 
-- Track `onHand` stock per product/warehouse
-- Calculate available stock:
+### Warehouse Inventory
 
-```
-available = onHand - ACTIVE reservations
-```
-
-- Reorder thresholds
+- Stock per warehouse
+- Stock per product
+- Available stock
+- Reserved stock
 - Low-stock products
-- Capacity information
-- Inventory lookup by warehouse
-- Inventory lookup by product
-- Closest suitable warehouse selection for customer orders
+- Reorder thresholds
+- Warehouse capacity
 
----
-
-### 📋 Stock Management
+### Stock Management
 
 - Immutable stock movement ledger
-- `INCOMING` movements
-- `OUTGOING` movements
-- `TRANSFER_IN` movements
-- `TRANSFER_OUT` movements
-- `ADJUSTMENT` movements
-- Atomic inventory updates
+- Incoming stock
+- Outgoing stock
 - Warehouse-to-warehouse transfers
-- Full historical audit trail
+- Available vs reserved stock
+- Stock history
 
-Physical `onHand` inventory changes only through stock-movement logic.
+### Reservations
 
----
-
-### 🔒 Reservations
-
-- Warehouse-specific reservations
-- Reserve stock for outgoing customer orders
-- Reserve source stock for warehouse transfers
-- Release reservations
-- Fulfill reservations
+- Reserve stock
+- Release reservation
+- Fulfill reservation
 - Prevent overselling
-- Prevent the same stock from being simultaneously sold and transferred
-- Keep reservations synchronized when pending orders/transfers are edited
-- Include reservations when calculating available stock
 
----
-
-### 🚚 Inventory Transactions
-
-Three transaction types:
+### Inventory Transactions
 
 ```
 INCOMING
@@ -92,7 +68,7 @@ OUTGOING
 TRANSFER
 ```
 
-Three statuses:
+with:
 
 ```
 PENDING
@@ -100,336 +76,38 @@ COMPLETED
 CANCELLED
 ```
 
-There are intentionally no additional purchase-order states such as `DRAFT`, `SENT`, `CONFIRMED`, or `RECEIVED`. A transaction remains `PENDING` until completed or cancelled.
-
-Features:
-
-- Create incoming transactions
-- Create outgoing/customer transactions
-- Create warehouse transfers
-- Edit pending transactions
-- Complete transactions
-- Cancel transactions
-- Upcoming deliveries
-- Overdue transactions
-- Expected dates
-- Actual completion dates
-- Customer delivery country/region
-- Automatic source-warehouse routing
-
----
-
-### 📍 Automatic Customer Order Routing
-
-Customer orders can contain:
-
-```
-deliveryCountry
-deliveryRegion
-```
-
-The backend uses:
-
-```
-findBestWarehouseForOrder()
-```
-
-Flow:
-
-```
-Customer order
-↓
-Check warehouses
-↓
-Calculate available stock
-↓
-Remove warehouses unable to fulfill order
-↓
-Compare remaining warehouse locations with customer delivery location
-↓
-Recommend closest suitable warehouse
-↓
-Use as sourceWarehouseId
-```
-
-A geocoding/distance API can later improve the geographic calculation.
-
----
-
-# 🧾 Invoices / Document Review
-
-### Upload
-
-- Upload PDF/image invoices
-- Supported formats:
-    - PDF
-    - JPG
-    - JPEG
-    - PNG
-- Maximum file size: 10 MB
-- File validation before processing
-- Store documents in AWS S3
-- Create pending document review
-
-### AI Extraction
-
-AI can extract:
-
-- transaction type
-- supplier/customer
-- date
-- warehouse
-- customer delivery country
-- customer delivery region
-- products
-- quantities
-- prices
-- invoice information
-
-### Human Review
-
-- Review extracted information
-- Exact product matching
-- Fuzzy product suggestions
-- Manual product selection
-- Human confirmation of ambiguous matches
-- Create missing products during review
-- `EXISTING` vs `CREATE` product resolution
-- Warehouse matching/confirmation
-- Manual warehouse selection when extraction cannot determine one
-- Approve document
-- Reject document
-- Store rejection reason
-
----
-
-## Supplier Invoice Approval
-
-Approving an invoice **does not immediately change physical inventory**.
-
-Instead:
-
-```
-AI extraction accepted
-↓
-Supplier resolved
-↓
-Products resolved
-↓
-Warehouse confirmed
-↓
-Create PENDING INCOMING transaction
-↓
-Document = APPROVED
-```
-
-Later, when goods physically arrive:
-
-```
-complete(transactionId)
-↓
-Create INCOMING StockMovement
-↓
-Increase onHand
-↓
-Transaction = COMPLETED
-```
-
-Therefore:
-
-```
-APPROVE INVOICE ≠ CHANGE STOCK
-
-COMPLETE INCOMING = CHANGE STOCK
-```
-
-This is the finalized document behavior.
-
----
-
-## Customer Document Approval
-
-Outgoing/customer documents can similarly create:
-
-```
-PENDING OUTGOING
-+
-ACTIVE source reservations
-```
-
-The source warehouse can be selected using `findBestWarehouseForOrder()`.
-
-Physical stock decreases only when the outgoing transaction is completed.
-
----
-
-# 🏢 Suppliers
-
-### Supplier Management
-
-- Supplier CRUD
-- Supplier name
-- Supplier email/contact information
-- Supplier transaction history
-
-### Supplier Analytics
-
-Calculate dynamically:
-
-- average price
-- on-time %
-- late %
-- cancellation rate
-- purchase frequency
-- products supplied
-- last purchase date
-
-### Supplier Ranking
-
-```
-rankSuppliers()
-```
-
-Ranks suppliers dynamically using historical ERP data.
-
-No permanent supplier score is stored.
-
-### Best Supplier
-
-```
-getBestSupplier()
-```
-
-Can determine the best supplier for a product/restocking requirement using supplier performance, price, and purchasing history.
-
-Conceptually:
-
-```
-Restocking requirement
-↓
-Candidate suppliers
-↓
-Supplier statistics
-↓
-rankSuppliers()
-↓
-getBestSupplier()
-```
-
----
-
-# ⚠️ Stock Insights
-
-### Dead Stock
-
-```
-getDeadStock()
-```
-
-Detect products with no relevant movement during a configured period, such as 60 days.
-
-### Stockout Risk
-
-```
-getStockoutRisk()
-```
-
-Can use:
-
-- available stock
-- historical consumption
-- pending incoming quantities
-- expected delivery dates
-- reorder threshold
-
-### Consumption Anomalies
-
-```
-getConsumptionAnomalies()
-```
-
-Detect unusual increases/decreases in consumption relative to historical behavior.
-
----
-
-# 🛒 Restock Recommendations
-
-```
-getRestockRecommendations()
-```
-
-Uses:
-
-- `onHand`
-- active reservations
-- available stock
-- reorder threshold
-- historical consumption
-- stockout risk
-- pending incoming quantities
-- expected incoming dates
-- supplier history
-
-Flow:
-
-```
-Current inventory
-↓
-Consumption analysis
-↓
-Pending incoming stock
-↓
-Stockout risk
-↓
-Determine whether restocking is needed
-↓
-Recommend quantity
-↓
-Optionally find best supplier
-```
-
-NestJS performs the calculations; AgentCore interprets/explains the recommendation.
-
----
-
-# 🔁 Warehouse Transfer Recommendations
-
-```
-getTransferRecommendations()
-```
-
-Before purchasing new stock, the system can determine whether another warehouse has excess inventory.
-
-Uses:
-
-- available stock by warehouse
-- reorder thresholds
-- warehouse demand
-- consumption history
-- stockout risk
-- excess stock elsewhere
-
-Flow:
-
-```
-Warehouse shortage
-↓
-Check other warehouses
-↓
-Find excess inventory
-↓
-Determine suitable source
-↓
-Recommend destination
-↓
-Recommend transfer quantity
-```
-
-This **only recommends** a transfer. It does not automatically create or complete one.
-
----
-
-# 📈 Analytics
+Functions:
+
+- Create incoming
+- Create outgoing
+- Create transfer
+- Update pending transaction
+- Complete transaction
+- Cancel transaction
+- Get transactions
+- Get transaction details
+
+### Invoices / Documents
+
+- Upload invoice
+- S3 storage
+- Human review
+- Supplier information
+- Invoice date
+- Items
+- Warehouse
+- Product resolution
+- Approve
+- Reject
+- Rejection reason
+
+### Stock Insights
+
+- Dead stock
+- Stockout risk / repeated stockout monitoring
+- Consumption anomalies / spikes
+
+### Analytics
 
 - Top-selling products
 - Lowest-selling products
@@ -442,295 +120,385 @@ This **only recommends** a transfer. It does not automatically create or complet
 - Product demand
 - Supplier comparison
 
-All numerical/deterministic calculations remain in NestJS.
+---
 
-AgentCore interprets and explains them.
+## 🔵 B. NEW — backend improvements we added
+
+These are things that weren't simply "CRUD requirements"; we added them to make the backend production-realistic.
+
+### Security & authorization
+
+- JWT guards
+- Role guards
+- Endpoint-level permissions
+- DTO validation
+- Structured error handling
+
+### Inventory correctness
+
+- Reservation synchronization when pending quantities change
+- Transfer source/destination validation
+- Same-warehouse transfer rejection
+- Null-safe `maxCapacity`
+- Historical deletion protection
+- 409 Conflict for protected historical records
+
+### Concurrency
+
+- Prisma `$transaction()`
+- Conditional `WHERE status = PENDING`
+- PostgreSQL row locking
+- Deterministic `(warehouseId, productId)` lock ordering
+- Atomic stock movement + inventory update
+- Atomic reservation operations
+- Concurrency-safe transaction completion
+
+### Transaction safety
+
+- PENDING-only editing
+- PENDING-only cancellation
+- `PENDING → COMPLETED` only once
+- `PENDING → CANCELLED` only once
+- Correct reservation release
+- Transfer reservation
+- Incoming/outgoing/transfer-specific completion logic
+
+### Document workflow
+
+- Manual product resolution
+- Warehouse selection during document review
+- `rejectionReason`
+- S3 abstraction
+- File validation
+- PDF/JPG/JPEG/PNG
+- 10 MB limit
+
+### Operational queries
+
+- Upcoming deliveries
+- Overdue transactions
+- Supplier statistics
+
+These are the things that make the backend more than a simple CRUD project.
 
 ---
 
-# 🤖 AI Agent / AgentCore
+## 🟡 C. AI-SUPPORTING BACKEND FEATURES
 
-### Natural-Language ERP Queries
+These are still NestJS functions.
 
-Users can ask questions such as:
+You build the deterministic logic. The AI engineer consumes the results later.
 
-```
-"How much Product X is available?"
-
-"Which products are running low?"
-
-"Which supplier is best for Product X?"
-
-"Which warehouse should fulfill this customer order?"
-
-"What products should we restock?"
-
-"Could we transfer stock instead of buying more?"
-
-"What shipments are overdue?"
-```
-
-### Controlled Backend Tools
-
-AgentCore can use controlled tools such as:
+### Inventory
 
 ```
-get_inventory
-get_available_stock
-get_low_stock_products
-
-get_transactions
-get_upcoming_deliveries
-get_stock_history
-get_stockout_risk
-
-get_restock_recommendations
-get_transfer_recommendations
-
-get_supplier_stats
-compare_suppliers
-rank_suppliers
-get_best_supplier
-
-get_sales_trends
-get_top_selling_products
-get_lowest_selling_products
-
-find_best_warehouse
+getByWarehouse()
+getByProduct()
+getAvailable()
+getLowStockProducts()
+getWarehouseCapacity()
 ```
 
-AgentCore has **no unrestricted database access**.
-
-It cannot:
-
-- execute arbitrary SQL
-- directly modify inventory
-- complete transactions
-- cancel transactions
-- delete ERP records
-
-NestJS remains the deterministic source of truth.
-
----
-
-# 📧 Purchase Recommendations & Email
-
-The system can combine:
+### Stock
 
 ```
-Stockout risk
-+
-Restock recommendation
-+
-Supplier ranking
-+
-Best supplier
+getLedger()
 ```
 
-to generate purchase recommendations.
-
-Flow:
+### Transactions
 
 ```
-NestJS calculations
-↓
-AgentCore interpretation
-↓
-Purchase recommendation
-↓
-EmailService
-↓
-Recommendation email
-```
-
----
-
-# 📅 Shipment & Calendar Reminders
-
-Functions:
-
-```
+findAll()
+findOne()
 getUpcomingDeliveries()
 getOverdueTransactions()
 ```
 
-Upcoming:
+### Insights
 
 ```
-PENDING + expectedDate in future
-```
-
-Overdue:
-
-```
-PENDING + expectedDate < now
-```
-
-`CalendarService` can use these dates to create/manage external shipment reminders.
-
----
-
-# New / Advanced Engineering Features We Added
-
-These features make the project more production-realistic than a normal CRUD ERP.
-
-## 🔐 Security & Authorization
-
-- JWT authentication
-- Only `ADMIN` and `EMPLOYEE` roles
-- Role-based endpoint permissions
-- Sensitive operations protected with guards
-- AgentCore receives no direct database credentials
-- No arbitrary AI-generated SQL
-- AI cannot directly modify stock
-- AI cannot complete/cancel transactions
-- AI cannot delete ERP records
-
----
-
-## ⚡ Concurrency & Data Consistency
-
-- Atomic multi-table operations using Prisma `$transaction()`
-- Conditional state transitions:
-    - `PENDING → COMPLETED`
-    - `PENDING → CANCELLED`
-- Prevent double completion
-- Prevent double cancellation
-- Prevent duplicate document approval
-- Row-level locking using `SELECT ... FOR UPDATE`
-- Inventory rows locked before reservation/stock-sensitive operations
-- Concurrency-safe reservations
-- Concurrency-safe transfers
-- Source stock revalidated at transfer completion
-- Prevention of negative stock caused by simultaneous operations
-
-### Deterministic Lock Ordering
-
-The finalized ordering is:
-
-```
-warehouseId + productId
-```
-
-**not product ID alone.**
-
-When multiple inventory rows are involved, they are always locked in the same deterministic order to reduce deadlock risk.
-
----
-
-## 📦 Inventory Integrity
-
-- `onHand` changed only through stock movement logic
-- Immutable stock ledger
-- Warehouse-specific inventory
-- Warehouse-specific reservations
-- `available = onHand - ACTIVE reservations`
-- Reservation synchronization when pending outgoing transactions change
-- Reservation synchronization when pending transfers change
-- Source ≠ destination validation
-- Transfer cancellation creates no unnecessary reversal movement
-- Movement + inventory update are atomic
-- Transfer physically moves stock only on completion
-
----
-
-## 🧾 Document Integrity
-
-- File-type validation
-- File-size validation
-- Duplicate-document protection where practical
-- AI extraction failure handling
-- System-generated rejection reason
-- Human confirmation of ambiguous matches
-- Explicit `EXISTING` vs `CREATE`
-- Atomic new-product creation during approval
-- Warehouse confirmation
-- Customer destination extraction
-- Prevent repeated processing of approved/rejected documents
-- Approval creates a pending transaction rather than falsely claiming physical inventory has already moved
-
----
-
-## 🛡️ Historical-Data Protection
-
-- Products with historical references cannot simply be deleted
-- Warehouses with historical references cannot simply be deleted
-- Suppliers with historical references cannot simply be deleted
-- Foreign-key restrictions preserved
-- Clear `409 Conflict` responses instead of raw database errors
-- Historical stock and transaction records preserved
-
----
-
-## 🧠 Inventory Intelligence We Added
-
-Beyond the original CRUD/ERP functionality:
-
-```
-findBestWarehouseForOrder()
-
-rankSuppliers()
-getBestSupplier()
-
+getDeadStock()
 getStockoutRisk()
 getConsumptionAnomalies()
-
-getRestockRecommendations()
-getTransferRecommendations()
-
-getUpcomingDeliveries()
-getOverdueTransactions()
 ```
 
-These give the ERP proactive decision-support capabilities rather than simply storing records.
+### Analytics
+
+```
+getTopSellingProducts()
+getLowestSellingProducts()
+getFastMovingProducts()
+getSlowMovingProducts()
+getSalesTrends()
+getPurchaseTrends()
+getStockHistory()
+getWarehouseDemand()
+getProductDemand()
+getSupplierComparison()
+```
+
+### Supplier intelligence
+
+```
+getSupplierStats()
+compareSuppliers()
+```
+
+The principle is:
+
+```
+NestJS:
+"I calculate the facts."
+
+AgentCore:
+"I interpret/explain the facts."
+```
 
 ---
 
-## 📊 API / Backend Quality
+## 🟡 D. Backend extensions mainly supporting AI
 
-- DTO validation
-- Consistent error handling
-- HTTP exception handling
-- Pagination for growing datasets
-- Controller / DTO / Service / Prisma separation
-- Atomic service operations
-- Deterministic calculations in NestJS
-- AI used for reasoning/interpretation rather than authoritative inventory arithmetic
+These are useful but shouldn't steal time from the core transaction system:
 
----
+```
+rankSuppliers()
+getBestSupplier()
+getRestockRecommendations()
+getTransferRecommendations()
+findBestWarehouseForOrder()
+```
 
-## ☁️ AWS-Ready Architecture
-
-- Same backend code locally and on AWS
-- Environment-based configuration
-- No hardcoded credentials
-- PostgreSQL → AWS RDS
-- Documents → S3
-- NestJS → AWS compute/ECS Fargate
-- Backend image → ECR
-- AgentCore → AWS deployment
-- Frontend → AWS hosting
-- Email → SES/provider
-- Calendar → external calendar API
-- Private RDS architecture
-- Infrastructure separated from application business logic
+They are not AI themselves. They're deterministic backend algorithms that can give AgentCore better information.
 
 ---
 
-# The Important Distinction
+## 🔮 E. Future — Security
 
-If your mentor asks:
+These are good future improvements once the MVP works.
 
-> **"What were you asked to build?"**
+### Security
 
-Focus on the **Core Features**: inventory, warehouses, transactions, invoices, stock insights, analytics, AI queries, recommendations, reminders, and AWS deployment.
+- Refresh-token rotation
+- MFA/2FA
+- Account lockout after repeated failed login
+- Password reset flow
+- Rate limiting
+- API throttling
+- Security audit logs
+- Login/activity tracking
+- Fine-grained permission policies
+- API key management for service-to-service communication
+- Secrets rotation
+- IP/device anomaly detection
+- Signed URLs for private S3 documents
+- Antivirus/file scanning before document processing
+- Data encryption policies
+- Security headers
+- Request tracing
 
-If they ask:
+I would especially prioritize audit logs + rate limiting + MFA + S3 private access if there's time later.
 
-> **"What did you add/improve from an engineering perspective?"**
+---
 
-The strongest answer is:
+## 🔮 F. Future — Business features
 
-> **We added concurrency-safe inventory operations, atomic multi-table transactions, row-level locking and deterministic lock ordering, warehouse-specific reservation consistency, historical-data protection, controlled AI access, stronger document validation and human-review flows, automatic customer-order warehouse routing, supplier ranking, best-supplier selection, restock recommendations, warehouse-transfer recommendations, and an AWS-ready deployment architecture.**
+These could make the ERP feel like a real commercial product rather than a capstone CRUD system.
 
-That version now matches the finalized backend plan rather than the older design.
+### Procurement
+
+- Supplier quotation management
+- Purchase approval workflow
+- Purchase order versioning
+- Supplier performance scorecards
+- Contract/price history
+- Minimum order quantities
+- Supplier lead-time tracking
+
+### Inventory
+
+- Batch/lot tracking
+- Expiry-date tracking
+- Serial-number tracking
+- Barcode/QR support
+- Cycle counting
+- Inventory adjustments
+- Stock valuation
+- FIFO/FEFO
+- Multi-location warehouse zones
+
+### Sales
+
+- Customer management
+- Customer credit limits
+- Customer-specific pricing
+- Discounts
+- Returns/refunds
+- Partial shipments
+- Backorders
+
+### Finance
+
+- Multi-currency
+- Tax/VAT handling
+- Payment tracking
+- Cost-of-goods calculation
+- Profit margins
+- Invoice/payment reconciliation
+
+---
+
+## 🔮 G. Future — Creative technical features
+
+These would be strong additions if you want something that stands out technically.
+
+### 1. Event-driven inventory architecture
+
+Instead of every operation directly triggering everything:
+
+```
+Transaction Completed
+        ↓
+Domain Event
+        ↓
+Inventory Updated
+        ↓
+Analytics Updated
+        ↓
+Notifications
+```
+
+This would make the system more scalable.
+
+### 2. Inventory audit timeline
+
+A complete timeline for every product:
+
+```
+Product X
+
+Aug 10  +100 received
+Aug 11  -20 customer order
+Aug 12  +50 transfer
+Aug 13  -15 customer order
+```
+
+Very useful for debugging and demonstrations.
+
+### 3. Warehouse heatmap backend
+
+Calculate warehouse utilization:
+
+```
+Warehouse A → 82%
+Warehouse B → 41%
+Warehouse C → 93%
+```
+
+The frontend can visualize it.
+
+### 4. Supplier reliability scoring
+
+Backend computes:
+
+```
+Price
++ On-time delivery
++ Cancellation rate
++ Lead time
++ Historical quality
+```
+
+and produces a deterministic supplier score.
+
+This can later become an AI recommendation input.
+
+### 5. Inventory simulation / what-if API
+
+For example:
+
+> "What happens if we receive 500 units next week?"
+
+Backend calculates the scenario without modifying real inventory.
+
+This is a strong business feature and can later become an AI tool.
+
+### 6. Idempotency
+
+Protect APIs from duplicate requests:
+
+```
+POST /transactions
+Idempotency-Key: abc123
+```
+
+If the same request arrives twice, only one transaction is created.
+
+This is particularly useful for real production systems.
+
+### 7. Outbox pattern
+
+For reliable integrations:
+
+```
+Database transaction
+        ↓
+Outbox event
+        ↓
+Email / Calendar / AI / Analytics
+```
+
+This becomes useful when moving further into AWS/event-driven architecture.
+
+---
+
+## Priority Order
+
+With 1.5 weeks full-time, don't touch the future features yet.
+
+```
+PHASE 1
+Auth + Users
+Products
+Warehouses
+Suppliers
+
+        ↓
+
+PHASE 2
+Warehouse Inventory
+Reservations
+Stock Movements
+
+        ↓
+
+PHASE 3
+Inventory Transactions
+Concurrency
+Atomicity
+
+        ↓
+
+PHASE 4
+Document Review
+S3
+
+        ↓
+
+PHASE 5
+Stock Insights
+Analytics
+
+        ↓
+
+PHASE 6
+Testing + API cleanup + AWS deployment
+
+        ↓
+
+PHASE 7
+AI engineer consumes your backend
+```
+
+The most important thing is Phase 2 → Phase 3. The inventory/transaction engine needs to be correct before spending time on anything impressive-looking.
+
+Once those are solid, that's a real backend. The AI layer can then sit on top without forcing a rebuild of the ERP.
