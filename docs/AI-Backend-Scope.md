@@ -16,13 +16,14 @@ Its goals are to:
 
 This document follows the finalized decisions in:
 
-- `Backend-Plan-Features.md`
+- `Backend-Team-Split.md`
 - `Features-Functions.md`
 - `AI-Architecture.md`
-- `Features.md`
+- `AI-Agent-Plan.md`
+- `Work-Split-Alignment.md`
 - `Ribal-AWS.md`
 
-When older feature ideas conflict with the finalized backend plan, `Backend-Plan-Features.md` and this scope agreement are the source of truth for the MVP.
+When older feature ideas conflict with the finalized backend plan, `Backend-Team-Split.md`, `Work-Split-Alignment.md`, and this scope agreement are the source of truth for the MVP.
 
 ---
 

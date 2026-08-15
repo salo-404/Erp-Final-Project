@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document reconciles `Step-1-Backend-NestJS-AI-Python.md` (the backend team's scope doc) with Ribal's "Work Split: Backend Team vs AI" note.
+This document reconciles the backend team's scope doc (formerly `Step-1-Backend-NestJS-AI-Python.md`, now consolidated into `Backend-Team-Split.md` and `Features-Functions.md`) with Ribal's "Work Split: Backend Team vs AI" note.
 
 Going forward: where the two disagree, **Ribal's version wins on anything AI-side**, since he owns that layer. This doc records what stayed the same (common ground) and what changed because of his note (adopted differences), so neither doc has to be read as contradicting the other.
 
@@ -28,7 +28,7 @@ Everything below is agreed by both documents and stays exactly as already planne
 - Stock Insights — `getDeadStock()`, `getStockoutRisk()`, `getConsumptionAnomalies()`, `getRestockRecommendations()`, `getTransferRecommendations()`
 - Analytics — all `get*Trends`/`get*Selling`/`getWarehouseDemand` functions
 - Email / Calendar services — sending and calendar API integration; AI decides *what*, backend handles *how*
-- Typed tool endpoints for AgentCore — the tool list in Step-1 §24/§25
+- Typed tool endpoints for AgentCore — the tool list in `Features-Functions.md` tier C/D and `AI-Backend-Scope.md`
 - AWS infra, Docker, deployment
 - Roles (ADMIN/EMPLOYEE only, no MANAGER), transaction model (INCOMING/OUTGOING/TRANSFER × PENDING/COMPLETED/CANCELLED, no CONFIRMED), and the "invoice approval ≠ physical stock change" rule
 
@@ -46,7 +46,7 @@ Everything below is agreed by both documents and stays exactly as already planne
 
 ## Ribal's Adopted Differences
 
-These changes come from Ribal's note and are now the accepted direction. They supersede the conflicting parts of `Step-1-Backend-NestJS-AI-Python.md` noted below.
+These changes come from Ribal's note and are now the accepted direction. The AI-side agent architecture is documented in `AI-Agent-Plan.md`; the sections below record what changed and why.
 
 ### 1. AI architecture: three agents, not five
 
@@ -57,7 +57,7 @@ These changes come from Ribal's note and are now the accepted direction. They su
 - **Fulfillment Agent is dropped** — no longer part of the active design.
 - Supervisor keeps its role: intent classification/routing (Insights vs. Document vs. both), out-of-context/guardrail filtering, combining specialist results into one answer, plus a three-layer defense (Guardrails + gate + hardened prompt).
 
-**Supersedes:** Step-1 §26 "Target architecture" (which lists Supervisor + Inventory + Risk + Procurement + Invoice + Fulfillment). That five-agent list should be read as superseded by this three-agent design. `AI-Architecture.md` remains the detailed reference for the reasoning/explainability patterns, but its five-specialist breakdown is no longer the agent count in use.
+**Supersedes:** the earlier "Target architecture" (Supervisor + Inventory + Risk + Procurement + Invoice + Fulfillment) that previously lived in `Step-1-Backend-NestJS-AI-Python.md` (now removed). That five-agent list is superseded by this three-agent design — see `AI-Agent-Plan.md` for the full folder structure and per-agent function breakdown. `AI-Architecture.md` remains the detailed reference for the reasoning/explainability patterns, but its five-specialist breakdown is no longer the agent count in use.
 
 ### 2. New backend work requested to support AI features
 
@@ -69,7 +69,7 @@ These changes come from Ribal's note and are now the accepted direction. They su
 | **Pick-Path Optimizer** | Bin/zone location data model (does not exist yet), grid/graph representation, shortest-path algorithm, `calculate_pick_path()` endpoint. 100% deterministic, no AI involvement. | **Flagged, not yet built.** This requires a new database model (bins/zones/coordinates) on a schema previously declared frozen, and was explicitly listed as 🔴 Future / out-of-MVP in Step-1 §29 and as needing new entities in `AI-Backend-Scope.md`'s "Features Outside the MVP" section. We're accepting this as the new direction per Ribal's request, but it needs an explicit schema-change decision before backend starts building it — not a silent scope change. |
 | **`getExpiringInventory()`** (used inside Control Tower) | Requires expiry-date tracking, which doesn't exist in the current schema. | **Flagged, same reason as Pick-Path.** Needs an explicit schema decision (new field/entity) before backend implements it. Until then, Control Tower can ship without this input and add it once the schema question is resolved. |
 
-**Supersedes:** Step-1 §29's 🔴 bucket, which listed "Pick-path optimization" as not-MVP. That line is now under active discussion rather than settled as out-of-scope — but it is *not* settled as in-scope either, since it needs a schema decision first.
+**Supersedes:** the 🔴 "not MVP" bucket that previously listed "Pick-path optimization" in `Step-1-Backend-NestJS-AI-Python.md` (now removed; see `Features-Functions.md` tier F/G for where this now lives). That line is now under active discussion rather than settled as out-of-scope — but it is *not* settled as in-scope either, since it needs a schema decision first.
 
 ### 3. Open items still needing a direct conversation (per Ribal's note, unresolved)
 
@@ -81,7 +81,7 @@ These changes come from Ribal's note and are now the accepted direction. They su
 
 ## Net Effect
 
-- Backend's core module scope (Auth through Analytics, concurrency rules, transaction model) is unchanged — build it exactly as `Step-1-Backend-NestJS-AI-Python.md` and `Backend-Plan-Features.md` already describe.
+- Backend's core module scope (Auth through Analytics, concurrency rules, transaction model) is unchanged — build it exactly as `Backend-Team-Split.md` and `Features-Functions.md` already describe.
 - Two new backend functions are now planned on top of that: `getControlTowerAlerts()` and the refined `getRestockRecommendations()` 3-check logic — both buildable now, no schema impact.
 - Two items (Pick-Path Optimizer, expiry tracking) are accepted in direction but blocked on a schema decision — treat them as "next up for a schema conversation," not yet part of the buildable backlog.
 - AI side moves from a 5-agent design to a 3-agent design (Supervisor, Insights, Document) — this is Ribal's call to make since he owns that layer.
