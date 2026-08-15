@@ -147,6 +147,7 @@ model InventoryTransaction {
 
   deliveryCountry String?
   deliveryRegion  String?
+  deliveryAddress String?
 
   expectedDate DateTime?
   actualDate   DateTime?
