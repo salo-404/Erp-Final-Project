@@ -244,6 +244,7 @@ model PendingDocumentReview {
   extractedWarehouseName   String?
   extractedDeliveryCountry String?
   extractedDeliveryRegion  String?
+  extractedDeliveryAddress String?
 
   // Temporary extracted line items.
   // Example:
