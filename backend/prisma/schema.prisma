@@ -105,6 +105,7 @@ model Warehouse {
   name        String
   location    String?
   maxCapacity Int?
+  isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
 
   inventories WarehouseInventory[]
