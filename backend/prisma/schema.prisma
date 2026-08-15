@@ -86,6 +86,7 @@ model Product {
   name        String
   category    String?
   description String?
+  isActive Boolean @default(true)
   createdAt   DateTime @default(now())
 
   inventories      WarehouseInventory[]
