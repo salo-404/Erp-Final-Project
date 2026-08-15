@@ -72,7 +72,8 @@ model User {
 model Supplier {
   id        Int      @id @default(autoincrement())
   name      String   @unique
-  email     String
+  email     String?
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
   transactions InventoryTransaction[]
