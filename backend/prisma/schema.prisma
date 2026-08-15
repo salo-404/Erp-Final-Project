@@ -1,6 +1,7 @@
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
 }
 
 datasource db {
@@ -86,6 +87,7 @@ model Product {
   name        String
   category    String?
   description String?
+  isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
 
   inventories      WarehouseInventory[]

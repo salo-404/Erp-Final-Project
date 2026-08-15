@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Compiled NestJS output
+dist/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Generated Prisma Client
+generated/
