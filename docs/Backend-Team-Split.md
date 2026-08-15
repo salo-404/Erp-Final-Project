@@ -1,70 +1,81 @@
 # Mini ERP — Backend Team Split
 
-## 👤 Salman
-
-### 1. Authentication & Security
-
-Folders:
+## 1. Final NestJS Architecture
 
 ```
-src/auth/
-src/users/
-src/common/guards/
+backend/
+└── src/
+    │
+    ├── auth/
+    ├── users/
+    ├── products/
+    ├── warehouses/
+    ├── suppliers/
+    ├── warehouse-inventory/
+    ├── stock-movements/
+    ├── reservations/
+    ├── inventory-transactions/
+    ├── document-review/
+    ├── stock-insights/
+    ├── analytics/
+    ├── integrations/
+    │   ├── email/
+    │   └── calendar/
+    ├── prisma/
+    └── common/
+        ├── guards/
+        ├── decorators/
+        ├── filters/
+        └── pipes/
 ```
 
-Functions:
+There is no `src/agent-core/`. The Python AgentCore system communicates with these NestJS modules through APIs only.
+
+---
+
+## 2. Salman
+
+Salman's side owns **Security + Inventory Operations + Document Workflow + Backend Intelligence**.
+
+### `auth/`
 
 ```
 AuthService
 ├── validateUser()
 └── login()
-
-UsersService
-├── create()
-├── findAll()
-├── findOne()
-├── update()
-└── remove()
 ```
 
-Security responsibilities:
-
-- JWT authentication
-- Password hashing
-- JwtStrategy
-- AuthGuard
-- RolesGuard
-- Role decorators
-- ADMIN / EMPLOYEE authorization
-- Endpoint permission enforcement
-- Sensitive-operation protection
-
-Permissions:
+Security:
 
 ```
-ADMIN
-├── user management
-├── document approval/rejection
-├── transaction completion/cancellation
-├── sensitive deletes
-└── normal ERP operations
-
-EMPLOYEE
-├── normal reads
-├── create pending transactions
-├── upload documents
-└── normal operational functionality
+JwtStrategy
+JwtAuthGuard
+RolesGuard
+@Roles()
+@CurrentUser()
 ```
 
-### 2. Supplier Intelligence
+Responsibilities: JWT authentication, password hashing, authentication failures, role authorization, protecting sensitive endpoints.
 
-Folder:
+⭐ Presentation highlight: JWT + role-based authorization.
+
+### `users/`
 
 ```
-src/suppliers/
+create()
+findAll()
+findOne()
+update()
+remove()
 ```
 
-Functions:
+Security responsibilities also include making sure user deletion/update respects the project's authorization rules.
+
+⭐ Presentation highlight: Role-based access control with ADMIN / EMPLOYEE.
+
+### `suppliers/` — Supplier Intelligence
+
+Joseph owns the supplier CRUD. Salman owns the intelligence functions.
 
 ```
 getSupplierStats()
@@ -73,295 +84,250 @@ rankSuppliers()
 getBestSupplier()
 ```
 
-Calculates:
+These calculate average price, on-time rate, cancellation rate, purchase frequency, and supplier performance — especially relevant to the future Insights Agent.
 
-- average price
-- on-time percentage
-- late percentage
-- cancellation rate
-- purchase frequency
-- products supplied
-- last purchase date
+⭐ Presentation highlight: deterministic supplier ranking instead of letting the LLM invent supplier scores.
 
-These values remain deterministic NestJS calculations and can later be consumed by the Procurement Agent.
+### `warehouse-inventory/` — Warehouse Routing
 
-### 3. Warehouse Routing
-
-Folder:
-
-```
-src/warehouse-inventory/
-```
-
-Function:
+Joseph owns the normal inventory queries. Salman owns:
 
 ```
 findBestWarehouseForOrder()
 ```
 
-Flow:
+Uses `deliveryCountry`, `deliveryRegion`, `warehouse.location`, and available stock to determine which warehouse is appropriate.
+
+⭐ Presentation highlight: automatic warehouse selection based on location + real availability.
+
+### `stock-movements/`
 
 ```
-Delivery country/region
-        ↓
-Available stock
-        ↓
-Warehouses that can fulfill
-        ↓
-Location comparison
-        ↓
-Recommended warehouse
-```
-
-The result can later be consumed by the Fulfillment Agent.
-
-### 4. Stock Movements
-
-Folder:
-
-```
-src/stock-movements/
-```
-
-Functions:
-
-```
-recordMovement()
+recordMovement()  ⭐
 getLedger()
 ```
 
-`recordMovement()` is responsible for:
+`recordMovement()` is particularly important — it must atomically:
 
 ```
-StockMovement
-+
-WarehouseInventory.onHand
+create StockMovement
+        +
+update WarehouseInventory.onHand
 ```
 
-being changed atomically.
+using Prisma transactions.
 
-`onHand` should not be directly modified by normal endpoints.
+⭐ Presentation highlight: immutable stock ledger + atomic inventory updates.
 
-### 5. Reservations
-
-Folder:
+### `reservations/`
 
 ```
-src/reservations/
-```
-
-Functions:
-
-```
-reserve()
+reserve()   ⭐
 release()
 fulfill()
 ```
 
-Responsibilities:
-
-- available-stock verification
-- reservation creation
-- reservation updates
-- reservation release
-- reservation fulfillment
-- OUTGOING reservations
-- TRANSFER reservations
-- concurrency protection
-- deterministic `(warehouseId, productId)` locking
+Responsibilities: OUTGOING reservations, TRANSFER reservations, available-stock validation, reservation synchronization, releasing reserved stock, fulfilling reservations, row locking.
 
 Core calculation:
 
 ```
-available = onHand - ACTIVE reservations
+available = onHand - active reservations
 ```
 
-### 6. Inventory Transactions
+⭐ Presentation highlight: preventing overselling through reservations + concurrency control.
 
-Folder:
+### `inventory-transactions/`
 
-```
-src/inventory-transactions/
-```
-
-Functions:
+This is one of Salman's biggest modules.
 
 ```
-createIncoming()
-createOutgoing()
-createTransfer()
-
+createIncoming()   ⭐
+createOutgoing()   ⭐
+createTransfer()   ⭐
 update()
-
-complete()
+complete()         ⭐
 cancel()
-
 findAll()
 findOne()
 getUpcomingDeliveries()
 getOverdueTransactions()
 ```
 
-Incoming:
+`complete()` is a major demo feature. It handles:
 
 ```
-PENDING
-↓
-complete()
-↓
-increase onHand
-↓
-COMPLETED
+INCOMING  → increase destination stock
+OUTGOING  → decrease stock
+TRANSFER  → decrease source, increase destination
 ```
 
-Outgoing:
+using:
 
 ```
-PENDING
-↓
-reserve stock
-↓
-complete()
-↓
-decrease onHand
-↓
-COMPLETED
+Prisma $transaction()
++
+SELECT ... FOR UPDATE
++
+conditional status update
++
+deterministic lock ordering
 ```
 
-Transfer:
+⭐ Presentation highlight: concurrent inventory transactions without double-completion or inconsistent stock.
+
+### `document-review/`
 
 ```
-PENDING
-↓
-reserve source stock
-↓
-complete()
-↓
-source decreases
-destination increases
-↓
-COMPLETED
-```
-
-`complete()` must use:
-
-```
-WHERE id = X
-AND status = PENDING
-```
-
-plus the required row locking and Prisma `$transaction()`.
-
-`cancel()` only operates on PENDING transactions and releases reservations where applicable.
-
-`update()` must keep reservations synchronized when quantities/products/source warehouse change.
-
-### 7. Document Review
-
-Folder:
-
-```
-src/document-review/
-```
-
-Functions:
-
-```
-upload()
-approve()
+upload()   ⭐
+approve()  ⭐
 reject()
 ```
 
-Upload:
+Supporting operations for the review workflow:
 
 ```
-Validate PDF/JPG/JPEG/PNG
-10 MB maximum
-Upload to S3
-Create PendingDocumentReview
-Start extraction workflow
+getReview()
+getPendingReviews()
+resolveProduct()
+resolveSupplier()
 ```
 
-Approve:
+Workflow:
 
 ```
-Review
-↓
-Warehouse confirmation
-↓
-Supplier resolution
-↓
-Product resolution
-↓
-EXISTING / CREATE
-↓
-Create PENDING transaction
-↓
-Approve document
+Upload
+ ↓
+S3
+ ↓
+PendingDocumentReview
+ ↓
+AI / human review
+ ↓
+Product + supplier + warehouse resolution
+ ↓
+Approve
+ ↓
+PENDING INCOMING transaction
+ ↓
+Physical receipt
+ ↓
+complete()
+ ↓
+Stock increases
 ```
 
-No stock change occurs during approval.
+The AI extraction itself is not Salman's NestJS responsibility.
 
-Reject stores:
+⭐ Presentation highlight: human-in-the-loop invoice processing with AI separated from authoritative ERP state.
 
-```
-REJECTED
-reviewedById
-reviewedAt
-rejectionReason
-```
+### `stock-insights/`
 
-### 8. Stock Insights
-
-Folder:
+This is where the newest backend intelligence lives.
 
 ```
-src/stock-insights/
-```
-
-Functions:
-
-```
-getDeadStock()
-getStockoutRisk()
+getDeadStock()               ⭐
+getStockoutRisk()            ⭐
 getConsumptionAnomalies()
-getRestockRecommendations()
-getTransferRecommendations()
+getRestockRecommendations()  ⭐
+getTransferRecommendations() ⭐
+getControlTowerAlerts()      ⭐
 ```
 
-These calculate deterministic backend results.
+#### `getControlTowerAlerts()`
 
-For example:
+The aggregation function:
 
 ```
-stock
-+
-reservations
-+
-consumption
-+
-pending incoming
-+
-reorder threshold
+getLowStockProducts()
+getStockoutRisk()
+getOverdueTransactions()
+getConsumptionAnomalies()
         ↓
-stockout/restock analysis
+getControlTowerAlerts()
 ```
 
-The AI can later interpret these results.
+Gives the AI a unified operational view.
+
+⭐ Presentation highlight: Control Tower / centralized operational risk detection.
+
+> Note: `getExpiringInventory()` — previously flagged as a possible Control Tower input requiring new expiry-tracking schema — is **not** part of this finalized list. It has been dropped rather than pursued, so Control Tower ships without it and no schema change is needed for it.
+
+#### `getRestockRecommendations()`
+
+Uses available stock, active reservations, consumption, pending incoming stock, expected delivery, and other-warehouse stock to decide whether to purchase, transfer, or wait for incoming.
+
+⭐ Presentation highlight: deterministic restocking recommendation engine.
+
+### Salman — Summary (40 functions)
+
+```
+AUTH / USERS
+1.  validateUser()
+2.  login()
+3.  createUser()
+4.  findAllUsers()
+5.  findOneUser()
+6.  updateUser()
+7.  removeUser()
+
+SUPPLIER INTELLIGENCE
+8.  getSupplierStats()
+9.  compareSuppliers()
+10. rankSuppliers()
+11. getBestSupplier()
+
+WAREHOUSE ROUTING
+12. findBestWarehouseForOrder()
+
+STOCK MOVEMENTS
+13. recordMovement()
+14. getLedger()
+
+RESERVATIONS
+15. reserve()
+16. release()
+17. fulfill()
+
+INVENTORY TRANSACTIONS
+18. createIncoming()
+19. createOutgoing()
+20. createTransfer()
+21. update()
+22. complete()
+23. cancel()
+24. findAllTransactions()
+25. findOneTransaction()
+26. getUpcomingDeliveries()
+27. getOverdueTransactions()
+
+DOCUMENT REVIEW
+28. upload()
+29. approve()
+30. reject()
+31. getReview()
+32. getPendingReviews()
+33. resolveProduct()
+34. resolveSupplier()
+
+STOCK INSIGHTS
+35. getDeadStock()
+36. getStockoutRisk()
+37. getConsumptionAnomalies()
+38. getRestockRecommendations()
+39. getTransferRecommendations()
+40. getControlTowerAlerts()
+```
+
+Salman's side is 40 named functions — larger than the earlier rough 35/36 split because the document-review support functions (`getReview()`, `getPendingReviews()`, `resolveProduct()`, `resolveSupplier()`) and the Control Tower scope were added.
 
 ---
 
-## 👤 Joseph
+## 3. Joseph
 
-### 1. Products
+Joseph owns **Master Data + Warehouse Inventory Queries + Analytics + Integrations**.
 
-Folder:
-
-```
-src/products/
-```
-
-Functions:
+### `products/`
 
 ```
 create()
@@ -371,24 +337,9 @@ findAll()
 findOne()
 ```
 
-Responsibilities:
+Responsibilities: product validation, CRUD, historical deletion protection, product relationships.
 
-- Product CRUD
-- validation
-- historical deletion protection
-- 409 Conflict when historical records prevent deletion
-
-Products do not directly modify stock.
-
-### 2. Warehouses
-
-Folder:
-
-```
-src/warehouses/
-```
-
-Functions:
+### `warehouses/`
 
 ```
 create()
@@ -399,19 +350,9 @@ findOne()
 getCatalog()
 ```
 
-`getCatalog()` returns products/inventory associated with the warehouse.
+`Warehouse.location` is already part of the current DB design, so this module owns the warehouse entity itself.
 
-Warehouse capacity calculation stays in `WarehouseInventoryService`.
-
-### 3. Supplier Management
-
-Folder:
-
-```
-src/suppliers/
-```
-
-Functions:
+### `suppliers/` — Supplier Management
 
 ```
 create()
@@ -422,301 +363,131 @@ findOne()
 getTransactionHistory()
 ```
 
-Joseph owns the supplier entity and its historical data.
+Joseph owns the supplier data. Salman consumes it for `getSupplierStats()`, `rankSuppliers()`, `getBestSupplier()` — a clean dependency rather than duplicated supplier logic.
 
-Salman's supplier-intelligence functions consume this information.
-
-### 4. Warehouse Inventory
-
-Folder:
-
-```
-src/warehouse-inventory/
-```
-
-Functions:
+### `warehouse-inventory/`
 
 ```
 getByWarehouse()
 getByProduct()
-getAvailable()
+getAvailable()          ⭐
 getLowStockProducts()
 getWarehouseCapacity()
 setReorderThreshold()
 ```
 
-Available stock:
-
 ```
-onHand - ACTIVE reservations
+getAvailable() = onHand - active reservations
 ```
 
-Capacity:
+Critical shared function — Salman's `reserve()`, `createOutgoing()`, and `createTransfer()` all depend on it being correct.
+
+⭐ Presentation highlight: available vs. reserved stock.
+
+### `analytics/`
 
 ```
-usedCapacity / maxCapacity
-```
-
-If:
-
-```
-maxCapacity = null
-```
-
-return capacity as not configured.
-
-This service provides the inventory information that Salman's transaction/routing logic consumes.
-
-### 5. Analytics
-
-Folder:
-
-```
-src/analytics/
-```
-
-Functions:
-
-```
-getTopSellingProducts()
+getTopSellingProducts()    ⭐
 getLowestSellingProducts()
 getFastMovingProducts()
 getSlowMovingProducts()
-getSalesTrends()
+getSalesTrends()            ⭐
 getPurchaseTrends()
 getStockHistory()
-getWarehouseDemand()
+getWarehouseDemand()        ⭐
 getProductDemand()
 getSupplierComparison()
 ```
 
-All calculations are performed by NestJS.
+Deterministic PostgreSQL/NestJS aggregations. The AI can consume them later through the Insights Agent.
 
-Later, the AI agents can consume these results through their tools.
+⭐ Presentation highlight: real-time ERP analytics generated from transactional data.
 
-### 6. Integrations
-
-Folder:
-
-```
-src/integrations/
-├── email/
-└── calendar/
-```
-
-Responsibilities:
-
-```
-EmailService
-CalendarService
-```
-
-Email:
-
-```
-Agent decides WHAT
-        ↓
-EmailService handles HOW
-```
-
-Calendar:
-
-```
-Transaction expectedDate
-        ↓
-CalendarService
-        ↓
-External calendar API
-```
-
----
-
-## Final Function Count
-
-### Salman — 35
-
-**Auth / Users**
-
-```
-validateUser()
-login()
-createUser()
-findAllUsers()
-findOneUser()
-updateUser()
-removeUser()
-```
-
-**Supplier Intelligence**
-
-```
-getSupplierStats()
-compareSuppliers()
-rankSuppliers()
-getBestSupplier()
-```
-
-**Warehouse Routing**
-
-```
-findBestWarehouseForOrder()
-```
-
-**Stock Movements**
-
-```
-recordMovement()
-getLedger()
-```
-
-**Reservations**
-
-```
-reserve()
-release()
-fulfill()
-```
-
-**Inventory Transactions**
-
-```
-createIncoming()
-createOutgoing()
-createTransfer()
-update()
-complete()
-cancel()
-findAllTransactions()
-findOneTransaction()
-getUpcomingDeliveries()
-getOverdueTransactions()
-```
-
-**Document Review**
-
-```
-upload()
-approve()
-reject()
-```
-
-**Stock Insights**
-
-```
-getDeadStock()
-getStockoutRisk()
-getConsumptionAnomalies()
-getRestockRecommendations()
-getTransferRecommendations()
-```
-
-### Joseph — 36
-
-**Products**
-
-```
-createProduct()
-updateProduct()
-removeProduct()
-findAllProducts()
-findOneProduct()
-```
-
-**Warehouses**
-
-```
-createWarehouse()
-updateWarehouse()
-removeWarehouse()
-findAllWarehouses()
-findOneWarehouse()
-getCatalog()
-```
-
-**Suppliers**
-
-```
-createSupplier()
-updateSupplier()
-removeSupplier()
-findAllSuppliers()
-findOneSupplier()
-getTransactionHistory()
-```
-
-**Warehouse Inventory**
-
-```
-getByWarehouse()
-getByProduct()
-getAvailable()
-getLowStockProducts()
-getWarehouseCapacity()
-setReorderThreshold()
-```
-
-**Analytics**
-
-```
-getTopSellingProducts()
-getLowestSellingProducts()
-getFastMovingProducts()
-getSlowMovingProducts()
-getSalesTrends()
-getPurchaseTrends()
-getStockHistory()
-getWarehouseDemand()
-getProductDemand()
-getSupplierComparison()
-```
-
-**Integrations**
+### `integrations/email/`
 
 ```
 sendEmail()
+```
+
+The service knows how to send the email. The AI can later decide what email should be sent.
+
+### `integrations/calendar/`
+
+```
 createCalendarEvent()
 createShipmentReminder()
 ```
 
+Integration plumbing.
+
+### Joseph — Summary (36 functions)
+
+```
+PRODUCTS
+1.  createProduct()
+2.  updateProduct()
+3.  removeProduct()
+4.  findAllProducts()
+5.  findOneProduct()
+
+WAREHOUSES
+6.  createWarehouse()
+7.  updateWarehouse()
+8.  removeWarehouse()
+9.  findAllWarehouses()
+10. findOneWarehouse()
+11. getCatalog()
+
+SUPPLIERS
+12. createSupplier()
+13. updateSupplier()
+14. removeSupplier()
+15. findAllSuppliers()
+16. findOneSupplier()
+17. getTransactionHistory()
+
+WAREHOUSE INVENTORY
+18. getByWarehouse()
+19. getByProduct()
+20. getAvailable()
+21. getLowStockProducts()
+22. getWarehouseCapacity()
+23. setReorderThreshold()
+
+ANALYTICS
+24. getTopSellingProducts()
+25. getLowestSellingProducts()
+26. getFastMovingProducts()
+27. getSlowMovingProducts()
+28. getSalesTrends()
+29. getPurchaseTrends()
+30. getStockHistory()
+31. getWarehouseDemand()
+32. getProductDemand()
+33. getSupplierComparison()
+
+INTEGRATIONS
+34. sendEmail()
+35. createCalendarEvent()
+36. createShipmentReminder()
+```
+
 ---
 
-## How You Connect Both Parts Later
+## 4. Shared Infrastructure
 
-This is actually straightforward because NestJS is one application.
-
-You are not building two separate backends.
-
-The structure stays:
+Neither developer "owns" these as independent business modules:
 
 ```
-mini-erp/
-└── backend/
-    └── src/
-        ├── auth/
-        ├── users/
-        ├── products/
-        ├── warehouses/
-        ├── suppliers/
-        ├── warehouse-inventory/
-        ├── stock-movements/
-        ├── reservations/
-        ├── inventory-transactions/
-        ├── document-review/
-        ├── stock-insights/
-        ├── analytics/
-        └── integrations/
+prisma/
+common/
 ```
 
-Both of you work in different modules but use the same:
+**Prisma** — `PrismaService`. Both developers use the same Prisma service.
 
-- PrismaService
-- DTOs
-- entities/types
-- common guards
-- database
-- NestJS application
+**Common** — `guards/`, `decorators/`, `filters/`, `pipes/`, `interceptors/`. Salman will naturally handle most security-related pieces, but changes to shared infrastructure should be coordinated.
 
-### Example
+### How dependencies work in practice
 
 Joseph builds:
 
@@ -734,9 +505,7 @@ ReservationService
 WarehouseInventoryService.getAvailable()
 ```
 
-That's a normal NestJS dependency. You don't copy the function.
-
-### Another example
+That's a normal NestJS dependency — Salman doesn't copy the function.
 
 Joseph:
 
@@ -749,7 +518,7 @@ getTransactionHistory()
 Salman:
 
 ```
-SupplierService
+SupplierIntelligenceService
     ↓
 getTransactionHistory()
     ↓
@@ -757,6 +526,173 @@ getSupplierStats()
     ↓
 rankSuppliers()
 ```
+
+---
+
+## 5. What the AI Will Consume
+
+Once the backend is finished, the AI engineer builds Python tools around these endpoints.
+
+### Insights Agent
+
+```
+getByProduct()
+getByWarehouse()
+getAvailable()
+getLowStockProducts()
+
+getDeadStock()
+getStockoutRisk()
+getConsumptionAnomalies()
+getControlTowerAlerts()
+
+getRestockRecommendations()
+getTransferRecommendations()
+
+getUpcomingDeliveries()
+getOverdueTransactions()
+
+getSupplierStats()
+compareSuppliers()
+rankSuppliers()
+getBestSupplier()
+
+findBestWarehouseForOrder()
+
+analytics functions
+```
+
+### Document Agent
+
+Consumes the document-review API: upload/document retrieval, product resolution, supplier resolution, approve/reject workflow.
+
+The AI never calls Prisma directly:
+
+```
+Python Agent
+     ↓
+HTTP/HTTPS
+     ↓
+NestJS API
+     ↓
+Service
+     ↓
+Prisma
+     ↓
+PostgreSQL
+```
+
+---
+
+## 6. What NOT to Create
+
+Don't create:
+
+```
+❌ src/agent-core/
+❌ src/insights-agent/
+❌ src/document-agent/
+❌ src/control-tower/
+❌ src/supplier-intelligence/
+❌ src/warehouse-routing/
+```
+
+unless the architecture later gives those concepts enough independent responsibility to justify separate modules.
+
+For the current design:
+
+```
+Supplier Intelligence → suppliers/
+Warehouse Routing     → warehouse-inventory/
+Control Tower         → stock-insights/
+AgentCore             → separate Python application
+```
+
+---
+
+## 7. Presentation Highlights
+
+If preparing a final presentation, build the story around six technical achievements:
+
+**1. Secure ERP**
+
+```
+JWT
++
+RBAC
++
+ADMIN / EMPLOYEE
++
+protected operations
+```
+
+**2. Concurrency-safe inventory**
+
+```
+Reservations
++
+row locking
++
+Prisma transactions
++
+conditional state transitions
+```
+
+Probably the strongest backend engineering topic.
+
+**3. Immutable stock ledger**
+
+```
+Transaction
+      ↓
+Stock Movement
+      ↓
+Warehouse Inventory
+```
+
+**4. Human-in-the-loop document processing**
+
+```
+Invoice
+ ↓
+S3
+ ↓
+AI extraction
+ ↓
+Human verification
+ ↓
+PENDING transaction
+ ↓
+Physical receipt
+ ↓
+Stock
+```
+
+**5. Deterministic intelligence**
+
+```
+Supplier ranking
+Stockout risk
+Restocking
+Transfer recommendations
+Warehouse selection
+```
+
+The backend calculates the facts; the AI explains them.
+
+**6. Multi-agent AI integration**
+
+```
+Supervisor
+   ├── Insights Agent
+   └── Document Agent
+           ↓
+     NestJS APIs
+           ↓
+       PostgreSQL
+```
+
+Demonstrates that AI is an intelligence layer over a reliable ERP backend, rather than being allowed to directly manipulate the database.
 
 ---
 
@@ -797,6 +733,7 @@ app.module.ts
 prisma.service.ts
 common/
 package.json
+docker-compose.yml
 ```
 
 coordinate before editing them.
@@ -828,4 +765,4 @@ const available =
 
 You can develop independently and integrate without rewriting each other's logic.
 
-This split also matches the current backend plan's architecture: NestJS owns the business rules and deterministic calculations, while the later multi-agent AgentCore system consumes controlled backend capabilities.
+This split also matches the current backend/AI architecture: NestJS owns the business rules and deterministic calculations, while the multi-agent AgentCore system (Supervisor, Insights, Document — see `AI-Agent-Plan.md`) consumes controlled backend capabilities.

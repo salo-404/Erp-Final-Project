@@ -2,7 +2,7 @@
 
 ## Scope Note
 
-This document covers **only Salman's slice of the NestJS backend**, per the split in `Backend-Team-Split.md`, updated with the backend work adopted from Ribal's AI work-split note (`Work-Split-Alignment.md`).
+This document covers **only Salman's slice of the NestJS backend**, per the finalized split in `Backend-Team-Split.md` (§2), updated with the backend work adopted from Ribal's AI work-split note (`Work-Split-Alignment.md`).
 
 - Joseph's slice (Products, Warehouses CRUD, Supplier CRUD, Warehouse Inventory reads, Analytics, Integrations) stays in `Backend-Team-Split.md` § Joseph — unchanged.
 - The AI/AgentCore side (agents, tools, folder structure) lives in `AI-Agent-Plan.md` — not duplicated here.
@@ -38,10 +38,14 @@ src/
 │       └── update-user.dto.ts
 │
 ├── common/
-│   └── guards/
-│       ├── jwt-auth.guard.ts
-│       ├── roles.guard.ts
-│       └── roles.decorator.ts
+│   ├── guards/
+│   │   ├── jwt-auth.guard.ts
+│   │   └── roles.guard.ts
+│   ├── decorators/
+│   │   ├── roles.decorator.ts
+│   │   └── current-user.decorator.ts
+│   ├── filters/
+│   └── pipes/
 │
 ├── suppliers/                          (shared with Joseph)
 │   ├── suppliers.module.ts
@@ -87,11 +91,14 @@ src/
 │       ├── upload-document.dto.ts
 │       └── review-document.dto.ts
 │
-└── stock-insights/
-    ├── stock-insights.module.ts
-    ├── stock-insights.controller.ts
-    ├── stock-insights.service.ts
-    └── control-tower.service.ts         ← new, see §8 below
+├── stock-insights/
+│   ├── stock-insights.module.ts
+│   ├── stock-insights.controller.ts
+│   ├── stock-insights.service.ts
+│   └── control-tower.service.ts         ← new, see §8 below
+│
+└── prisma/
+    └── prisma.service.ts                (shared with Joseph)
 ```
 
 ---
@@ -193,10 +200,14 @@ Folder: `src/document-review/`
 DocumentReviewService
 ├── upload(file)
 ├── approve(...)
-└── reject(...)
+├── reject(...)
+├── getReview(id)
+├── getPendingReviews()
+├── resolveProduct(...)
+└── resolveSupplier(...)
 ```
 
-Upload validates PDF/JPG/JPEG/PNG up to 10MB, stores to S3, creates `PendingDocumentReview`. Approve resolves warehouse/supplier/products (EXISTING/CREATE) and creates a **PENDING** transaction — no stock change on approval. Reject stores `rejectionReason`, `reviewedById`, `reviewedAt`.
+Upload validates PDF/JPG/JPEG/PNG up to 10MB, stores to S3, creates `PendingDocumentReview`. Approve resolves warehouse/supplier/products (EXISTING/CREATE) and creates a **PENDING** transaction — no stock change on approval. Reject stores `rejectionReason`, `reviewedById`, `reviewedAt`. `getReview()`/`getPendingReviews()`/`resolveProduct()`/`resolveSupplier()` are the supporting operations the review UI and Document Agent both call into during the workflow.
 
 ## 8. Stock Insights (includes adopted Work-Split-Alignment changes)
 
@@ -228,15 +239,13 @@ Returns `needsReorder`, a `reason` code (`covered_by_incoming_po` / `transfer_av
 
 Aggregates `getLowStockProducts()`, `getStockoutRisk()`, `getOverdueTransactions()`, `getConsumptionAnomalies()`, and invoice/order discrepancies from Document Review into one alert array with `severity` + `evidence` per alert. Response shape (`severity`, `evidence`, `category` fields) still needs to be agreed with Ribal before the AI narration layer is built against it — see `AI-Agent-Plan.md`'s open items.
 
-### `getExpiringInventory()` — blocked, not yet buildable
-
-Requested to support the Control Tower alert set, but requires expiry-date tracking that doesn't exist in the current schema. **Do not build this until a schema-change decision is made.** Ship Control Tower without this input for now.
+> `getExpiringInventory()` was previously considered as a Control Tower input but required new expiry-tracking schema. It has been **dropped, not just deferred** — Control Tower ships on the four inputs above only, no schema change needed.
 
 ---
 
 ## Total Function Count
 
-**36 active functions**, plus 1 blocked pending a schema decision.
+**40 active functions.** No blocked items remain — `getExpiringInventory()` was dropped rather than deferred.
 
 ```
 Auth / Users (7)
@@ -278,10 +287,14 @@ Inventory Transactions (10)
   getUpcomingDeliveries()
   getOverdueTransactions()
 
-Document Review (3)
+Document Review (7)
   upload()
   approve()
   reject()
+  getReview()
+  getPendingReviews()
+  resolveProduct()
+  resolveSupplier()
 
 Stock Insights (6)
   getDeadStock()
@@ -290,9 +303,6 @@ Stock Insights (6)
   getRestockRecommendations()   [refined 3-check logic]
   getTransferRecommendations()
   getControlTowerAlerts()       [new]
-
-BLOCKED — pending schema decision (1)
-  getExpiringInventory()
 ```
 
 ---
