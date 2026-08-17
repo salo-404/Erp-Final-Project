@@ -1,0 +1,10 @@
+# [openai] pulls in the `openai` SDK (strands.models.openai.OpenAIModel) and
+# [ollama] pulls in the `ollama` SDK (strands.models.ollama.OllamaModel) -
+# both are local-dev providers selected via MODEL_PROVIDER in .env (see
+# config/settings.py). Required even though Bedrock is the target production
+# provider, because MODEL_PROVIDER defaults to "openai" for local testing.
+strands-agents[openai,ollama]>=1.52.0
+boto3>=1.43.0
+pydantic>=2.13.0
+pytest>=9.1.0
+python-dotenv>=1.2.0
