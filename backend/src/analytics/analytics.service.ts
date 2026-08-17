@@ -7,12 +7,15 @@ export class AnalyticsService {
 
   // 1. Products with the highest completed customer sales.
   // Returns both quantity sold and revenue.
-  async getTopSellingProducts() {
+  async getTopSellingProducts(warehouseId?: number) {
     const items = await this.prisma.inventoryTransactionItem.findMany({
       where: {
         transaction: {
           type: 'OUTGOING',
           status: 'COMPLETED',
+          ...(warehouseId !== undefined && {
+            sourceWarehouseId: warehouseId,
+          }),
         },
       },
       include: {
@@ -55,10 +58,15 @@ export class AnalyticsService {
 
   // 2. Products with the lowest completed customer sales.
   // Includes active products with zero sales.
-  async getLowestSellingProducts() {
+  async getLowestSellingProducts(warehouseId?: number) {
     const products = await this.prisma.product.findMany({
       where: {
         isActive: true,
+        ...(warehouseId !== undefined && {
+          inventories: {
+            some: { warehouseId },
+          },
+        }),
       },
     });
 
@@ -67,6 +75,9 @@ export class AnalyticsService {
         transaction: {
           type: 'OUTGOING',
           status: 'COMPLETED',
+          ...(warehouseId !== undefined && {
+            sourceWarehouseId: warehouseId,
+          }),
         },
       },
     });
@@ -111,7 +122,7 @@ export class AnalyticsService {
 
   // 3. Products with the most outgoing stock movement
   // during the last X days.
-  async getFastMovingProducts(days = 30) {
+  async getFastMovingProducts(days = 30, warehouseId?: number) {
     const fromDate = new Date();
     fromDate.setDate(fromDate.getDate() - days);
 
@@ -121,6 +132,9 @@ export class AnalyticsService {
         createdAt: {
           gte: fromDate,
         },
+        ...(warehouseId !== undefined && {
+          warehouseId,
+        }),
       },
       include: {
         product: true,
@@ -158,13 +172,18 @@ export class AnalyticsService {
 
   // 4. Active products with the least outgoing movement
   // during the last X days.
-  async getSlowMovingProducts(days = 30) {
+  async getSlowMovingProducts(days = 30, warehouseId?: number) {
     const fromDate = new Date();
     fromDate.setDate(fromDate.getDate() - days);
 
     const products = await this.prisma.product.findMany({
       where: {
         isActive: true,
+        ...(warehouseId !== undefined && {
+          inventories: {
+            some: { warehouseId },
+          },
+        }),
       },
     });
 
@@ -174,6 +193,9 @@ export class AnalyticsService {
         createdAt: {
           gte: fromDate,
         },
+        ...(warehouseId !== undefined && {
+          warehouseId,
+        }),
       },
     });
 

@@ -11,3 +11,6 @@ dist/
 
 # Generated Prisma Client
 generated/
+
+#Authentication
+credentials/

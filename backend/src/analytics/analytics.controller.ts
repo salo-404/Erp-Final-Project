@@ -7,29 +7,45 @@ export class AnalyticsController {
 
   // 1. Top-selling products
   @Get('top-selling-products')
-  getTopSellingProducts() {
-    return this.analyticsService.getTopSellingProducts();
+  getTopSellingProducts(
+    @Query('warehouseId', new ParseIntPipe({ optional: true }))
+    warehouseId?: number,
+  ) {
+    return this.analyticsService.getTopSellingProducts(warehouseId);
   }
 
   // 2. Lowest-selling products
   @Get('lowest-selling-products')
-  getLowestSellingProducts() {
-    return this.analyticsService.getLowestSellingProducts();
+  getLowestSellingProducts(
+    @Query('warehouseId', new ParseIntPipe({ optional: true }))
+    warehouseId?: number,
+  ) {
+    return this.analyticsService.getLowestSellingProducts(warehouseId);
   }
 
   // 3. Fast-moving products
   @Get('fast-moving-products')
-  getFastMovingProducts(@Query('days') days?: string) {
+  getFastMovingProducts(
+    @Query('days') days?: string,
+    @Query('warehouseId', new ParseIntPipe({ optional: true }))
+    warehouseId?: number,
+  ) {
     return this.analyticsService.getFastMovingProducts(
       days ? Number(days) : 30,
+      warehouseId,
     );
   }
 
   // 4. Slow-moving products
   @Get('slow-moving-products')
-  getSlowMovingProducts(@Query('days') days?: string) {
+  getSlowMovingProducts(
+    @Query('days') days?: string,
+    @Query('warehouseId', new ParseIntPipe({ optional: true }))
+    warehouseId?: number,
+  ) {
     return this.analyticsService.getSlowMovingProducts(
       days ? Number(days) : 30,
+      warehouseId,
     );
   }
 

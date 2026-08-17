@@ -7,9 +7,11 @@ import { WarehousesModule } from './warehouses/warehouses.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { WarehouseInventoryModule } from './warehouse-inventory/warehouse-inventory.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { EmailModule } from './integrations/email/email.module';
+import { CalendarModule } from './integrations/calendar/calendar.module';
 
 @Module({
-  imports: [ProductsModule, PrismaModule, WarehousesModule, SuppliersModule, WarehouseInventoryModule, AnalyticsModule],
+  imports: [ProductsModule, PrismaModule, WarehousesModule, SuppliersModule, WarehouseInventoryModule, AnalyticsModule, EmailModule, CalendarModule],
   controllers: [AppController],
   providers: [AppService],
 })
