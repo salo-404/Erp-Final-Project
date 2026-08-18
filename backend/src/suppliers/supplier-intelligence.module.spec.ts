@@ -1,21 +1,26 @@
 /// <reference types="jest" />
 
 import { Test } from '@nestjs/testing';
-import { SUPPLIERS_HISTORY_PROVIDER } from './supplier-intelligence.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { PrismaModule } from '../prisma/prisma.module';
+import { SupplierIntelligenceService } from './supplier-intelligence.service';
+import { SupplierIntelligenceController } from './supplier-intelligence.controller';
 import { SupplierIntelligenceModule } from './supplier-intelligence.module';
 
 describe('SupplierIntelligenceModule wiring', () => {
-  it('fails to bootstrap without SUPPLIERS_HISTORY_PROVIDER bound — confirms this module cannot be imported into AppModule as-is yet, and exactly which token needs binding at merge time', async () => {
-    await expect(
-      Test.createTestingModule({
-        imports: [SupplierIntelligenceModule],
-      }).compile(),
-    ).rejects.toThrow(/SUPPLIERS_HISTORY_PROVIDER/);
+  it('bootstraps with SUPPLIERS_HISTORY_PROVIDER bound to SuppliersService — confirms the module is fully integrated with Joseph\'s SuppliersModule', async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [PrismaModule, SupplierIntelligenceModule],
+    })
+      .overrideProvider(PrismaService)
+      .useValue({})
+      .compile();
 
-    // Confirms the exact symbol name in the error above is the real,
-    // exported token — not a coincidental string match.
-    expect(SUPPLIERS_HISTORY_PROVIDER.toString()).toContain(
-      'SUPPLIERS_HISTORY_PROVIDER',
+    expect(moduleRef.get(SupplierIntelligenceService)).toBeInstanceOf(
+      SupplierIntelligenceService,
+    );
+    expect(moduleRef.get(SupplierIntelligenceController)).toBeInstanceOf(
+      SupplierIntelligenceController,
     );
   });
 });

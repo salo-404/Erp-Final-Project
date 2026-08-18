@@ -1,33 +1,48 @@
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { AuthModule } from './auth/auth.module';
+import { EmailModule } from './integrations/email/email.module';
+import { CalendarModule } from './integrations/calendar/calendar.module';
 import { InventoryTransactionsModule } from './inventory-transactions/inventory-transactions.module';
 import { PathOptimizerModule } from './path-optimizer/path-optimizer.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { ProductsModule } from './products/products.module';
 import { ReservationsModule } from './reservations/reservations.module';
 import { StockMovementsModule } from './stock-movements/stock-movements.module';
+import { SupplierIntelligenceModule } from './suppliers/supplier-intelligence.module';
+import { SuppliersModule } from './suppliers/suppliers.module';
 import { UsersModule } from './users/users.module';
+import { WarehouseInventoryModule } from './warehouse-inventory/warehouse-inventory.module';
 import { WarehouseRoutingModule } from './warehouse-inventory/warehouse-routing.module';
+import { WarehousesModule } from './warehouses/warehouses.module';
 
 // NOT imported here yet (would break bootstrap — see each module's own doc
-// comment for the exact binding needed at merge time):
-//   - SupplierIntelligenceModule (needs SUPPLIERS_HISTORY_PROVIDER bound to
-//     Joseph's SuppliersService)
-//   - DocumentReviewModule (needs 3 external-provider tokens bound)
-//   - StockInsightsModule (depends on DocumentReviewModule, inherits the
-//     same blocker — Control Tower lives inside it)
+// comment for the exact binding needed):
+//   - DocumentReviewModule (needs 3 external-provider tokens bound: storage,
+//     extraction, notification — none implemented on either branch yet)
+//   - StockInsightsModule (imports DocumentReviewModule, inherits the same
+//     blocker — Control Tower lives inside it)
 
 @Module({
   imports: [
     PrismaModule,
     AuthModule,
     UsersModule,
+    ProductsModule,
+    WarehousesModule,
+    WarehouseInventoryModule,
     WarehouseRoutingModule,
+    SuppliersModule,
+    SupplierIntelligenceModule,
+    AnalyticsModule,
     StockMovementsModule,
     ReservationsModule,
     PathOptimizerModule,
     InventoryTransactionsModule,
+    EmailModule,
+    CalendarModule,
   ],
   controllers: [AppController],
   providers: [AppService],

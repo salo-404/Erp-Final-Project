@@ -7,10 +7,9 @@ import {
 /**
  * DI token for SuppliersHistoryProvider — interfaces have no runtime
  * identity, so NestJS can't resolve it by type alone the way it does for a
- * concrete class. SupplierIntelligenceModule does NOT bind this token
- * itself (Joseph's SuppliersService isn't present on this branch); it must
- * be provided at merge time, e.g. `{ provide: SUPPLIERS_HISTORY_PROVIDER,
- * useExisting: SuppliersService }` in whichever module composes both.
+ * concrete class. Bound in SupplierIntelligenceModule to Joseph's real
+ * SuppliersService via `{ provide: SUPPLIERS_HISTORY_PROVIDER, useExisting:
+ * SuppliersService }`.
  */
 export const SUPPLIERS_HISTORY_PROVIDER = Symbol('SUPPLIERS_HISTORY_PROVIDER');
 

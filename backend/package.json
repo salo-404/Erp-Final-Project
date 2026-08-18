@@ -21,6 +21,7 @@
     "geoapify:live-check": "ts-node -r tsconfig-paths/register src/path-optimizer/geoapify-geocoding.provider.live-check.ts"
   },
   "dependencies": {
+    "@google-cloud/local-auth": "^3.0.1",
     "@nestjs/common": "^11.0.1",
     "@nestjs/core": "^11.0.1",
     "@nestjs/jwt": "^11.0.2",
@@ -32,6 +33,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "dotenv": "^17.4.2",
+    "googleapis": "^174.0.1",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "pg": "^8.23.0",
