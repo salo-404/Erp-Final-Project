@@ -1,7 +1,20 @@
 /// <reference types="jest" />
 
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { S3DocumentStorageService } from './s3-document-storage.service';
+
+jest.mock('@aws-sdk/s3-request-presigner', () => ({
+  getSignedUrl: jest.fn(),
+}));
+
+const mockedGetSignedUrl = getSignedUrl as jest.MockedFunction<
+  typeof getSignedUrl
+>;
 
 describe('S3DocumentStorageService', () => {
   const ORIGINAL_REGION = process.env.AWS_REGION;
@@ -17,6 +30,7 @@ describe('S3DocumentStorageService', () => {
     sendSpy = jest.spyOn(S3Client.prototype, 'send');
     consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockedGetSignedUrl.mockReset();
   });
 
   afterEach(() => {
@@ -41,7 +55,7 @@ describe('S3DocumentStorageService', () => {
     );
   });
 
-  it('uploads successfully and returns the object URL, using the configured bucket and a key derived from the filename', async () => {
+  it('uploads successfully and returns the object URL and key, using the configured bucket and a key derived from the filename', async () => {
     sendSpy.mockResolvedValue({});
 
     const service = new S3DocumentStorageService();
@@ -61,6 +75,7 @@ describe('S3DocumentStorageService', () => {
     expect(command.input.ContentType).toBe('application/pdf');
     expect(command.input.Body).toEqual(Buffer.from('fake pdf bytes'));
 
+    expect(result.key).toBe(command.input.Key);
     expect(result.url).toBe(
       `https://test-bucket.s3.amazonaws.com/${command.input.Key}`,
     );
@@ -78,9 +93,10 @@ describe('S3DocumentStorageService', () => {
 
     expect(result.url).not.toContain('..');
     expect(result.url).not.toContain('/etc/passwd');
+    expect(result.key).not.toContain('..');
   });
 
-  it('wraps an S3 failure in an InternalServerErrorException without leaking document content', async () => {
+  it('wraps an S3 upload failure in an InternalServerErrorException without leaking document content', async () => {
     sendSpy.mockRejectedValue(new Error('AccessDenied'));
 
     const service = new S3DocumentStorageService();
@@ -103,7 +119,42 @@ describe('S3DocumentStorageService', () => {
     expect(caught?.message).not.toContain('CONFIDENTIAL DOCUMENT BYTES');
   });
 
-  it('never logs document content or AWS credentials on success or failure', async () => {
+  it('generates a presigned GET URL scoped to the configured bucket/key with a 300s expiry, without uploading anything', async () => {
+    mockedGetSignedUrl.mockResolvedValue(
+      'https://test-bucket.s3.amazonaws.com/documents/abc-invoice.pdf?X-Amz-Signature=fake',
+    );
+
+    const service = new S3DocumentStorageService();
+    const url = await service.getPresignedUrl('documents/abc-invoice.pdf');
+
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(url).toBe(
+      'https://test-bucket.s3.amazonaws.com/documents/abc-invoice.pdf?X-Amz-Signature=fake',
+    );
+    expect(mockedGetSignedUrl).toHaveBeenCalledTimes(1);
+
+    const [, command, options] = mockedGetSignedUrl.mock.calls[0];
+    expect(command).toBeInstanceOf(GetObjectCommand);
+    expect((command as GetObjectCommand).input).toEqual({
+      Bucket: 'test-bucket',
+      Key: 'documents/abc-invoice.pdf',
+    });
+    expect(options).toEqual({ expiresIn: 300 });
+  });
+
+  it('wraps a presigned URL generation failure in an InternalServerErrorException', async () => {
+    mockedGetSignedUrl.mockRejectedValue(new Error('SignatureError'));
+
+    const service = new S3DocumentStorageService();
+
+    await expect(
+      service.getPresignedUrl('documents/abc-invoice.pdf'),
+    ).rejects.toThrow(
+      'Failed to generate a presigned URL for S3 object "documents/abc-invoice.pdf": SignatureError',
+    );
+  });
+
+  it('never logs document content, presigned URLs, or AWS credentials on success or failure', async () => {
     process.env.AWS_ACCESS_KEY_ID = 'AKIA_TEST_FAKE_KEY';
     process.env.AWS_SECRET_ACCESS_KEY = 'test-fake-secret';
 
@@ -124,6 +175,11 @@ describe('S3DocumentStorageService', () => {
       })
       .catch(() => undefined);
 
+    mockedGetSignedUrl.mockResolvedValueOnce(
+      'https://test-bucket.s3.amazonaws.com/documents/abc.pdf?X-Amz-Signature=super-secret-signature',
+    );
+    await service.getPresignedUrl('documents/abc.pdf');
+
     const allLoggedText = [
       ...consoleLogSpy.mock.calls,
       ...consoleErrorSpy.mock.calls,
@@ -135,6 +191,7 @@ describe('S3DocumentStorageService', () => {
     expect(allLoggedText).not.toContain('SECRET BYTES');
     expect(allLoggedText).not.toContain('AKIA_TEST_FAKE_KEY');
     expect(allLoggedText).not.toContain('test-fake-secret');
+    expect(allLoggedText).not.toContain('super-secret-signature');
 
     delete process.env.AWS_ACCESS_KEY_ID;
     delete process.env.AWS_SECRET_ACCESS_KEY;

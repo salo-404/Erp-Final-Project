@@ -86,15 +86,22 @@ function createMockStorageProvider() {
     Promise<UploadedDocument>,
     [{ filename: string; mimeType: string; content: Buffer }]
   >();
-  upload.mockResolvedValue({ url: 'https://s3.example.com/doc-1.pdf' });
-  const provider: DocumentStorageProvider = { upload };
-  return { provider, upload };
+  upload.mockResolvedValue({
+    url: 'https://s3.example.com/doc-1.pdf',
+    key: 'documents/doc-1.pdf',
+  });
+  const getPresignedUrl = jest.fn<Promise<string>, [string]>();
+  getPresignedUrl.mockResolvedValue(
+    'https://s3.example.com/doc-1.pdf?X-Amz-Signature=fake',
+  );
+  const provider: DocumentStorageProvider = { upload, getPresignedUrl };
+  return { provider, upload, getPresignedUrl };
 }
 
 function createMockExtractionProvider() {
   const extract = jest.fn<
     Promise<ExtractedDocumentData>,
-    [{ mimeType: string; content: Buffer }]
+    [{ mimeType: string; documentUrl: string }]
   >();
   extract.mockResolvedValue({
     transactionType: 'INCOMING' as never,
@@ -123,7 +130,11 @@ function buildService(tx: MockTx) {
     createIncoming,
     createOutgoing,
   } = createMockInventoryTransactionsService();
-  const { provider: storageProvider, upload } = createMockStorageProvider();
+  const {
+    provider: storageProvider,
+    upload,
+    getPresignedUrl,
+  } = createMockStorageProvider();
   const { provider: extractionProvider, extract } =
     createMockExtractionProvider();
   const { provider: notifier, notifyNewInvoice } = createMockNotifier();
@@ -142,6 +153,7 @@ function buildService(tx: MockTx) {
     createIncoming,
     createOutgoing,
     upload,
+    getPresignedUrl,
     extract,
     notifyNewInvoice,
   };
@@ -154,10 +166,16 @@ const VALID_UPLOAD_INPUT: UploadDocumentInput = {
 };
 
 describe('DocumentReviewService.upload', () => {
-  it('validates, stores, extracts, creates a PENDING_REVIEW row, and emits the new-invoice event', async () => {
+  it('validates, stores, generates a presigned URL, extracts via that URL (never the raw bytes), creates a PENDING_REVIEW row, and emits the new-invoice event', async () => {
     const tx = createMockTx();
-    const { service, prismaRoot, upload, extract, notifyNewInvoice } =
-      buildService(tx);
+    const {
+      service,
+      prismaRoot,
+      upload,
+      getPresignedUrl,
+      extract,
+      notifyNewInvoice,
+    } = buildService(tx);
     const createdReview = {
       id: 1,
       documentUrl: 'https://s3.example.com/doc-1.pdf',
@@ -176,10 +194,17 @@ describe('DocumentReviewService.upload', () => {
       mimeType: 'application/pdf',
       content: VALID_UPLOAD_INPUT.content,
     });
+    expect(getPresignedUrl).toHaveBeenCalledWith('documents/doc-1.pdf');
     expect(extract).toHaveBeenCalledWith({
       mimeType: 'application/pdf',
-      content: VALID_UPLOAD_INPUT.content,
+      documentUrl: 'https://s3.example.com/doc-1.pdf?X-Amz-Signature=fake',
     });
+    // The raw Buffer must never be handed to the extraction provider.
+    const extractCallArg = extract.mock.calls[0][0] as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(extractCallArg).not.toHaveProperty('content');
     expect(prismaRoot.pendingDocumentReview.create).toHaveBeenCalledWith({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- jest matcher, not real data
       data: expect.objectContaining({

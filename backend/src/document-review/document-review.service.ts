@@ -54,7 +54,10 @@ export interface UploadDocumentInput {
 }
 
 export interface UploadedDocument {
+  /** Permanent, non-expiring reference to the stored object — the private S3 URL, persisted on the review row. Not directly fetchable without a presigned URL. */
   url: string;
+  /** Storage key for the uploaded object — opaque to callers outside the storage provider, used only to ask for a presigned URL. */
+  key: string;
 }
 
 /**
@@ -69,6 +72,14 @@ export interface DocumentStorageProvider {
     mimeType: string;
     content: Buffer;
   }): Promise<UploadedDocument>;
+
+  /**
+   * A short-lived, temporary URL the extraction provider can fetch the
+   * document from directly — the document bytes are never sent to the
+   * extraction provider in-process. The bucket itself stays private; only
+   * this one-time URL grants temporary read access to one object.
+   */
+  getPresignedUrl(key: string): Promise<string>;
 }
 
 export interface ExtractedDocumentItem {
@@ -95,11 +106,16 @@ export interface ExtractedDocumentData {
   items: ExtractedDocumentItem[];
 }
 
-/** Port for the AI/document-extraction layer. Never called from anywhere but upload(). */
+/**
+ * Port for the AI/document-extraction layer (Ribal Agent). Never called
+ * from anywhere but upload(). Takes a temporary presigned URL rather than
+ * the raw file bytes — the extraction provider fetches the document
+ * directly from S3, so this service never sends the Buffer to it.
+ */
 export interface DocumentExtractionProvider {
   extract(input: {
     mimeType: string;
-    content: Buffer;
+    documentUrl: string;
   }): Promise<ExtractedDocumentData>;
 }
 
@@ -201,11 +217,15 @@ export class DocumentReviewService {
 
   /**
    * Validates the file, stores it (S3 in production, via the injected
-   * provider), runs it through the AI/document-extraction layer, and creates
-   * a PENDING_REVIEW row holding only that provisional data — nothing here
-   * is trusted until a human calls approve(). Emits a new-invoice
-   * notification event once the review row exists; the integration layer
-   * (not this service) decides what to do with it (e.g. send an email).
+   * provider), then runs it through the AI/document-extraction layer
+   * (Ribal Agent) — not by handing over the file bytes, but by generating a
+   * short-lived presigned URL the extraction provider fetches the document
+   * from directly: Browser -> S3 -> presigned URL -> extraction provider.
+   * The raw Buffer never leaves this process after the S3 upload. Creates a
+   * PENDING_REVIEW row holding only that provisional data — nothing here is
+   * trusted until a human calls approve(). Emits a new-invoice notification
+   * event once the review row exists; the integration layer (not this
+   * service) decides what to do with it (e.g. send an email).
    */
   async upload(input: UploadDocumentInput): Promise<PendingDocumentReview> {
     this.validateFile(input);
@@ -216,9 +236,13 @@ export class DocumentReviewService {
       content: input.content,
     });
 
+    const presignedUrl = await this.storageProvider.getPresignedUrl(
+      uploaded.key,
+    );
+
     const extracted = await this.extractionProvider.extract({
       mimeType: input.mimeType,
-      content: input.content,
+      documentUrl: presignedUrl,
     });
     this.validateExtractedTransactionType(extracted.transactionType);
 

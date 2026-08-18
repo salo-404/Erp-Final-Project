@@ -1,10 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
   DocumentStorageProvider,
   UploadedDocument,
 } from './document-review.service';
+
+/**
+ * How long a presigned GET URL stays valid. Handed to the extraction
+ * provider (Ribal Agent) immediately after upload for a synchronous fetch —
+ * kept short since nothing else should ever need to read the document
+ * through this URL.
+ */
+const PRESIGNED_URL_EXPIRY_SECONDS = 300;
 
 /**
  * Real AWS S3 implementation of DocumentStorageProvider — like
@@ -48,8 +61,8 @@ export class S3DocumentStorageService implements DocumentStorageProvider {
   /**
    * Uploads the given document to the configured private bucket under a
    * random, collision-proof key (documents/<uuid>-<original filename>) and
-   * returns its S3 URL. Never logs `content` (the file bytes) or any AWS
-   * credential — only the derived key/bucket, which are not secret.
+   * returns its S3 URL and key. Never logs `content` (the file bytes) or
+   * any AWS credential — only the derived key/bucket, which are not secret.
    */
   async upload(input: {
     filename: string;
@@ -75,7 +88,29 @@ export class S3DocumentStorageService implements DocumentStorageProvider {
 
     return {
       url: `https://${this.bucket}.s3.amazonaws.com/${key}`,
+      key,
     };
+  }
+
+  /**
+   * Generates a temporary presigned GET URL for an already-uploaded object
+   * — the bucket itself remains private; this grants time-limited read
+   * access to exactly one object, for exactly PRESIGNED_URL_EXPIRY_SECONDS.
+   * Never logs the resulting URL (it embeds a short-lived access
+   * signature) or any AWS credential.
+   */
+  async getPresignedUrl(key: string): Promise<string> {
+    try {
+      return await getSignedUrl(
+        this.client,
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+        { expiresIn: PRESIGNED_URL_EXPIRY_SECONDS },
+      );
+    } catch (error) {
+      throw new InternalServerErrorException(
+        `Failed to generate a presigned URL for S3 object "${key}": ${(error as Error).message}`,
+      );
+    }
   }
 
   /**

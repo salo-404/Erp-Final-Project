@@ -14,12 +14,16 @@ import { RejectDocumentReviewDto } from './dto/reject-document-review.dto';
 /**
  * NOTE: upload() is not exposed here yet. It needs (a) a multipart file
  * endpoint — `Express.Multer.File` typing requires `@types/multer`, not
- * currently a project dependency, and (b) a bound
- * DocumentStorageProvider/DocumentExtractionProvider (see
- * document-review.module.ts — neither is bound on this branch). Adding the
- * route now would either fail to typecheck or fail at runtime with a DI
- * error, so it's deliberately left out rather than half-implemented; see
- * the report for what's needed to add it.
+ * currently a project dependency, and (b) a bound DocumentExtractionProvider
+ * (Ribal Agent) and DocumentReviewNotifier — neither is implemented yet
+ * (see document-review.module.ts). DocumentStorageProvider IS bound now
+ * (S3DocumentStorageService); once the remaining two providers exist, this
+ * endpoint can be added as a multipart upload that flows Browser -> S3 ->
+ * presigned URL -> extraction provider, exactly as
+ * DocumentReviewService.upload() already implements. Adding the route now
+ * would either fail to typecheck or fail at runtime with a DI error, so
+ * it's deliberately left out rather than half-implemented; see the report
+ * for what's needed to add it.
  */
 @Controller('document-review')
 export class DocumentReviewController {
