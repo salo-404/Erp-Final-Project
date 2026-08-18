@@ -1059,9 +1059,11 @@ export class StockInsightsService {
     if (available <= 0) {
       return 'OUT_OF_STOCK';
     }
-    if (available <= reorderThreshold) {
+
+    if (available < reorderThreshold) {
       return 'AT_RISK';
     }
+
     return 'OK';
   }
 
