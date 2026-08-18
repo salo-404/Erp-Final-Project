@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -120,6 +121,20 @@ export interface DocumentReviewNotifier {
   notifyNewInvoice(event: NewInvoiceNotificationEvent): Promise<void>;
 }
 
+/**
+ * DI tokens for the three provider interfaces above — interfaces have no
+ * runtime identity, so NestJS can't resolve them by type alone the way it
+ * does for a concrete class. DocumentReviewModule does NOT bind any of
+ * these (no S3/AI-extraction/notification vendor has been chosen or
+ * implemented yet — see the module's own doc comment); they must be bound
+ * once real implementations exist.
+ */
+export const DOCUMENT_STORAGE_PROVIDER = Symbol('DOCUMENT_STORAGE_PROVIDER');
+export const DOCUMENT_EXTRACTION_PROVIDER = Symbol(
+  'DOCUMENT_EXTRACTION_PROVIDER',
+);
+export const DOCUMENT_REVIEW_NOTIFIER = Symbol('DOCUMENT_REVIEW_NOTIFIER');
+
 export interface ProductMatchSuggestion {
   productId: number;
   name: string;
@@ -176,8 +191,11 @@ export class DocumentReviewService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventoryTransactionsService: InventoryTransactionsService,
+    @Inject(DOCUMENT_STORAGE_PROVIDER)
     private readonly storageProvider: DocumentStorageProvider,
+    @Inject(DOCUMENT_EXTRACTION_PROVIDER)
     private readonly extractionProvider: DocumentExtractionProvider,
+    @Inject(DOCUMENT_REVIEW_NOTIFIER)
     private readonly notifier: DocumentReviewNotifier,
   ) {}
 

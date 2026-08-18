@@ -1,8 +1,18 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   InventoryTransactionStatus,
   Prisma,
 } from '../../generated/prisma/client';
+
+/**
+ * DI token for SuppliersHistoryProvider — interfaces have no runtime
+ * identity, so NestJS can't resolve it by type alone the way it does for a
+ * concrete class. SupplierIntelligenceModule does NOT bind this token
+ * itself (Joseph's SuppliersService isn't present on this branch); it must
+ * be provided at merge time, e.g. `{ provide: SUPPLIERS_HISTORY_PROVIDER,
+ * useExisting: SuppliersService }` in whichever module composes both.
+ */
+export const SUPPLIERS_HISTORY_PROVIDER = Symbol('SUPPLIERS_HISTORY_PROVIDER');
 
 /**
  * Matches the real return shape of SuppliersService.getTransactionHistory()
@@ -164,7 +174,10 @@ function normalize(
 
 @Injectable()
 export class SupplierIntelligenceService {
-  constructor(private readonly suppliersService: SuppliersHistoryProvider) {}
+  constructor(
+    @Inject(SUPPLIERS_HISTORY_PROVIDER)
+    private readonly suppliersService: SuppliersHistoryProvider,
+  ) {}
 
   async getSupplierStats(supplierId: number): Promise<SupplierStats> {
     const supplier =
