@@ -3,6 +3,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuthModule } from './auth/auth.module';
+import { DocumentReviewModule } from './document-review/document-review.module';
 import { EmailModule } from './integrations/email/email.module';
 import { CalendarModule } from './integrations/calendar/calendar.module';
 import { InventoryTransactionsModule } from './inventory-transactions/inventory-transactions.module';
@@ -18,12 +19,10 @@ import { WarehouseInventoryModule } from './warehouse-inventory/warehouse-invent
 import { WarehouseRoutingModule } from './warehouse-inventory/warehouse-routing.module';
 import { WarehousesModule } from './warehouses/warehouses.module';
 
-// NOT imported here yet (would break bootstrap — see each module's own doc
-// comment for the exact binding needed):
-//   - DocumentReviewModule (needs 3 external-provider tokens bound: storage,
-//     extraction, notification — none implemented on either branch yet)
-//   - StockInsightsModule (imports DocumentReviewModule, inherits the same
-//     blocker — Control Tower lives inside it)
+// NOT imported here yet (would break bootstrap — see its own doc comment
+// for the exact binding needed):
+//   - StockInsightsModule (imports DocumentReviewModule, but wasn't part of
+//     this phase's scope — revisit separately)
 
 @Module({
   imports: [
@@ -41,6 +40,7 @@ import { WarehousesModule } from './warehouses/warehouses.module';
     ReservationsModule,
     PathOptimizerModule,
     InventoryTransactionsModule,
+    DocumentReviewModule,
     EmailModule,
     CalendarModule,
   ],

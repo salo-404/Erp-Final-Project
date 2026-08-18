@@ -1,37 +1,43 @@
 import { Module } from '@nestjs/common';
+import { EmailModule } from '../integrations/email/email.module';
 import { InventoryTransactionsModule } from '../inventory-transactions/inventory-transactions.module';
 import { DocumentReviewController } from './document-review.controller';
 import {
+  DOCUMENT_EXTRACTION_PROVIDER,
+  DOCUMENT_REVIEW_NOTIFIER,
   DOCUMENT_STORAGE_PROVIDER,
   DocumentReviewService,
 } from './document-review.service';
+import { EmailDocumentReviewNotifier } from './email-document-review.notifier';
+import { RibalDocumentExtractionProvider } from './ribal-document-extraction.provider';
 import { S3DocumentStorageService } from './s3-document-storage.service';
 
 /**
- * NOT imported into AppModule yet — DOCUMENT_STORAGE_PROVIDER is now bound
- * to the real S3DocumentStorageService (see that file), but
- * DOCUMENT_EXTRACTION_PROVIDER and DOCUMENT_REVIEW_NOTIFIER still have no
- * bindings. No AI/document-extraction backend or notification integration
- * has been chosen or implemented yet — inventing one would mean guessing a
- * vendor and credentials that don't exist. Nest would fail to bootstrap the
- * app if this module were imported without those two bindings.
- *
- * To finish wiring this up: implement concrete classes for the remaining
- * two provider interfaces (GeoapifyGeocodingProvider in path-optimizer/,
- * and now S3DocumentStorageService here, are the template — "real external
- * API/SDK, bound via DI token, never hard-coded credentials") and add them
- * here as `{ provide: DOCUMENT_EXTRACTION_PROVIDER, useClass: ... }` etc.
- * Everything else — DocumentReviewService and its controller — is otherwise
- * complete and already tested.
+ * All three provider tokens are now bound:
+ *   - DOCUMENT_STORAGE_PROVIDER    -> S3DocumentStorageService
+ *   - DOCUMENT_EXTRACTION_PROVIDER -> RibalDocumentExtractionProvider (HTTP
+ *     adapter boundary only — Ribal's actual AgentCore/Bedrock logic lives
+ *     behind RIBAL_AGENT_URL, not implemented here)
+ *   - DOCUMENT_REVIEW_NOTIFIER     -> EmailDocumentReviewNotifier (reuses
+ *     Joseph's EmailModule/EmailService)
+ * This module can now be imported into AppModule.
  */
 @Module({
-  imports: [InventoryTransactionsModule],
+  imports: [InventoryTransactionsModule, EmailModule],
   controllers: [DocumentReviewController],
   providers: [
     DocumentReviewService,
     {
       provide: DOCUMENT_STORAGE_PROVIDER,
       useClass: S3DocumentStorageService,
+    },
+    {
+      provide: DOCUMENT_EXTRACTION_PROVIDER,
+      useClass: RibalDocumentExtractionProvider,
+    },
+    {
+      provide: DOCUMENT_REVIEW_NOTIFIER,
+      useClass: EmailDocumentReviewNotifier,
     },
   ],
   exports: [DocumentReviewService],

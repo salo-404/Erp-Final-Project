@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -6,28 +7,37 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { DocumentReviewService } from './document-review.service';
 import { ApproveDocumentReviewDto } from './dto/approve-document-review.dto';
 import { RejectDocumentReviewDto } from './dto/reject-document-review.dto';
 
-/**
- * NOTE: upload() is not exposed here yet. It needs (a) a multipart file
- * endpoint — `Express.Multer.File` typing requires `@types/multer`, not
- * currently a project dependency, and (b) a bound DocumentExtractionProvider
- * (Ribal Agent) and DocumentReviewNotifier — neither is implemented yet
- * (see document-review.module.ts). DocumentStorageProvider IS bound now
- * (S3DocumentStorageService); once the remaining two providers exist, this
- * endpoint can be added as a multipart upload that flows Browser -> S3 ->
- * presigned URL -> extraction provider, exactly as
- * DocumentReviewService.upload() already implements. Adding the route now
- * would either fail to typecheck or fail at runtime with a DI error, so
- * it's deliberately left out rather than half-implemented; see the report
- * for what's needed to add it.
- */
 @Controller('document-review')
 export class DocumentReviewController {
   constructor(private readonly documentReviewService: DocumentReviewService) {}
+
+  /**
+   * Browser -> NestJS -> S3 -> presigned URL -> extraction provider, all
+   * handled by DocumentReviewService.upload() (see that method's doc
+   * comment). `FileInterceptor` with no storage option defaults to
+   * multer's in-memory storage, so `file.buffer` is what gets forwarded as
+   * `content` — never written to disk, never sent anywhere but S3.
+   */
+  @Post('upload')
+  @UseInterceptors(FileInterceptor('file'))
+  upload(@UploadedFile() file?: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('file is required');
+    }
+    return this.documentReviewService.upload({
+      filename: file.originalname,
+      mimeType: file.mimetype,
+      content: file.buffer,
+    });
+  }
 
   @Get('pending')
   getPendingReviews() {

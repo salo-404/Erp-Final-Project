@@ -7,12 +7,13 @@ import { StockInsightsController } from './stock-insights.controller';
 import { StockInsightsService } from './stock-insights.service';
 
 /**
- * NOT imported into AppModule yet — StockInsightsService depends on
- * DocumentReviewService, which imports DocumentReviewModule (see that
- * module's own doc comment: its 3 external-provider tokens aren't bound on
- * this branch). This module inherits that same bootstrap blocker
- * transitively; once DocumentReviewModule's providers are bound, this
- * module — and Control Tower with it — becomes importable as-is.
+ * NOT imported into AppModule yet — not because of a bootstrap blocker
+ * (DocumentReviewModule, which this module imports transitively via
+ * StockInsightsService's dependency on DocumentReviewService, now has all
+ * 3 provider tokens bound and bootstraps fine on its own). Wiring this
+ * module — and Control Tower with it — into AppModule simply wasn't part
+ * of the phase that bound those tokens; it's a one-line addition whenever
+ * that's wanted.
  */
 @Module({
   imports: [
