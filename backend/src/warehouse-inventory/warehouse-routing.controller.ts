@@ -1,6 +1,7 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Post, UseGuards } from '@nestjs/common';
 import { WarehouseRoutingService } from './warehouse-routing.service';
 import { FindEligibleWarehousesDto } from './dto/find-eligible-warehouses.dto';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 /**
  * Separate from Joseph's WarehouseInventoryController/WarehousesController
@@ -12,6 +13,7 @@ import { FindEligibleWarehousesDto } from './dto/find-eligible-warehouses.dto';
  * without a rewrite.
  */
 @Controller('warehouse-routing')
+@UseGuards(JwtAuthGuard)
 export class WarehouseRoutingController {
   constructor(
     private readonly warehouseRoutingService: WarehouseRoutingService,

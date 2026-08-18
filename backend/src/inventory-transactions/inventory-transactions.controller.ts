@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { InventoryTransactionsService } from './inventory-transactions.service';
 import { CreateIncomingDto } from './dto/create-incoming.dto';
@@ -17,8 +18,10 @@ import {
   InventoryTransactionStatus,
   InventoryTransactionType,
 } from '../../generated/prisma/enums';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 @Controller('inventory-transactions')
+@UseGuards(JwtAuthGuard)
 export class InventoryTransactionsController {
   constructor(
     private readonly inventoryTransactionsService: InventoryTransactionsService,

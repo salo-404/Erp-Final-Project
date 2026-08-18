@@ -8,6 +8,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 describe('Analytics (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let authHeader: string;
 
   let laptopId: number;
   let beirutWarehouseId: number;
@@ -30,6 +31,12 @@ describe('Analytics (e2e)', () => {
     await app.init();
 
     prisma = app.get(PrismaService);
+
+    const loginResponse = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: 'employee@minierp.com', password: 'Password123!' })
+      .expect(200);
+    authHeader = `Bearer ${loginResponse.body.access_token}`;
 
     const laptop = await prisma.product.findFirstOrThrow({
       where: {
@@ -56,6 +63,7 @@ describe('Analytics (e2e)', () => {
   it('returns top-selling products', async () => {
     const response = await request(app.getHttpServer())
       .get('/analytics/top-selling-products')
+      .set('Authorization', authHeader)
       .expect(200);
 
     expect(Array.isArray(response.body)).toBe(true);
@@ -78,6 +86,7 @@ describe('Analytics (e2e)', () => {
   it('returns lowest-selling products including zero-sale products', async () => {
     const response = await request(app.getHttpServer())
       .get('/analytics/lowest-selling-products')
+      .set('Authorization', authHeader)
       .expect(200);
 
     expect(Array.isArray(response.body)).toBe(true);
@@ -98,6 +107,7 @@ describe('Analytics (e2e)', () => {
   it('returns fast-moving products', async () => {
     const response = await request(app.getHttpServer())
       .get('/analytics/fast-moving-products')
+      .set('Authorization', authHeader)
       .query({
         days: 30,
       })
@@ -121,6 +131,7 @@ describe('Analytics (e2e)', () => {
   it('returns slow-moving products', async () => {
     const response = await request(app.getHttpServer())
       .get('/analytics/slow-moving-products')
+      .set('Authorization', authHeader)
       .query({
         days: 30,
       })
@@ -139,6 +150,7 @@ describe('Analytics (e2e)', () => {
   it('returns sales trends', async () => {
     const response = await request(app.getHttpServer())
       .get('/analytics/sales-trends')
+      .set('Authorization', authHeader)
       .expect(200);
 
     expect(Array.isArray(response.body)).toBe(true);
@@ -154,6 +166,7 @@ describe('Analytics (e2e)', () => {
   it('returns purchase trends', async () => {
     const response = await request(app.getHttpServer())
       .get('/analytics/purchase-trends')
+      .set('Authorization', authHeader)
       .expect(200);
 
     expect(Array.isArray(response.body)).toBe(true);
@@ -166,6 +179,7 @@ describe('Analytics (e2e)', () => {
   it('returns stock history for a product', async () => {
     const response = await request(app.getHttpServer())
       .get(`/analytics/stock-history/${laptopId}`)
+      .set('Authorization', authHeader)
       .expect(200);
 
     expect(Array.isArray(response.body)).toBe(true);
@@ -179,6 +193,7 @@ describe('Analytics (e2e)', () => {
   it('returns warehouse demand', async () => {
     const response = await request(app.getHttpServer())
       .get('/analytics/warehouse-demand')
+      .set('Authorization', authHeader)
       .query({
         warehouseId: beirutWarehouseId,
       })
@@ -190,6 +205,7 @@ describe('Analytics (e2e)', () => {
   it('returns demand for one product', async () => {
     const response = await request(app.getHttpServer())
       .get(`/analytics/product-demand/${laptopId}`)
+      .set('Authorization', authHeader)
       .expect(200);
 
     expect(response.body).toBeDefined();
@@ -198,6 +214,7 @@ describe('Analytics (e2e)', () => {
   it('returns supplier comparison analytics', async () => {
     const response = await request(app.getHttpServer())
       .get('/analytics/supplier-comparison')
+      .set('Authorization', authHeader)
       .expect(200);
 
     expect(Array.isArray(response.body)).toBe(true);

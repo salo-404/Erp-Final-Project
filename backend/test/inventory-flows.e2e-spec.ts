@@ -8,6 +8,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 describe('Inventory transaction flows (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let authHeader: string;
 
   let beirutId: number;
   let tripoliId: number;
@@ -36,6 +37,12 @@ describe('Inventory transaction flows (e2e)', () => {
     await app.init();
 
     prisma = app.get(PrismaService);
+
+    const loginResponse = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: 'employee@minierp.com', password: 'Password123!' })
+      .expect(200);
+    authHeader = `Bearer ${loginResponse.body.access_token}`;
 
     const beirut = await prisma.warehouse.findFirstOrThrow({
       where: { name: 'Beirut Warehouse' },
@@ -93,6 +100,7 @@ describe('Inventory transaction flows (e2e)', () => {
 
     const createResponse = await request(app.getHttpServer())
       .post('/inventory-transactions/incoming')
+      .set('Authorization', authHeader)
       .send({
         supplierId,
         destinationWarehouseId: beirutId,
@@ -126,6 +134,7 @@ describe('Inventory transaction flows (e2e)', () => {
 
     await request(app.getHttpServer())
       .post(`/inventory-transactions/${transactionId}/complete`)
+      .set('Authorization', authHeader)
       .expect(201);
 
     const afterComplete = await prisma.warehouseInventory.findUniqueOrThrow({
@@ -175,6 +184,7 @@ describe('Inventory transaction flows (e2e)', () => {
 
     const createResponse = await request(app.getHttpServer())
       .post('/inventory-transactions/outgoing')
+      .set('Authorization', authHeader)
       .send({
         sourceWarehouseId: beirutId,
         partyName: 'E2E Test Customer',
@@ -217,6 +227,7 @@ describe('Inventory transaction flows (e2e)', () => {
 
     await request(app.getHttpServer())
       .post(`/inventory-transactions/${transactionId}/complete`)
+      .set('Authorization', authHeader)
       .expect(201);
 
     const afterComplete = await prisma.warehouseInventory.findUniqueOrThrow({
@@ -278,6 +289,7 @@ describe('Inventory transaction flows (e2e)', () => {
 
     const createResponse = await request(app.getHttpServer())
       .post('/inventory-transactions/transfer')
+      .set('Authorization', authHeader)
       .send({
         sourceWarehouseId: beirutId,
         destinationWarehouseId: tripoliId,
@@ -304,6 +316,7 @@ describe('Inventory transaction flows (e2e)', () => {
 
     await request(app.getHttpServer())
       .post(`/inventory-transactions/${transactionId}/complete`)
+      .set('Authorization', authHeader)
       .expect(201);
 
     const sourceAfter = await prisma.warehouseInventory.findUniqueOrThrow({
@@ -366,6 +379,7 @@ describe('Inventory transaction flows (e2e)', () => {
 
     const createResponse = await request(app.getHttpServer())
       .post('/inventory-transactions/outgoing')
+      .set('Authorization', authHeader)
       .send({
         sourceWarehouseId: beirutId,
         partyName: 'Cancelled E2E Customer',
@@ -391,6 +405,7 @@ describe('Inventory transaction flows (e2e)', () => {
 
     await request(app.getHttpServer())
       .post(`/inventory-transactions/${transactionId}/cancel`)
+      .set('Authorization', authHeader)
       .expect(201);
 
     const cancelledReservation = await prisma.reservation.findUniqueOrThrow({

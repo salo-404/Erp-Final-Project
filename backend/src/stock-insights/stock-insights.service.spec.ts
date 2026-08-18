@@ -1004,7 +1004,7 @@ describe('StockInsightsService.getStockoutRisk', () => {
     ]);
   });
 
-  it('classifies AT_RISK when available is at or below reorderThreshold', async () => {
+  it('classifies AT_RISK when available is below reorderThreshold', async () => {
     const { service, prisma } = buildService();
     prisma.warehouseInventory.findMany.mockResolvedValue([
       inventoryRow({
@@ -1021,7 +1021,7 @@ describe('StockInsightsService.getStockoutRisk', () => {
     expect(result[0].riskLevel).toBe('AT_RISK');
   });
 
-  it('confirmed rule: AT_RISK is inclusive at available === reorderThreshold', async () => {
+  it('confirmed rule: OK is inclusive at available === reorderThreshold', async () => {
     const { service, prisma } = buildService();
     prisma.warehouseInventory.findMany.mockResolvedValue([
       inventoryRow({
@@ -1036,16 +1036,16 @@ describe('StockInsightsService.getStockoutRisk', () => {
     const result = await service.getStockoutRisk(30, NOW);
 
     expect(result[0].available).toBe(10);
-    expect(result[0].riskLevel).toBe('AT_RISK');
+    expect(result[0].riskLevel).toBe('OK');
   });
 
-  it('confirmed rule: OK begins exactly one unit above reorderThreshold', async () => {
+  it('confirmed rule: AT_RISK ends exactly one unit below reorderThreshold', async () => {
     const { service, prisma } = buildService();
     prisma.warehouseInventory.findMany.mockResolvedValue([
       inventoryRow({
         productId: 100,
         warehouseId: 10,
-        onHand: 11,
+        onHand: 9,
         reorderThreshold: 10,
       }),
     ]);
@@ -1053,8 +1053,8 @@ describe('StockInsightsService.getStockoutRisk', () => {
 
     const result = await service.getStockoutRisk(30, NOW);
 
-    expect(result[0].available).toBe(11);
-    expect(result[0].riskLevel).toBe('OK');
+    expect(result[0].available).toBe(9);
+    expect(result[0].riskLevel).toBe('AT_RISK');
   });
 
   it('confirmed rule: available = onHand - active reservations (never a different formula)', async () => {

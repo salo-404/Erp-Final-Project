@@ -1,7 +1,15 @@
-import { Controller, Get, ParseIntPipe, Query } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  ParseIntPipe,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { StockInsightsService } from './stock-insights.service';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 @Controller('stock-insights')
+@UseGuards(JwtAuthGuard)
 export class StockInsightsController {
   constructor(private readonly stockInsightsService: StockInsightsService) {}
 

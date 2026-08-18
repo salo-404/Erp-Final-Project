@@ -14,6 +14,7 @@ import {
 } from './document-review.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { InventoryTransactionsService } from '../inventory-transactions/inventory-transactions.service';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 /**
  * Builds a real DocumentReviewService (not a mock of the service itself) so
@@ -74,7 +75,13 @@ async function createTestApp(
   const moduleRef = await Test.createTestingModule({
     controllers: [DocumentReviewController],
     providers: [{ provide: DocumentReviewService, useValue: service }],
-  }).compile();
+  })
+    // These tests exercise upload()'s business logic, not authentication —
+    // JwtAuthGuard is covered separately (see auth-roles.e2e-spec.ts and
+    // this controller's own guard-wiring assertions).
+    .overrideGuard(JwtAuthGuard)
+    .useValue({ canActivate: () => true })
+    .compile();
 
   const app = moduleRef.createNestApplication();
   await app.init();

@@ -21,7 +21,7 @@ describe('StockInsightsModule wiring', () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it('bootstraps successfully now that DocumentReviewModule (imported transitively via DocumentReviewService) has all 3 provider tokens bound — confirms this module and Control Tower are ready to be wired into AppModule whenever desired', async () => {
+  it('bootstraps successfully now that DocumentReviewModule (imported transitively via DocumentReviewService) has all 3 provider tokens bound — confirms this module and Control Tower are correctly wired into AppModule', async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [PrismaModule, StockInsightsModule],
     })

@@ -8,6 +8,7 @@ import {
   GeocodingProvider,
 } from '../src/path-optimizer/path-optimizer.service';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { JwtAuthGuard } from '../src/common/guards/jwt-auth.guard';
 
 const mockGeocoder: GeocodingProvider = {
   async geocode(address: string) {
@@ -74,6 +75,10 @@ describe('Path Optimizer (e2e)', () => {
     })
       .overrideProvider(GEOCODING_PROVIDER)
       .useValue(mockGeocoder)
+      // This suite is isolated to PathOptimizerModule to keep the geocoding
+      // mock focused — JWT auth itself is covered by auth-roles.e2e-spec.ts.
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
       .compile();
 
     app = moduleFixture.createNestApplication();

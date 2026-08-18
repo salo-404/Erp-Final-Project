@@ -3,6 +3,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 
 import { StockInsightsModule } from '../src/stock-insights/stock-insights.module';
+import { JwtAuthGuard } from '../src/common/guards/jwt-auth.guard';
 
 describe('Stock Insights + Control Tower (e2e)', () => {
   let app: INestApplication;
@@ -10,7 +11,12 @@ describe('Stock Insights + Control Tower (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [StockInsightsModule],
-    }).compile();
+    })
+      // This suite is isolated to StockInsightsModule — JWT auth itself is
+      // covered by auth-roles.e2e-spec.ts.
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     app = moduleFixture.createNestApplication();
 

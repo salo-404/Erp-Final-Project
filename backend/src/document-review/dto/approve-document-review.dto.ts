@@ -25,11 +25,13 @@ export class ApproveDocumentReviewItemDto {
   price?: number;
 }
 
+/**
+ * No `reviewedById` here on purpose — the reviewer is never taken from the
+ * client body. DocumentReviewController.approve() derives it from the
+ * authenticated JWT user (@CurrentUser()), so it can't be spoofed by
+ * sending a fake id in the request.
+ */
 export class ApproveDocumentReviewDto {
-  @IsInt()
-  @IsPositive()
-  reviewedById: number;
-
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })

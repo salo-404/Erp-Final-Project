@@ -5,12 +5,20 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { StockMovementsService } from './stock-movements.service';
 import { AdjustInventoryDto } from './dto/adjust-inventory.dto';
 import { StockMovementType } from '../../generated/prisma/enums';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../common/decorators/current-user.decorator';
+import { UserRole } from '../../generated/prisma/enums';
 
 @Controller('stock-movements')
+@UseGuards(JwtAuthGuard)
 export class StockMovementsController {
   constructor(private readonly stockMovementsService: StockMovementsService) {}
 
@@ -52,10 +60,20 @@ export class StockMovementsController {
   /**
    * Admin-only manual correction, routed entirely through the existing
    * recordMovement() as an ADJUSTMENT movement — see
-   * StockMovementsService.adjustInventory().
+   * StockMovementsService.adjustInventory(). `requestedBy` comes from the
+   * authenticated JWT user, never the request body — a client cannot claim
+   * a different id or role to get past the ADMIN check.
    */
   @Post('adjust')
-  adjustInventory(@Body() dto: AdjustInventoryDto) {
-    return this.stockMovementsService.adjustInventory(dto);
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
+  adjustInventory(
+    @Body() dto: AdjustInventoryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.stockMovementsService.adjustInventory({
+      ...dto,
+      requestedBy: { id: user.id, role: user.role },
+    });
   }
 }

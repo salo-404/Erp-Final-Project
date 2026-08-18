@@ -1,5 +1,13 @@
-import { Controller, Get, Param, ParseIntPipe, Query } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { SupplierIntelligenceService } from './supplier-intelligence.service';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 /**
  * Separate from Joseph's SuppliersController on purpose (per the
@@ -9,6 +17,7 @@ import { SupplierIntelligenceService } from './supplier-intelligence.service';
  * it at merge time without a rewrite.
  */
 @Controller('supplier-intelligence')
+@UseGuards(JwtAuthGuard)
 export class SupplierIntelligenceController {
   constructor(
     private readonly supplierIntelligenceService: SupplierIntelligenceService,

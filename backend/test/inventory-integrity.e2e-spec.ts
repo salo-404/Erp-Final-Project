@@ -9,7 +9,9 @@ describe('Inventory integrity (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
 
-  let adminId: number;
+  let adminAuthHeader: string;
+  let employeeAuthHeader: string;
+
   let beirutId: number;
   let mouseId: number;
 
@@ -32,9 +34,17 @@ describe('Inventory integrity (e2e)', () => {
 
     prisma = app.get(PrismaService);
 
-    const admin = await prisma.user.findFirstOrThrow({
-      where: { email: 'admin@minierp.com' },
-    });
+    const adminLogin = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: 'admin@minierp.com', password: 'Password123!' })
+      .expect(200);
+    adminAuthHeader = `Bearer ${adminLogin.body.access_token}`;
+
+    const employeeLogin = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: 'employee@minierp.com', password: 'Password123!' })
+      .expect(200);
+    employeeAuthHeader = `Bearer ${employeeLogin.body.access_token}`;
 
     const beirut = await prisma.warehouse.findFirstOrThrow({
       where: { name: 'Beirut Warehouse' },
@@ -44,7 +54,6 @@ describe('Inventory integrity (e2e)', () => {
       where: { name: 'Wireless Mouse' },
     });
 
-    adminId = admin.id;
     beirutId = beirut.id;
     mouseId = mouse.id;
   });
@@ -67,15 +76,12 @@ describe('Inventory integrity (e2e)', () => {
 
     const response = await request(app.getHttpServer())
       .post('/stock-movements/adjust')
+      .set('Authorization', adminAuthHeader)
       .send({
         productId: mouseId,
         warehouseId: beirutId,
         quantity: 7,
         reason: 'E2E physical stock correction',
-        requestedBy: {
-          id: adminId,
-          role: 'ADMIN',
-        },
       })
       .expect(201);
 
@@ -106,21 +112,58 @@ describe('Inventory integrity (e2e)', () => {
   });
 
   it('rejects inventory adjustment from an EMPLOYEE', async () => {
-    const employee = await prisma.user.findFirstOrThrow({
-      where: { email: 'employee@minierp.com' },
-    });
+    await request(app.getHttpServer())
+      .post('/stock-movements/adjust')
+      .set('Authorization', employeeAuthHeader)
+      .send({
+        productId: mouseId,
+        warehouseId: beirutId,
+        quantity: 5,
+        reason: 'Unauthorized adjustment test',
+      })
+      .expect(403);
+  });
 
+  it('rejects inventory adjustment with no JWT at all', async () => {
     await request(app.getHttpServer())
       .post('/stock-movements/adjust')
       .send({
         productId: mouseId,
         warehouseId: beirutId,
         quantity: 5,
-        reason: 'Unauthorized adjustment test',
-        requestedBy: {
-          id: employee.id,
-          role: 'EMPLOYEE',
-        },
+        reason: 'Unauthenticated adjustment test',
+      })
+      .expect(401);
+  });
+
+  it('rejects a request that sends a requestedBy/role field in the body — the backend never reads it, it does not even parse as a valid body', async () => {
+    // Sent by a real ADMIN (so the role guard itself isn't what blocks this)
+    // to isolate the actual assertion: requestedBy is no longer part of the
+    // DTO, so forbidNonWhitelisted rejects it outright as an unrecognized
+    // property, before the request could ever use it as an identity.
+    await request(app.getHttpServer())
+      .post('/stock-movements/adjust')
+      .set('Authorization', adminAuthHeader)
+      .send({
+        productId: mouseId,
+        warehouseId: beirutId,
+        quantity: 5,
+        reason: 'Impersonation attempt',
+        requestedBy: { id: 1, role: 'ADMIN' },
+      })
+      .expect(400);
+  });
+
+  it('EMPLOYEE cannot impersonate ADMIN via a fake requestedBy/role in the body — still 403, from the authenticated EMPLOYEE identity', async () => {
+    await request(app.getHttpServer())
+      .post('/stock-movements/adjust')
+      .set('Authorization', employeeAuthHeader)
+      .send({
+        productId: mouseId,
+        warehouseId: beirutId,
+        quantity: 5,
+        reason: 'Impersonation attempt',
+        requestedBy: { id: 1, role: 'ADMIN' },
       })
       .expect(403);
   });
@@ -128,6 +171,7 @@ describe('Inventory integrity (e2e)', () => {
   it('reconciliation reports no mismatch when inventory matches the ledger', async () => {
     const response = await request(app.getHttpServer())
       .get('/stock-movements/reconcile')
+      .set('Authorization', adminAuthHeader)
       .expect(200);
 
     expect(Array.isArray(response.body)).toBe(true);
@@ -157,6 +201,7 @@ describe('Inventory integrity (e2e)', () => {
 
     const response = await request(app.getHttpServer())
       .get('/stock-movements/reconcile')
+      .set('Authorization', adminAuthHeader)
       .expect(200);
 
     const mismatch = response.body.find(

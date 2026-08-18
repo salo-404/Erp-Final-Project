@@ -8,6 +8,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 describe('Supplier Intelligence (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let authHeader: string;
 
   let laptopId: number;
   let techSourceId: number;
@@ -31,6 +32,12 @@ describe('Supplier Intelligence (e2e)', () => {
 
     prisma = app.get(PrismaService);
 
+    const loginResponse = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: 'employee@minierp.com', password: 'Password123!' })
+      .expect(200);
+    authHeader = `Bearer ${loginResponse.body.access_token}`;
+
     const laptop = await prisma.product.findFirstOrThrow({
       where: { name: 'Laptop Pro 14' },
     });
@@ -52,6 +59,7 @@ describe('Supplier Intelligence (e2e)', () => {
   it('returns supplier statistics from transaction history', async () => {
     const response = await request(app.getHttpServer())
       .get(`/supplier-intelligence/${techSourceId}/stats`)
+      .set('Authorization', authHeader)
       .expect(200);
 
     expect(response.body.supplierId).toBe(techSourceId);
@@ -71,6 +79,7 @@ describe('Supplier Intelligence (e2e)', () => {
   it('compares only suppliers that supplied the requested product', async () => {
     const response = await request(app.getHttpServer())
       .get('/supplier-intelligence/compare')
+      .set('Authorization', authHeader)
       .query({
         productId: laptopId,
       })
@@ -99,6 +108,7 @@ describe('Supplier Intelligence (e2e)', () => {
   it('ranks suppliers and clearly marks insufficient data', async () => {
     const response = await request(app.getHttpServer())
       .get('/supplier-intelligence/rank')
+      .set('Authorization', authHeader)
       .query({
         productId: laptopId,
       })
@@ -133,6 +143,7 @@ describe('Supplier Intelligence (e2e)', () => {
   it('returns null for best supplier when no supplier has enough ranking evidence', async () => {
     const rankedResponse = await request(app.getHttpServer())
       .get('/supplier-intelligence/rank')
+      .set('Authorization', authHeader)
       .query({
         productId: laptopId,
       })
@@ -144,6 +155,7 @@ describe('Supplier Intelligence (e2e)', () => {
 
     const bestResponse = await request(app.getHttpServer())
       .get('/supplier-intelligence/best')
+      .set('Authorization', authHeader)
       .query({
         productId: laptopId,
       })

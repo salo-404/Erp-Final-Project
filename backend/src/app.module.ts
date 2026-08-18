@@ -11,6 +11,7 @@ import { PathOptimizerModule } from './path-optimizer/path-optimizer.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
 import { ReservationsModule } from './reservations/reservations.module';
+import { StockInsightsModule } from './stock-insights/stock-insights.module';
 import { StockMovementsModule } from './stock-movements/stock-movements.module';
 import { SupplierIntelligenceModule } from './suppliers/supplier-intelligence.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
@@ -18,11 +19,6 @@ import { UsersModule } from './users/users.module';
 import { WarehouseInventoryModule } from './warehouse-inventory/warehouse-inventory.module';
 import { WarehouseRoutingModule } from './warehouse-inventory/warehouse-routing.module';
 import { WarehousesModule } from './warehouses/warehouses.module';
-
-// NOT imported here yet (would break bootstrap — see its own doc comment
-// for the exact binding needed):
-//   - StockInsightsModule (imports DocumentReviewModule, but wasn't part of
-//     this phase's scope — revisit separately)
 
 @Module({
   imports: [
@@ -41,6 +37,7 @@ import { WarehousesModule } from './warehouses/warehouses.module';
     PathOptimizerModule,
     InventoryTransactionsModule,
     DocumentReviewModule,
+    StockInsightsModule,
     EmailModule,
     CalendarModule,
   ],

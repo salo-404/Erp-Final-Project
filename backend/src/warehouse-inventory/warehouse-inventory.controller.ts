@@ -5,11 +5,17 @@ import {
   Param,
   ParseIntPipe,
   Patch,
+  UseGuards,
 } from '@nestjs/common';
 import { WarehouseInventoryService } from './warehouse-inventory.service';
 import { UpdateReorderThresholdDto } from './dto/update-reorder-threshold.dto';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { UserRole } from '../../generated/prisma/enums';
 
 @Controller('warehouse-inventory')
+@UseGuards(JwtAuthGuard)
 export class WarehouseInventoryController {
   constructor(
     private readonly warehouseInventoryService: WarehouseInventoryService,
@@ -45,7 +51,10 @@ export class WarehouseInventoryController {
     return this.warehouseInventoryService.getWarehouseCapacity(warehouseId);
   }
 
+  /** ADMIN-only — changes reorder policy, not routine order fulfillment. */
   @Patch(':warehouseId/:productId/reorder-threshold')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN)
   setReorderThreshold(
     @Param('warehouseId', ParseIntPipe) warehouseId: number,
     @Param('productId', ParseIntPipe) productId: number,

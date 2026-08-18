@@ -1,30 +1,11 @@
-import { Type } from 'class-transformer';
-import {
-  IsEnum,
-  IsInt,
-  IsPositive,
-  IsString,
-  MinLength,
-  ValidateNested,
-} from 'class-validator';
-import { UserRole } from '../../../generated/prisma/enums';
+import { IsInt, IsPositive, IsString, MinLength } from 'class-validator';
 
 /**
- * No auth guard is wired on this route yet (none exist anywhere in this app
- * except one auth.controller.ts route) — until JwtAuthGuard/RolesGuard are
- * rolled out project-wide, the caller identity is passed explicitly, the
- * same way DocumentReviewService already takes `reviewedById` in its DTOs.
- * StockMovementsService.adjustInventory() is still the authoritative
- * ADMIN-only check; this is just how that identity reaches it for now.
+ * No `requestedBy`/identity field here on purpose — the requester is never
+ * taken from the client body. StockMovementsController.adjustInventory()
+ * derives it from the authenticated JWT user (@CurrentUser()), so it can't
+ * be spoofed by sending a fake `role`/`id` in the request.
  */
-export class AdjustInventoryRequestedByDto {
-  @IsInt()
-  id: number;
-
-  @IsEnum(UserRole)
-  role: UserRole;
-}
-
 export class AdjustInventoryDto {
   @IsInt()
   @IsPositive()
@@ -41,8 +22,4 @@ export class AdjustInventoryDto {
   @IsString()
   @MinLength(1)
   reason: string;
-
-  @ValidateNested()
-  @Type(() => AdjustInventoryRequestedByDto)
-  requestedBy: AdjustInventoryRequestedByDto;
 }

@@ -1,5 +1,12 @@
-import { Controller, Get, ParseIntPipe, Query } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  ParseIntPipe,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { StockInsightsService } from './stock-insights.service';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 /**
  * Control Tower is the aggregation/presentation layer over Stock Insights +
@@ -9,6 +16,7 @@ import { StockInsightsService } from './stock-insights.service';
  * itself does all the aggregation, nothing is duplicated here.
  */
 @Controller('control-tower')
+@UseGuards(JwtAuthGuard)
 export class ControlTowerController {
   constructor(private readonly stockInsightsService: StockInsightsService) {}
 
