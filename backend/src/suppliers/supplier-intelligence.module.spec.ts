@@ -8,7 +8,7 @@ import { SupplierIntelligenceController } from './supplier-intelligence.controll
 import { SupplierIntelligenceModule } from './supplier-intelligence.module';
 
 describe('SupplierIntelligenceModule wiring', () => {
-  it('bootstraps with SUPPLIERS_HISTORY_PROVIDER bound to SuppliersService — confirms the module is fully integrated with Joseph\'s SuppliersModule', async () => {
+  it("bootstraps with SUPPLIERS_HISTORY_PROVIDER bound to SuppliersService — confirms the module is fully integrated with Joseph's SuppliersModule", async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [PrismaModule, SupplierIntelligenceModule],
     })
