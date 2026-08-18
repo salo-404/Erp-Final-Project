@@ -146,6 +146,71 @@ It builds the Supervisor agent from your current `.env` and loops:
 read a line from stdin, send it to the Supervisor, print the response, type
 `exit` to quit. This is a manual sanity-check tool, not an automated test.
 
+## Deploying to AgentCore Runtime
+
+`agentcore_entrypoint.py` (project root) is **separate from
+`scripts/chat_locally.py`** and serves a different purpose:
+`chat_locally.py` is a stdin/stdout REPL for local development only and is
+never deployed anywhere. `agentcore_entrypoint.py` is the actual deployment
+artifact - it wraps the same `build_supervisor_agent()` in an HTTP service
+using [`BedrockAgentCoreApp`](https://pypi.org/project/bedrock-agentcore/)
+(Option A / SDK Integration from Strands' official AgentCore deployment
+guide), so it's what AgentCore Runtime actually runs in AWS.
+
+It does not add any new agent behavior - same Supervisor, same gate, same
+specialists. The only things this file adds are: building the Supervisor
+**once** at module load (not per HTTP request - see the module docstring
+for why the scope gate still runs per-request despite that), an
+`@app.entrypoint` function that reads a JSON body's `"prompt"` field and
+returns `{"result": "..."}`, and the `if __name__ == "__main__": app.run()`
+that starts the AgentCore HTTP server on port 8080.
+
+**Model-agnostic, independent of Bedrock permissions.** `build_supervisor_agent()`
+already resolves its model through `settings.build_model("supervisor")` -
+see "Switching providers" above - so this entrypoint works with whichever
+`MODEL_PROVIDER` is set in `.env` right now (currently `openai`), with zero
+code changes. Deploying this to AgentCore Runtime does not require AWS
+Bedrock model-invoke permissions unless `MODEL_PROVIDER=bedrock` - the
+Runtime *hosting* layer (the container, the HTTP endpoint, the deployment
+pipeline) is a separate AWS capability from the Bedrock model backend, and
+this wrapper only needs the former to run.
+
+### Testing the wrapper locally before any real AWS deployment
+
+Per the official guide's manual verification steps - confirm the HTTP
+service works before attempting a real `agentcore launch`:
+
+```bash
+# Terminal 1 - start the service
+python agentcore_entrypoint.py
+```
+
+```bash
+# Terminal 2 - health check
+curl http://localhost:8080/ping
+
+# Terminal 2 - a real query
+curl -X POST http://localhost:8080/invocations \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Which products are at risk of stocking out?"}'
+```
+
+You should get back `{"status":"Healthy",...}` from `/ping` and
+`{"result": "..."}` from `/invocations` - the same kind of answer you'd see
+from `scripts/chat_locally.py`, just over HTTP instead of a REPL. An
+out-of-scope or prompt-injection-shaped prompt still gets declined by the
+gate here too, before it ever reaches a specialist - the whole point of
+this file is that it's a thin transport shell, not a different code path.
+`scripts/test_agentcore_local.py` automates exactly this sequence (start
+the server, hit `/ping`, hit `/invocations` with both an in-scope and an
+out-of-scope prompt, print the results) if you'd rather run one command
+than juggle two terminals.
+
+Real AWS deployment (`agentcore configure` / `agentcore launch`, IAM roles,
+ECR image build) is not covered here - this section only covers proving the
+wrapper itself works, which is the prerequisite the official guide expects
+before you attempt that.
+
 ## Control Tower narration (not a fourth agent)
 
 `narration/control_tower.py` is a **batch process, not a chat entry point,

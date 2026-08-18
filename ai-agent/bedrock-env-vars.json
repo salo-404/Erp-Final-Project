@@ -1,0 +1,5 @@
+{
+  "MODEL_PROVIDER": "bedrock",
+  "BEDROCK_MODEL_ID": "eu.amazon.nova-pro-v1:0",
+  "AWS_REGION": "eu-west-1"
+}

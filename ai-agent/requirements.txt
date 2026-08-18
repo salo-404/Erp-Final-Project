@@ -8,3 +8,10 @@ boto3>=1.43.0
 pydantic>=2.13.0
 pytest>=9.1.0
 python-dotenv>=1.2.0
+
+# AgentCore Runtime deployment wrapper (agentcore_entrypoint.py) - provides
+# BedrockAgentCoreApp, the HTTP service shell around the existing Supervisor
+# agent. Model-agnostic: works regardless of which MODEL_PROVIDER is active,
+# since it only serves HTTP requests around build_supervisor_agent() - it
+# does not itself talk to Bedrock.
+bedrock-agentcore>=1.21.0

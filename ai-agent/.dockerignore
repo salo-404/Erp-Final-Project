@@ -1,0 +1,35 @@
+# Secrets and local-only config - the container reads config from real
+# environment variables at deploy/run time (see config/settings.py), never
+# from a baked-in .env file. Never let a real .env reach the build context.
+.env
+.env.*.local
+.env.local
+
+# Version control
+.git
+.gitignore
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments (never ship a host-built venv into the image)
+.venv/
+venv/
+
+# Tests - not needed at runtime, and pytest/test fixtures have no business
+# in a deployed image
+tests/
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docs and local scratch - README/example files aren't needed for the
+# container to run
+README.md
+.env.example
