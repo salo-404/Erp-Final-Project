@@ -390,6 +390,311 @@ describe('StockMovementsService.recordMovement', () => {
   });
 });
 
+describe('StockMovementsService.adjustInventory', () => {
+  const ADMIN = { id: 1, role: 'ADMIN' as const };
+  const EMPLOYEE = { id: 2, role: 'EMPLOYEE' as const };
+
+  it('creates an ADJUSTMENT movement through recordMovement() for an ADMIN, never writing onHand directly', async () => {
+    const tx = createMockTx();
+    setupHappyPath(tx, 100);
+    const service = new StockMovementsService(createMockPrisma(tx));
+
+    const movement = await service.adjustInventory({
+      productId: 1,
+      warehouseId: 10,
+      quantity: 5,
+      reason: 'Stocktake correction',
+      requestedBy: ADMIN,
+    });
+
+    expect(tx.stockMovement.create).toHaveBeenCalledWith({
+      data: {
+        productId: 1,
+        warehouseId: 10,
+        type: 'ADJUSTMENT',
+        quantity: 5,
+        transactionId: undefined,
+      },
+    });
+    // onHand is only ever written by recordMovementWithClient's own update —
+    // adjustInventory() never calls warehouseInventory.update() itself.
+    expect(tx.warehouseInventory.update).toHaveBeenCalledWith({
+      where: { productId_warehouseId: { productId: 1, warehouseId: 10 } },
+      data: { onHand: 105 },
+    });
+    expect(movement.quantity).toBe(5);
+  });
+
+  it('rejects a non-ADMIN requester without touching the database', async () => {
+    const tx = createMockTx();
+    const service = new StockMovementsService(createMockPrisma(tx));
+
+    await expect(
+      service.adjustInventory({
+        productId: 1,
+        warehouseId: 10,
+        quantity: 5,
+        reason: 'Stocktake correction',
+        requestedBy: EMPLOYEE,
+      }),
+    ).rejects.toThrow('Only an ADMIN may adjust inventory');
+
+    expect(tx.product.findUnique).not.toHaveBeenCalled();
+    expect(tx.stockMovement.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty/missing reason without touching the database', async () => {
+    const tx = createMockTx();
+    const service = new StockMovementsService(createMockPrisma(tx));
+
+    await expect(
+      service.adjustInventory({
+        productId: 1,
+        warehouseId: 10,
+        quantity: 5,
+        reason: '   ',
+        requestedBy: ADMIN,
+      }),
+    ).rejects.toThrow('reason is required for an inventory adjustment');
+
+    expect(tx.product.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid adjustments via the existing recordMovement rules (zero quantity)', async () => {
+    const tx = createMockTx();
+    const service = new StockMovementsService(createMockPrisma(tx));
+
+    await expect(
+      service.adjustInventory({
+        productId: 1,
+        warehouseId: 10,
+        quantity: 0,
+        reason: 'Stocktake correction',
+        requestedBy: ADMIN,
+      }),
+    ).rejects.toThrow('ADJUSTMENT quantity must be a non-zero integer');
+  });
+
+  it('rejects an adjustment that would drive onHand negative, via the existing recordMovement rules', async () => {
+    const tx = createMockTx();
+    setupHappyPath(tx, 2);
+    const service = new StockMovementsService(createMockPrisma(tx));
+
+    await expect(
+      service.adjustInventory({
+        productId: 1,
+        warehouseId: 10,
+        quantity: -5,
+        reason: 'Stocktake correction',
+        requestedBy: ADMIN,
+      }),
+    ).rejects.toThrow(/negative onHand/);
+
+    expect(tx.stockMovement.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the product/warehouse does not exist, via the existing recordMovement validation', async () => {
+    const tx = createMockTx();
+    tx.product.findUnique.mockResolvedValue(null);
+    const service = new StockMovementsService(createMockPrisma(tx));
+
+    await expect(
+      service.adjustInventory({
+        productId: 999,
+        warehouseId: 10,
+        quantity: 5,
+        reason: 'Stocktake correction',
+        requestedBy: ADMIN,
+      }),
+    ).rejects.toThrow('Product 999 not found');
+  });
+
+  it('reuses a caller-supplied transaction client instead of opening its own', async () => {
+    const tx = createMockTx();
+    setupHappyPath(tx, 10);
+    const prisma = createMockPrisma(tx);
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- jest.fn() mock, safe to reference detached
+    const transactionSpy = prisma.$transaction as jest.Mock;
+    const service = new StockMovementsService(prisma);
+
+    await service.adjustInventory(
+      {
+        productId: 1,
+        warehouseId: 10,
+        quantity: 5,
+        reason: 'Stocktake correction',
+        requestedBy: ADMIN,
+      },
+      tx as never,
+    );
+
+    expect(transactionSpy).not.toHaveBeenCalled();
+    expect(tx.stockMovement.create).toHaveBeenCalled();
+  });
+});
+
+function createMockPrismaForReconcile() {
+  return {
+    warehouseInventory: { findMany: jest.fn() },
+    stockMovement: { findMany: jest.fn() },
+  };
+}
+
+describe('StockMovementsService.reconcileInventory', () => {
+  it('returns no mismatches when recorded onHand matches the ledger-calculated total', async () => {
+    const prisma = createMockPrismaForReconcile();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      { productId: 1, warehouseId: 10, onHand: 15, reorderThreshold: 0 },
+    ]);
+    prisma.stockMovement.findMany.mockResolvedValue([
+      { productId: 1, warehouseId: 10, type: 'INCOMING', quantity: 20 },
+      { productId: 1, warehouseId: 10, type: 'OUTGOING', quantity: 5 },
+    ]);
+    const service = new StockMovementsService(
+      prisma as unknown as PrismaService,
+    );
+
+    const result = await service.reconcileInventory();
+
+    expect(result).toEqual([]);
+  });
+
+  it('flags a mismatch with productId, warehouseId, recordedOnHand, calculatedOnHand, and difference', async () => {
+    const prisma = createMockPrismaForReconcile();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      { productId: 1, warehouseId: 10, onHand: 50, reorderThreshold: 0 },
+    ]);
+    prisma.stockMovement.findMany.mockResolvedValue([
+      { productId: 1, warehouseId: 10, type: 'INCOMING', quantity: 20 },
+    ]);
+    const service = new StockMovementsService(
+      prisma as unknown as PrismaService,
+    );
+
+    const result = await service.reconcileInventory();
+
+    expect(result).toEqual([
+      {
+        productId: 1,
+        warehouseId: 10,
+        recordedOnHand: 50,
+        calculatedOnHand: 20,
+        difference: 30,
+      },
+    ]);
+  });
+
+  it('applies the same delta rule as recordMovement() across every movement type, including signed ADJUSTMENT', async () => {
+    const prisma = createMockPrismaForReconcile();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      { productId: 1, warehouseId: 10, onHand: 12, reorderThreshold: 0 },
+    ]);
+    prisma.stockMovement.findMany.mockResolvedValue([
+      { productId: 1, warehouseId: 10, type: 'INCOMING', quantity: 20 },
+      { productId: 1, warehouseId: 10, type: 'OUTGOING', quantity: 5 },
+      { productId: 1, warehouseId: 10, type: 'TRANSFER_IN', quantity: 3 },
+      { productId: 1, warehouseId: 10, type: 'TRANSFER_OUT', quantity: 4 },
+      { productId: 1, warehouseId: 10, type: 'ADJUSTMENT', quantity: -2 },
+    ]);
+    const service = new StockMovementsService(
+      prisma as unknown as PrismaService,
+    );
+
+    // calculated = 20 - 5 + 3 - 4 + (-2) = 12, matches recorded -> no mismatch.
+    const result = await service.reconcileInventory();
+
+    expect(result).toEqual([]);
+  });
+
+  it('treats a product/warehouse row with no movements at all as calculatedOnHand: 0', async () => {
+    const prisma = createMockPrismaForReconcile();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      { productId: 1, warehouseId: 10, onHand: 5, reorderThreshold: 0 },
+    ]);
+    prisma.stockMovement.findMany.mockResolvedValue([]);
+    const service = new StockMovementsService(
+      prisma as unknown as PrismaService,
+    );
+
+    const result = await service.reconcileInventory();
+
+    expect(result).toEqual([
+      {
+        productId: 1,
+        warehouseId: 10,
+        recordedOnHand: 5,
+        calculatedOnHand: 0,
+        difference: 5,
+      },
+    ]);
+  });
+
+  it('is sorted deterministically by (productId, warehouseId)', async () => {
+    const prisma = createMockPrismaForReconcile();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      { productId: 200, warehouseId: 10, onHand: 5, reorderThreshold: 0 },
+      { productId: 100, warehouseId: 20, onHand: 5, reorderThreshold: 0 },
+      { productId: 100, warehouseId: 10, onHand: 5, reorderThreshold: 0 },
+    ]);
+    prisma.stockMovement.findMany.mockResolvedValue([]);
+    const service = new StockMovementsService(
+      prisma as unknown as PrismaService,
+    );
+
+    const result = await service.reconcileInventory();
+
+    expect(result.map((r) => [r.productId, r.warehouseId])).toEqual([
+      [100, 10],
+      [100, 20],
+      [200, 10],
+    ]);
+  });
+
+  it('returns an empty array when there is no inventory', async () => {
+    const prisma = createMockPrismaForReconcile();
+    prisma.warehouseInventory.findMany.mockResolvedValue([]);
+    prisma.stockMovement.findMany.mockResolvedValue([]);
+    const service = new StockMovementsService(
+      prisma as unknown as PrismaService,
+    );
+
+    const result = await service.reconcileInventory();
+
+    expect(result).toEqual([]);
+  });
+
+  it('never writes anything (read-only) — no update/create methods exist on the mock at all', async () => {
+    const prisma = createMockPrismaForReconcile();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      { productId: 1, warehouseId: 10, onHand: 50, reorderThreshold: 0 },
+    ]);
+    prisma.stockMovement.findMany.mockResolvedValue([]);
+    const service = new StockMovementsService(
+      prisma as unknown as PrismaService,
+    );
+
+    await service.reconcileInventory();
+
+    expect(prisma.warehouseInventory.findMany).toHaveBeenCalled();
+    expect(prisma.stockMovement.findMany).toHaveBeenCalled();
+  });
+
+  it('reuses a caller-supplied transaction client instead of the default prisma client', async () => {
+    const prisma = createMockPrismaForReconcile();
+    const tx = createMockPrismaForReconcile();
+    tx.warehouseInventory.findMany.mockResolvedValue([]);
+    tx.stockMovement.findMany.mockResolvedValue([]);
+    const service = new StockMovementsService(
+      prisma as unknown as PrismaService,
+    );
+
+    await service.reconcileInventory(tx as never);
+
+    expect(tx.warehouseInventory.findMany).toHaveBeenCalled();
+    expect(prisma.warehouseInventory.findMany).not.toHaveBeenCalled();
+  });
+});
+
 function createMockPrismaForLedger() {
   const findMany = jest.fn().mockResolvedValue([]);
   const prisma = { stockMovement: { findMany } } as unknown as PrismaService;

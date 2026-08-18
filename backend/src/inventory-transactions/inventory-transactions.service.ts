@@ -76,6 +76,32 @@ type InventoryTransactionWithItems = Prisma.InventoryTransactionGetPayload<{
   include: { items: true };
 }>;
 
+/**
+ * Duck-typed against InventoryTransactionItem — `price` is only ever a
+ * Prisma Decimal (from `.toNumber()`-bearing decimal.js) or null, per the
+ * schema's `price Decimal?` — deliberately not importing the concrete
+ * Decimal type so this stays trivial to unit test with a plain object.
+ */
+export interface TransactionCostItem {
+  quantity: number;
+  price: { toNumber(): number } | null;
+}
+
+export interface TransactionCostSummary {
+  /** Sum of quantity × price across every item that HAS a recorded price. null only when no item has one. */
+  totalCost: number | null;
+  /** How many items contributed to totalCost. */
+  pricedItemCount: number;
+  totalItemCount: number;
+  /** true only when every item has a price — i.e. totalCost is complete, not partial. */
+  fullyPriced: boolean;
+}
+
+export interface InventoryTransactionWithCost {
+  transaction: InventoryTransactionWithItems;
+  cost: TransactionCostSummary;
+}
+
 type InventoryTransactionWithItemsAndSupplier =
   Prisma.InventoryTransactionGetPayload<{
     include: { items: true; supplier: true };
@@ -93,12 +119,19 @@ export class InventoryTransactionsService {
    * Creates a PENDING INCOMING transaction and its items. Stock is never
    * touched here — onHand only changes when complete() runs (not implemented
    * in this phase). No reservation is created either: INCOMING never reserves.
+   *
+   * INCOMING is the purchase transaction (buying from a supplier), so every
+   * item MUST carry a price — `requirePrice: true` below. A missing price is
+   * rejected outright at creation time rather than silently accepted and
+   * later treated as 0 in cost calculations (see
+   * calculateTransactionCost()'s `fullyPriced` — this is what guarantees
+   * every INCOMING transaction is always fully priced).
    */
   async createIncoming(
     input: CreateIncomingInput,
     tx?: Prisma.TransactionClient,
   ): Promise<InventoryTransactionWithItems> {
-    this.validateItems(input.items);
+    this.validateItems(input.items, { requirePrice: true });
 
     if (tx) {
       return this.createIncomingWithClient(tx, input);
@@ -306,6 +339,63 @@ export class InventoryTransactionsService {
       include: { items: true },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  /**
+   * Pure, deterministic total-purchase-cost calculation: sums quantity ×
+   * price across every item that has a recorded price
+   * (InventoryTransactionItem.price is optional in the schema — `Decimal?`).
+   * Items without a price are excluded from the sum rather than treated as
+   * zero, since silently treating "unknown price" as "free" would
+   * misrepresent the total; `fullyPriced` tells the caller whether
+   * `totalCost` is a complete total or a partial one. `totalCost` is null
+   * only when NO item has a price at all (nothing to sum).
+   *
+   * No I/O, no side effects — safe to call from any other service (Document
+   * Review, Stock Insights, Control Tower, a future controller, etc.)
+   * without a database round-trip, and safe to reuse here without
+   * duplicating the formula anywhere else in this file.
+   */
+  calculateTransactionCost(
+    items: TransactionCostItem[],
+  ): TransactionCostSummary {
+    const pricedItems = items.filter(
+      (item): item is TransactionCostItem & { price: { toNumber(): number } } =>
+        item.price !== null,
+    );
+
+    const totalCost =
+      pricedItems.length === 0
+        ? null
+        : pricedItems.reduce(
+            (sum, item) => sum + item.quantity * item.price.toNumber(),
+            0,
+          );
+
+    return {
+      totalCost,
+      pricedItemCount: pricedItems.length,
+      totalItemCount: items.length,
+      fullyPriced: pricedItems.length === items.length && items.length > 0,
+    };
+  }
+
+  /**
+   * Fetches one transaction via findOneTransaction() (reused as-is — no
+   * duplicated lookup logic) and attaches its cost summary. This is the
+   * "transaction details" entry point the total purchase cost is made
+   * available through, without changing findOneTransaction()'s own return
+   * shape or any existing caller of it. Read-only.
+   */
+  async getTransactionWithCost(
+    id: number,
+    tx?: Prisma.TransactionClient,
+  ): Promise<InventoryTransactionWithCost> {
+    const transaction = await this.findOneTransaction(id, tx);
+    return {
+      transaction,
+      cost: this.calculateTransactionCost(transaction.items),
+    };
   }
 
   /**
@@ -830,10 +920,33 @@ export class InventoryTransactionsService {
     return transaction;
   }
 
-  private validateItems(items: TransactionItemInput[]): void {
+  /**
+   * `requirePrice` is set only by createIncoming() — INCOMING is the
+   * purchase transaction, where a missing price must be rejected outright
+   * rather than silently accepted (see createIncoming()'s doc comment).
+   * OUTGOING/TRANSFER items may omit price (no purchase cost applies), but
+   * when a price IS given for any transaction type it must be a valid,
+   * non-negative amount — never NaN/Infinity/negative.
+   *
+   * Also rejects a duplicate productId across items in the same call — the
+   * same check WarehouseRoutingService.validateItems() already applies for
+   * an order, reused here for the same reason: reservation lookups
+   * throughout this service (findActiveReservationOrThrow, and the resync
+   * loop in update()) key on (transactionId, productId) via `findFirst`, so
+   * two items sharing a productId within one transaction would make those
+   * lookups ambiguous — which reservation is "the" one for that product is
+   * no longer well-defined. Rejecting the duplicate at creation time closes
+   * that off at the source rather than guessing at a tiebreak later.
+   */
+  private validateItems(
+    items: TransactionItemInput[],
+    options: { requirePrice?: boolean } = {},
+  ): void {
     if (!items || items.length === 0) {
       throw new BadRequestException('items must not be empty');
     }
+
+    const seenProductIds = new Set<number>();
 
     for (const item of items) {
       if (!Number.isInteger(item.productId) || item.productId <= 0) {
@@ -846,6 +959,31 @@ export class InventoryTransactionsService {
           `quantity for product ${item.productId} must be a positive integer`,
         );
       }
+      if (
+        options.requirePrice &&
+        (item.price === undefined || item.price === null)
+      ) {
+        throw new BadRequestException(
+          `price is required for product ${item.productId} on a purchase (INCOMING) transaction`,
+        );
+      }
+      if (
+        item.price !== undefined &&
+        item.price !== null &&
+        (typeof item.price !== 'number' ||
+          !Number.isFinite(item.price) ||
+          item.price < 0)
+      ) {
+        throw new BadRequestException(
+          `price for product ${item.productId} must be a non-negative number`,
+        );
+      }
+      if (seenProductIds.has(item.productId)) {
+        throw new BadRequestException(
+          `Duplicate productId ${item.productId} in items`,
+        );
+      }
+      seenProductIds.add(item.productId);
     }
   }
 
@@ -853,6 +991,17 @@ export class InventoryTransactionsService {
     return [...items].sort((a, b) => a.productId - b.productId);
   }
 
+  /**
+   * Existence + isActive gate for every entity a NEW transaction (or a
+   * change to a PENDING one) references. Inactive entities remain fully
+   * readable everywhere else (findOneTransaction, findAllTransactions,
+   * getUpcomingDeliveries, getOverdueTransactions, an already-PENDING
+   * transaction's complete()/cancel()) — this check only runs at the point
+   * a NEW operational decision is being made, per the confirmed rule that
+   * inactive entities must not participate in new decisions while historical
+   * data stays readable. Single choke point so isActive is never checked
+   * (or missed) ad hoc at each call site.
+   */
   private async assertSupplierExists(
     tx: Prisma.TransactionClient,
     supplierId: number,
@@ -862,6 +1011,11 @@ export class InventoryTransactionsService {
     });
     if (!supplier) {
       throw new NotFoundException(`Supplier ${supplierId} not found`);
+    }
+    if (!supplier.isActive) {
+      throw new BadRequestException(
+        `Supplier ${supplierId} is inactive and cannot be used for a new transaction`,
+      );
     }
   }
 
@@ -875,6 +1029,11 @@ export class InventoryTransactionsService {
     if (!warehouse) {
       throw new NotFoundException(`Warehouse ${warehouseId} not found`);
     }
+    if (!warehouse.isActive) {
+      throw new BadRequestException(
+        `Warehouse ${warehouseId} is inactive and cannot be used for a new transaction`,
+      );
+    }
   }
 
   private async assertProductsExist(
@@ -887,6 +1046,11 @@ export class InventoryTransactionsService {
       const product = await tx.product.findUnique({ where: { id: productId } });
       if (!product) {
         throw new NotFoundException(`Product ${productId} not found`);
+      }
+      if (!product.isActive) {
+        throw new BadRequestException(
+          `Product ${productId} is inactive and cannot be used for a new transaction`,
+        );
       }
     }
   }

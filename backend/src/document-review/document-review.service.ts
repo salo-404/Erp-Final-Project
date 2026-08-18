@@ -310,6 +310,12 @@ export class DocumentReviewService {
    * Matching is a simple case-insensitive substring heuristic (exact match
    * scores 1, partial match scores lower) — not a real fuzzy-matching
    * algorithm, since none exists in this codebase yet.
+   *
+   * Only suggests ACTIVE products — resolving a review to an inactive
+   * product would let approve() create a brand-new transaction for a
+   * discontinued product (approve() itself also rejects it via
+   * InventoryTransactionsService, but filtering here means a reviewer never
+   * sees it as a choice in the first place).
    */
   async resolveProduct(
     query: string,
@@ -320,7 +326,7 @@ export class DocumentReviewService {
     }
     const client = tx ?? this.prisma;
     const candidates = await client.product.findMany({
-      where: { name: { contains: query, mode: 'insensitive' } },
+      where: { name: { contains: query, mode: 'insensitive' }, isActive: true },
       take: 10,
     });
 
@@ -333,7 +339,10 @@ export class DocumentReviewService {
       .sort((a, b) => b.score - a.score);
   }
 
-  /** Same suggestion-only contract as resolveProduct(), against Supplier. */
+  /**
+   * Same suggestion-only contract as resolveProduct(), against Supplier —
+   * only ACTIVE suppliers are suggested, for the same reason.
+   */
   async resolveSupplier(
     query: string,
     tx?: Prisma.TransactionClient,
@@ -343,7 +352,7 @@ export class DocumentReviewService {
     }
     const client = tx ?? this.prisma;
     const candidates = await client.supplier.findMany({
-      where: { name: { contains: query, mode: 'insensitive' } },
+      where: { name: { contains: query, mode: 'insensitive' }, isActive: true },
       take: 10,
     });
 

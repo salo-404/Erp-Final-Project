@@ -39,6 +39,33 @@ const RESERVATION_INPUT = {
 };
 
 describe('ReservationsService.reserve', () => {
+  it("confirmed rule: never checks Product/Warehouse isActive itself — that validation stays the caller's (InventoryTransactionsService) responsibility, not duplicated here", async () => {
+    const tx = createMockTx();
+    tx.$queryRaw.mockResolvedValue([{ onHand: 20 }]);
+    tx.reservation.aggregate.mockResolvedValue({ _sum: { quantity: 5 } });
+    tx.reservation.create.mockResolvedValue({
+      id: 1,
+      ...RESERVATION_INPUT,
+      status: 'ACTIVE',
+    });
+    const service = new ReservationsService(
+      createMockPrisma(tx),
+      createMockStockMovementsService().service,
+    );
+
+    // The mock tx below (see createMockTx()) has no `product` or
+    // `warehouse` delegate at all. If reserve() ever queried either table,
+    // this call would throw a TypeError immediately — succeeding proves
+    // reserve() only ever touches WarehouseInventory (via $queryRaw) and
+    // Reservation, exactly as documented, with no isActive check anywhere
+    // inside this service.
+    const result = await service.reserve(RESERVATION_INPUT);
+
+    expect(result.status).toBe('ACTIVE');
+    expect('product' in tx).toBe(false);
+    expect('warehouse' in tx).toBe(false);
+  });
+
   it('creates an ACTIVE reservation when enough available stock exists', async () => {
     const tx = createMockTx();
     tx.$queryRaw.mockResolvedValue([{ onHand: 20 }]);

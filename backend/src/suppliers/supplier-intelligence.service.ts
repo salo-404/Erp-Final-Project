@@ -28,6 +28,13 @@ type SupplierTransaction = SupplierTransactionHistory['transactions'][number];
 export interface SupplierSummary {
   id: number;
   name: string;
+  /**
+   * Added when Supplier.isActive landed in the schema. Joseph's real
+   * findAll() already selects full Supplier rows, so it structurally
+   * satisfies this extended contract without any change to his file — same
+   * technique already used for adding findAll() itself (see below).
+   */
+  isActive: boolean;
 }
 
 /**
@@ -175,6 +182,12 @@ export class SupplierIntelligenceService {
    *
    * Suppliers who never supplied this product are excluded entirely, not scored as 0.
    * Returns [] (not an error) when no supplier has supplied this product.
+   *
+   * Inactive suppliers are excluded from candidates — compareSuppliers()
+   * feeds rankSuppliers()/getBestSupplier(), which recommend who to buy
+   * from NEXT, a new-purchase decision an inactive supplier must not
+   * participate in. getSupplierStats(id) (direct lookup, historical) is
+   * unaffected — a formerly-active supplier's past stats stay readable.
    */
   async compareSuppliers(
     productId: number,
@@ -183,6 +196,9 @@ export class SupplierIntelligenceService {
     const comparisons: SupplierProductComparison[] = [];
 
     for (const supplier of suppliers) {
+      if (!supplier.isActive) {
+        continue;
+      }
       const history = await this.suppliersService.getTransactionHistory(
         supplier.id,
       );

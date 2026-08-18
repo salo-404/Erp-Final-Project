@@ -1,13 +1,16 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
   Prisma,
   StockMovement,
   StockMovementType,
+  UserRole,
 } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -30,6 +33,27 @@ export interface GetLedgerFilters {
   dateTo?: Date;
 }
 
+export interface AdjustInventoryInput {
+  productId: number;
+  warehouseId: number;
+  /** Signed delta applied directly to onHand — same convention recordMovement() already uses for ADJUSTMENT: positive increases, negative decreases, never zero. */
+  quantity: number;
+  /** Required — the audit trail this adjustment leaves is the log line built from this plus requestedBy (see adjustInventory()'s doc comment; no schema field exists to persist it durably). */
+  reason: string;
+  requestedBy: { id: number; role: UserRole };
+}
+
+export interface InventoryReconciliationMismatch {
+  productId: number;
+  warehouseId: number;
+  /** WarehouseInventory.onHand as currently stored. */
+  recordedOnHand: number;
+  /** Recomputed from scratch by summing every StockMovement's delta for this (productId, warehouseId) — the same delta rule recordMovement() itself applies. */
+  calculatedOnHand: number;
+  /** recordedOnHand - calculatedOnHand. */
+  difference: number;
+}
+
 const INCREASING_TYPES: ReadonlySet<StockMovementType> = new Set([
   StockMovementType.INCOMING,
   StockMovementType.TRANSFER_IN,
@@ -42,6 +66,8 @@ const DECREASING_TYPES: ReadonlySet<StockMovementType> = new Set([
 
 @Injectable()
 export class StockMovementsService {
+  private readonly logger = new Logger(StockMovementsService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   /**
@@ -111,6 +137,108 @@ export class StockMovementsService {
     });
   }
 
+  /**
+   * Admin-only manual correction of onHand — e.g. after a physical stocktake
+   * finds a discrepancy. Product/warehouse existence is validated by
+   * recordMovement() itself (the same existing check every other movement
+   * type already goes through — not duplicated here), and the ADJUSTMENT
+   * quantity/negative-onHand rules are the same ones recordMovement() always
+   * enforces. `onHand` is never written directly — this only ever creates an
+   * ADJUSTMENT movement through recordMovement(), the sole code path allowed
+   * to change it.
+   *
+   * "Auditable": there is no schema field to durably persist `reason`/who
+   * requested it (schema changes are out of scope here), so this logs a
+   * structured audit line (productId, warehouseId, quantity, reason,
+   * requestedBy, resulting movement id) via Nest's Logger instead of
+   * silently discarding that context. A real durable audit trail would need
+   * a schema field — flagged in the report rather than added unasked.
+   */
+  async adjustInventory(
+    input: AdjustInventoryInput,
+    tx?: Prisma.TransactionClient,
+  ): Promise<StockMovement> {
+    if (input.requestedBy.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Only an ADMIN may adjust inventory');
+    }
+    if (!input.reason || !input.reason.trim()) {
+      throw new BadRequestException(
+        'reason is required for an inventory adjustment',
+      );
+    }
+
+    const movement = await this.recordMovement(
+      {
+        productId: input.productId,
+        warehouseId: input.warehouseId,
+        type: StockMovementType.ADJUSTMENT,
+        quantity: input.quantity,
+      },
+      tx,
+    );
+
+    this.logger.log(
+      `Inventory adjustment: product ${input.productId} in warehouse ${input.warehouseId}, ` +
+        `quantity ${input.quantity}, reason "${input.reason}", requested by user ${input.requestedBy.id} ` +
+        `(movement ${movement.id})`,
+    );
+
+    return movement;
+  }
+
+  /**
+   * Read-only. Recomputes what onHand SHOULD be for every (productId,
+   * warehouseId) pair, purely from summing every StockMovement's delta
+   * (the exact same increasing/decreasing/ADJUSTMENT delta rule
+   * recordMovementWithClient() applies to each movement as it's written —
+   * reused via movementDelta(), not reimplemented), and returns only the
+   * pairs where that disagrees with the currently stored
+   * WarehouseInventory.onHand. Never writes anything — no movement is
+   * created, no onHand is corrected; a real fix still has to go through
+   * adjustInventory() (or another recordMovement() call) explicitly.
+   */
+  async reconcileInventory(
+    tx?: Prisma.TransactionClient,
+  ): Promise<InventoryReconciliationMismatch[]> {
+    const client = tx ?? this.prisma;
+
+    const [inventoryRows, movements] = await Promise.all([
+      client.warehouseInventory.findMany(),
+      client.stockMovement.findMany(),
+    ]);
+
+    const calculatedByKey = new Map<string, number>();
+    for (const movement of movements) {
+      const key = this.inventoryKey(movement.productId, movement.warehouseId);
+      calculatedByKey.set(
+        key,
+        (calculatedByKey.get(key) ?? 0) +
+          this.movementDelta(movement.type, movement.quantity),
+      );
+    }
+
+    const mismatches: InventoryReconciliationMismatch[] = [];
+    for (const row of inventoryRows) {
+      const calculatedOnHand =
+        calculatedByKey.get(
+          this.inventoryKey(row.productId, row.warehouseId),
+        ) ?? 0;
+      if (calculatedOnHand !== row.onHand) {
+        mismatches.push({
+          productId: row.productId,
+          warehouseId: row.warehouseId,
+          recordedOnHand: row.onHand,
+          calculatedOnHand,
+          difference: row.onHand - calculatedOnHand,
+        });
+      }
+    }
+
+    return mismatches.sort(
+      (a, b) => a.productId - b.productId || a.warehouseId - b.warehouseId,
+    );
+  }
+
   private validateInput(input: RecordMovementInput): void {
     if (!Object.values(StockMovementType).includes(input.type)) {
       throw new BadRequestException(`Invalid movement type: ${input.type}`);
@@ -157,16 +285,7 @@ export class StockMovementsService {
       warehouseId,
     );
 
-    // ADJUSTMENT's quantity is already the signed delta (validated non-zero
-    // integer above) — apply it as-is rather than treating it as a magnitude.
-    const delta =
-      type === StockMovementType.ADJUSTMENT
-        ? quantity
-        : INCREASING_TYPES.has(type)
-          ? quantity
-          : DECREASING_TYPES.has(type)
-            ? -quantity
-            : 0;
+    const delta = this.movementDelta(type, quantity);
     const newOnHand = currentOnHand + delta;
 
     if (newOnHand < 0) {
@@ -231,5 +350,31 @@ export class StockMovementsService {
       }
       throw error;
     }
+  }
+
+  /**
+   * The single source of truth for "what does this movement type do to
+   * onHand" — used by recordMovementWithClient() when actually applying a
+   * movement, and by reconcileInventory() when recomputing what onHand
+   * SHOULD be from the ledger. One formula, two callers; never duplicated.
+   */
+  private movementDelta(type: StockMovementType, quantity: number): number {
+    if (type === StockMovementType.ADJUSTMENT) {
+      // Already the signed delta (validated non-zero integer by
+      // validateInput()) — apply as-is rather than treating it as a
+      // magnitude.
+      return quantity;
+    }
+    if (INCREASING_TYPES.has(type)) {
+      return quantity;
+    }
+    if (DECREASING_TYPES.has(type)) {
+      return -quantity;
+    }
+    return 0;
+  }
+
+  private inventoryKey(productId: number, warehouseId: number): string {
+    return `${productId}:${warehouseId}`;
   }
 }

@@ -20,7 +20,11 @@ import type {
 function createMockPrisma() {
   return {
     warehouseInventory: { findMany: jest.fn() },
-    stockMovement: { groupBy: jest.fn() },
+    // Defaults to [] so any getDeadStock() call made incidentally (e.g. from
+    // getTransferRecommendations()'s dead-stock context lookup) doesn't
+    // require every unrelated test to stub it explicitly. Tests that care
+    // about dead-stock content override this per-call.
+    stockMovement: { groupBy: jest.fn().mockResolvedValue([]) },
     reservation: { groupBy: jest.fn() },
   };
 }
@@ -103,6 +107,39 @@ function movement(overrides: Partial<StockMovement>): StockMovement {
 describe('StockInsightsService.getDeadStock', () => {
   const NOW = new Date('2026-06-01T00:00:00.000Z');
 
+  it('confirmed rule: an inactive product with remaining stock still appears in dead-stock analysis (no isActive filter here)', async () => {
+    const { service, prisma } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      {
+        id: 1,
+        productId: 900,
+        warehouseId: 10,
+        onHand: 12,
+        reorderThreshold: 0,
+      },
+    ]);
+    prisma.stockMovement.groupBy.mockResolvedValue([]);
+
+    const result = await service.getDeadStock(60, NOW);
+
+    // The query has no isActive condition at all — an inactive product's
+    // leftover stock is exactly what dead-stock analysis must still catch.
+    expect(prisma.warehouseInventory.findMany).toHaveBeenCalledWith({
+      where: { onHand: { gt: 0 } },
+    });
+    expect(result).toEqual([
+      {
+        productId: 900,
+        warehouseId: 10,
+        onHand: 12,
+        lastMovementAt: null,
+        daysSinceLastMovement: null,
+        lastOutgoingMovementAt: null,
+        daysSinceLastOutgoingMovement: null,
+      },
+    ]);
+  });
+
   it('flags a product/warehouse with stock but no movement within inactivityDays', async () => {
     const { service, prisma } = buildService();
     prisma.warehouseInventory.findMany.mockResolvedValue([
@@ -134,6 +171,8 @@ describe('StockInsightsService.getDeadStock', () => {
         onHand: 5,
         lastMovementAt: new Date('2026-01-01T00:00:00.000Z'),
         daysSinceLastMovement: 151,
+        lastOutgoingMovementAt: new Date('2026-01-01T00:00:00.000Z'),
+        daysSinceLastOutgoingMovement: 151,
       },
     ]);
   });
@@ -160,6 +199,8 @@ describe('StockInsightsService.getDeadStock', () => {
         onHand: 3,
         lastMovementAt: null,
         daysSinceLastMovement: null,
+        lastOutgoingMovementAt: null,
+        daysSinceLastOutgoingMovement: null,
       },
     ]);
   });
@@ -254,6 +295,103 @@ describe('StockInsightsService.getDeadStock', () => {
     expect(result).toEqual([]);
   });
 
+  it('confirmed rule: a movement of ANY supported type (e.g. ADJUSTMENT) resets the 60-day inactivity period — eligibility is not OUTGOING-only', async () => {
+    const { service, prisma } = buildService();
+    const recentAdjustment = new Date('2026-05-20T00:00:00.000Z');
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      {
+        id: 1,
+        productId: 600,
+        warehouseId: 10,
+        onHand: 10,
+        reorderThreshold: 0,
+      },
+    ]);
+    // Only the any-movement-type groupBy (no `where`) returns a row; the
+    // outgoing-only groupBy (has `where`) returns nothing — i.e. the only
+    // recorded movement is a non-OUTGOING one (e.g. an ADJUSTMENT).
+    prisma.stockMovement.groupBy.mockImplementation(
+      (args: { where?: unknown }) =>
+        Promise.resolve(
+          args.where
+            ? []
+            : [
+                {
+                  productId: 600,
+                  warehouseId: 10,
+                  _max: { createdAt: recentAdjustment },
+                },
+              ],
+        ),
+    );
+
+    const result = await service.getDeadStock(60, NOW);
+
+    // Not flagged dead: the ADJUSTMENT movement (any supported type) reset
+    // the inactivity clock, exactly per the existing ledger-wide rule.
+    expect(result).toEqual([]);
+  });
+
+  it('distinguishes lastOutgoingMovementAt from lastMovementAt: a recent INCOMING restock does not count as "customer" activity', async () => {
+    const { service, prisma } = buildService();
+    const recentIncoming = new Date('2026-05-25T00:00:00.000Z');
+    const oldOutgoing = new Date('2026-01-01T00:00:00.000Z');
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      {
+        id: 1,
+        productId: 500,
+        warehouseId: 10,
+        onHand: 20,
+        reorderThreshold: 0,
+      },
+    ]);
+    // First call: any-movement-type groupBy (no `where`) -> most recent overall
+    // is the INCOMING restock. Second call: outgoing-only groupBy (has
+    // `where`) -> most recent OUTGOING/TRANSFER_OUT is much older.
+    prisma.stockMovement.groupBy.mockImplementation(
+      (args: { where?: unknown }) =>
+        Promise.resolve(
+          args.where
+            ? [
+                {
+                  productId: 500,
+                  warehouseId: 10,
+                  _max: { createdAt: oldOutgoing },
+                },
+              ]
+            : [
+                {
+                  productId: 500,
+                  warehouseId: 10,
+                  _max: { createdAt: recentIncoming },
+                },
+              ],
+        ),
+    );
+
+    // The row is NOT flagged dead (any-movement lastMovementAt is recent),
+    // but the returned lastOutgoingMovementAt correctly reflects the much
+    // older customer-facing activity.
+    const result = await service.getDeadStock(60, NOW);
+
+    expect(result).toEqual([]);
+
+    // Confirm what the (excluded) row's fields would have been by lowering
+    // inactivityDays so it clears the any-movement cutoff too.
+    const resultWithShortWindow = await service.getDeadStock(3, NOW);
+    expect(resultWithShortWindow).toEqual([
+      {
+        productId: 500,
+        warehouseId: 10,
+        onHand: 20,
+        lastMovementAt: recentIncoming,
+        daysSinceLastMovement: 7,
+        lastOutgoingMovementAt: oldOutgoing,
+        daysSinceLastOutgoingMovement: 151,
+      },
+    ]);
+  });
+
   it('defaults inactivityDays to 60 when not provided', async () => {
     const { service, prisma } = buildService();
     const sixtyOneDaysAgo = new Date(NOW.getTime() - 61 * 24 * 60 * 60 * 1000);
@@ -339,6 +477,43 @@ describe('StockInsightsService.getDeadStock', () => {
 
 describe('StockInsightsService.getConsumptionAnomalies', () => {
   const NOW = new Date('2026-06-01T00:00:00.000Z');
+
+  it('confirmed rule: an inactive product still appears in consumption anomaly results (historical intelligence, not a new operational decision — no isActive filter here)', async () => {
+    const { service, getLedger } = buildService();
+    getLedger.mockResolvedValue([
+      movement({
+        productId: 900,
+        type: 'OUTGOING',
+        quantity: 10,
+        createdAt: new Date('2026-04-15T00:00:00.000Z'),
+      }),
+      movement({
+        productId: 900,
+        type: 'OUTGOING',
+        quantity: 30,
+        createdAt: new Date('2026-05-20T00:00:00.000Z'),
+      }),
+    ]);
+
+    const result = await service.getConsumptionAnomalies(30, 50, NOW);
+
+    // getLedger() is queried purely by productId/date/type — there is no
+    // product/warehouse join and no isActive condition anywhere in this
+    // call, so a now-inactive product's history is never excluded.
+    expect(getLedger).toHaveBeenCalledWith({
+      dateFrom: new Date('2026-04-02T00:00:00.000Z'),
+      dateTo: NOW,
+    });
+    expect(result).toEqual([
+      {
+        productId: 900,
+        recentQuantity: 30,
+        baselineQuantity: 10,
+        percentChange: 200,
+        direction: 'INCREASE',
+      },
+    ]);
+  });
 
   it('flags a product whose recent consumption increased beyond the threshold', async () => {
     const { service, getLedger } = buildService();
@@ -645,6 +820,84 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
     );
   });
 
+  it('confirmed rule: minimumQuantityChange defaults to 0 — a no-op that does not change existing percentage-only behavior (1 -> 2 units is still flagged)', async () => {
+    const { service, getLedger } = buildService();
+    getLedger.mockResolvedValue([
+      movement({
+        productId: 100,
+        type: 'OUTGOING',
+        quantity: 1,
+        createdAt: new Date('2026-04-15T00:00:00.000Z'),
+      }),
+      movement({
+        productId: 100,
+        type: 'OUTGOING',
+        quantity: 2,
+        createdAt: new Date('2026-05-20T00:00:00.000Z'),
+      }),
+    ]);
+
+    const result = await service.getConsumptionAnomalies(30, 50, NOW);
+
+    expect(result).toEqual([
+      {
+        productId: 100,
+        recentQuantity: 2,
+        baselineQuantity: 1,
+        percentChange: 100,
+        direction: 'INCREASE',
+      },
+    ]);
+  });
+
+  it('suppresses a noisy small-quantity change (1 -> 2 units) once a caller explicitly opts into a minimumQuantityChange floor', async () => {
+    const { service, getLedger } = buildService();
+    getLedger.mockResolvedValue([
+      movement({
+        productId: 100,
+        type: 'OUTGOING',
+        quantity: 1,
+        createdAt: new Date('2026-04-15T00:00:00.000Z'),
+      }),
+      movement({
+        productId: 100,
+        type: 'OUTGOING',
+        quantity: 2,
+        createdAt: new Date('2026-05-20T00:00:00.000Z'),
+      }),
+    ]);
+
+    // Percentage change is 100% (would normally be flagged), but the
+    // absolute change (1 unit) is below the caller-supplied floor.
+    const result = await service.getConsumptionAnomalies(30, 50, NOW, 5);
+
+    expect(result).toEqual([]);
+  });
+
+  it('applies minimumQuantityChange to the zero-baseline case too', async () => {
+    const { service, getLedger } = buildService();
+    getLedger.mockResolvedValue([
+      movement({
+        productId: 100,
+        type: 'OUTGOING',
+        quantity: 3,
+        createdAt: new Date('2026-05-20T00:00:00.000Z'),
+      }),
+    ]);
+
+    const result = await service.getConsumptionAnomalies(30, 50, NOW, 5);
+
+    expect(result).toEqual([]);
+  });
+
+  it('rejects a negative minimumQuantityChange', async () => {
+    const { service } = buildService();
+
+    await expect(
+      service.getConsumptionAnomalies(30, 50, NOW, -1),
+    ).rejects.toThrow('minimumQuantityChange must be a non-negative integer');
+  });
+
   it('never writes to inventory, stock movements, reservations, or transactions', async () => {
     const { service, getLedger } = buildService();
     getLedger.mockResolvedValue([]);
@@ -706,6 +959,18 @@ function pendingTransaction(
 describe('StockInsightsService.getStockoutRisk', () => {
   const NOW = new Date('2026-06-01T00:00:00.000Z');
 
+  it('only considers ACTIVE products at ACTIVE warehouses (isActive filter applied at the query)', async () => {
+    const { service, prisma } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+
+    await service.getStockoutRisk(30, NOW);
+
+    expect(prisma.warehouseInventory.findMany).toHaveBeenCalledWith({
+      where: { product: { isActive: true }, warehouse: { isActive: true } },
+    });
+  });
+
   it('classifies OUT_OF_STOCK when available is zero', async () => {
     const { service, prisma } = buildService();
     prisma.warehouseInventory.findMany.mockResolvedValue([
@@ -734,6 +999,7 @@ describe('StockInsightsService.getStockoutRisk', () => {
         projectedRiskLevel: 'OUT_OF_STOCK',
         avgDailyConsumption: 0,
         daysOfSupply: null,
+        predictedStockoutDate: null,
       },
     ]);
   });
@@ -964,6 +1230,54 @@ describe('StockInsightsService.getStockoutRisk', () => {
     expect(result[0].daysOfSupply).toBe(60);
   });
 
+  it('computes predictedStockoutDate as referenceDate + daysOfSupply days, when consumption data exists', async () => {
+    const { service, prisma, getLedger } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({
+        productId: 100,
+        warehouseId: 10,
+        onHand: 30,
+        reorderThreshold: 0,
+      }),
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+    getLedger.mockResolvedValue([
+      movement({
+        productId: 100,
+        warehouseId: 10,
+        type: 'OUTGOING',
+        quantity: 30,
+      }),
+    ]);
+
+    const result = await service.getStockoutRisk(30, NOW);
+
+    // avgDailyConsumption = 30/30 = 1/day -> daysOfSupply = 30/1 = 30 days.
+    expect(result[0].daysOfSupply).toBe(30);
+    expect(result[0].predictedStockoutDate).toEqual(
+      new Date(NOW.getTime() + 30 * 24 * 60 * 60 * 1000),
+    );
+  });
+
+  it('confirmed rule: predictedStockoutDate is null (never invented) when consumption is zero', async () => {
+    const { service, prisma } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({
+        productId: 100,
+        warehouseId: 10,
+        onHand: 30,
+        reorderThreshold: 0,
+      }),
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+
+    const result = await service.getStockoutRisk(30, NOW);
+
+    expect(result[0].avgDailyConsumption).toBe(0);
+    expect(result[0].daysOfSupply).toBeNull();
+    expect(result[0].predictedStockoutDate).toBeNull();
+  });
+
   it('sorts by risk severity (OUT_OF_STOCK, AT_RISK, OK) then productId/warehouseId', async () => {
     const { service, prisma } = buildService();
     prisma.warehouseInventory.findMany.mockResolvedValue([
@@ -1042,11 +1356,28 @@ describe('StockInsightsService.getRestockRecommendations', () => {
         recommendedQuantity: 8,
         avgDailyConsumption: 0,
         daysOfSupply: null,
+        reason: 'purchase_required',
+        explanation:
+          'No pending incoming stock and no warehouse surplus are available for this product, so a new purchase is required to reach the reorder threshold (10).',
       },
     ]);
   });
 
-  it('does not recommend a product whose pending incoming already resolves the risk', async () => {
+  it("excludes an inactive product from restock recommendations (via getStockoutRisk's query filter)", async () => {
+    const { service, prisma } = buildService();
+    // In production, `product: { isActive: true }` on the underlying query
+    // (asserted in the getStockoutRisk suite) means an inactive product's
+    // row is never returned by the database in the first place — simulated
+    // here by simply not including it in the mocked result.
+    prisma.warehouseInventory.findMany.mockResolvedValue([]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+
+    const result = await service.getRestockRecommendations(30, NOW);
+
+    expect(result).toEqual([]);
+  });
+
+  it('confirmed rule: a product whose pending incoming fully resolves the projected shortage is excluded entirely — no recommendedQuantity: 0 placeholder, nothing returned for it', async () => {
     const { service, prisma, findAllTransactions } = buildService();
     prisma.warehouseInventory.findMany.mockResolvedValue([
       inventoryRow({
@@ -1085,6 +1416,36 @@ describe('StockInsightsService.getRestockRecommendations', () => {
     const result = await service.getRestockRecommendations(30, NOW);
 
     expect(result).toEqual([]);
+  });
+
+  it("confirmed rule: reason is 'transfer_available' when another warehouse has surplus (reuses getTransferRecommendations, no donor-matching logic duplicated)", async () => {
+    const { service, prisma } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({
+        productId: 100,
+        warehouseId: 10,
+        onHand: 2,
+        reorderThreshold: 10,
+      }), // deficit: need 8
+      inventoryRow({
+        productId: 100,
+        warehouseId: 20,
+        onHand: 100,
+        reorderThreshold: 10,
+      }), // surplus: 90
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+
+    const result = await service.getRestockRecommendations(30, NOW);
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        productId: 100,
+        warehouseId: 10,
+        reason: 'transfer_available',
+        explanation: expect.stringContaining('transfer') as string,
+      }),
+    ]);
   });
 
   it('sorts by projectedRiskLevel severity, then recommendedQuantity descending', async () => {
@@ -1130,6 +1491,28 @@ describe('StockInsightsService.getRestockRecommendations', () => {
 describe('StockInsightsService.getTransferRecommendations', () => {
   const NOW = new Date('2026-06-01T00:00:00.000Z');
 
+  it("excludes an inactive warehouse as a transfer source/destination (via getStockoutRisk's query filter)", async () => {
+    const { service, prisma } = buildService();
+    // In production, `warehouse: { isActive: true }` on the underlying
+    // query (asserted in the getStockoutRisk suite) means an inactive
+    // warehouse's row is never returned in the first place — simulated
+    // here by only returning the deficit warehouse, with no surplus donor
+    // available (the would-be donor is inactive and therefore absent).
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({
+        productId: 100,
+        warehouseId: 10,
+        onHand: 2,
+        reorderThreshold: 10,
+      }),
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+
+    const result = await service.getTransferRecommendations(30, NOW);
+
+    expect(result).toEqual([]);
+  });
+
   it('recommends a transfer from a surplus warehouse to a deficit warehouse for the same product', async () => {
     const { service, prisma } = buildService();
     prisma.warehouseInventory.findMany.mockResolvedValue([
@@ -1158,8 +1541,62 @@ describe('StockInsightsService.getTransferRecommendations', () => {
         transferQuantity: 8,
         fromWarehouseAvailableAfterTransfer: 92,
         toWarehouseProjectedAvailableAfterTransfer: 10,
+        sourcePendingIncomingQuantity: 0,
+        // No StockMovement rows are mocked in this test at all, so both
+        // rows have never had a movement -> both are (trivially) dead stock
+        // under the existing any-movement-type rule; not the focus of this
+        // test, just an accurate reflection of the fixture.
+        sourceIsDeadStock: true,
+        destinationRiskLevel: 'AT_RISK',
+        destinationAvgDailyConsumption: 0,
+        destinationDaysOfSupply: null,
       },
     ]);
+  });
+
+  it('enriches a recommendation with real source/destination context (not always defaulted): donor pending incoming, donor NOT flagged dead when recently active, and destination demand/risk', async () => {
+    const { service, prisma, getLedger } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({
+        productId: 100,
+        warehouseId: 10,
+        onHand: 0,
+        reorderThreshold: 10,
+      }), // deficit
+      inventoryRow({
+        productId: 100,
+        warehouseId: 20,
+        onHand: 100,
+        reorderThreshold: 10,
+      }), // surplus donor
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+    // Donor warehouse 20 has a recent movement -> not dead stock.
+    prisma.stockMovement.groupBy.mockResolvedValue([
+      {
+        productId: 100,
+        warehouseId: 20,
+        _max: { createdAt: NOW },
+      },
+    ]);
+    // Destination warehouse 10 has real consumption history -> non-zero demand context.
+    getLedger.mockResolvedValue([
+      movement({
+        productId: 100,
+        warehouseId: 10,
+        type: 'OUTGOING',
+        quantity: 30,
+      }),
+    ]);
+
+    const result = await service.getTransferRecommendations(30, NOW);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].sourceIsDeadStock).toBe(false);
+    expect(result[0].sourcePendingIncomingQuantity).toBe(0);
+    expect(result[0].destinationRiskLevel).toBe('OUT_OF_STOCK');
+    expect(result[0].destinationAvgDailyConsumption).toBe(1);
+    expect(result[0].destinationDaysOfSupply).toBe(0);
   });
 
   it('does not recommend a transfer when no warehouse has surplus for that product', async () => {
@@ -1219,6 +1656,11 @@ describe('StockInsightsService.getTransferRecommendations', () => {
         transferQuantity: 15,
         fromWarehouseAvailableAfterTransfer: 10,
         toWarehouseProjectedAvailableAfterTransfer: 15,
+        sourcePendingIncomingQuantity: 0,
+        sourceIsDeadStock: true,
+        destinationRiskLevel: 'OUT_OF_STOCK',
+        destinationAvgDailyConsumption: 0,
+        destinationDaysOfSupply: null,
       },
       {
         productId: 100,
@@ -1227,6 +1669,11 @@ describe('StockInsightsService.getTransferRecommendations', () => {
         transferQuantity: 5,
         fromWarehouseAvailableAfterTransfer: 35,
         toWarehouseProjectedAvailableAfterTransfer: 20,
+        sourcePendingIncomingQuantity: 0,
+        sourceIsDeadStock: true,
+        destinationRiskLevel: 'OUT_OF_STOCK',
+        destinationAvgDailyConsumption: 0,
+        destinationDaysOfSupply: null,
       },
     ]);
   });
@@ -1273,6 +1720,8 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
         onHand: 5,
         lastMovementAt: null,
         daysSinceLastMovement: null,
+        lastOutgoingMovementAt: null,
+        daysSinceLastOutgoingMovement: null,
       },
     ]);
     jest.spyOn(service, 'getConsumptionAnomalies').mockResolvedValue([
@@ -1298,6 +1747,7 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
         projectedRiskLevel: 'OUT_OF_STOCK',
         avgDailyConsumption: 1,
         daysOfSupply: 0,
+        predictedStockoutDate: NOW,
       },
       {
         productId: 4,
@@ -1312,6 +1762,7 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
         projectedRiskLevel: 'OK',
         avgDailyConsumption: 1,
         daysOfSupply: 50,
+        predictedStockoutDate: null,
       },
       {
         productId: 5,
@@ -1326,8 +1777,13 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
         projectedRiskLevel: 'AT_RISK',
         avgDailyConsumption: 1,
         daysOfSupply: 3,
+        predictedStockoutDate: null,
       },
     ]);
+    // Isolated from their own decision logic (already covered by their own
+    // describe blocks) so this test only exercises aggregation.
+    jest.spyOn(service, 'getRestockRecommendations').mockResolvedValue([]);
+    jest.spyOn(service, 'getTransferRecommendations').mockResolvedValue([]);
     getOverdueTransactions.mockResolvedValue([
       {
         id: 99,
@@ -1374,8 +1830,11 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
         projectedRiskLevel: 'AT_RISK',
         avgDailyConsumption: 1,
         daysOfSupply: 3,
+        predictedStockoutDate: null,
       },
     ]);
+    jest.spyOn(service, 'getRestockRecommendations').mockResolvedValue([]);
+    jest.spyOn(service, 'getTransferRecommendations').mockResolvedValue([]);
     getOverdueTransactions.mockResolvedValue([]);
     getPendingReviews.mockResolvedValue([]);
 
@@ -1387,6 +1846,56 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
         severity: 'CRITICAL',
       }),
     ]);
+  });
+
+  it('promotes restock/transfer recommendations to alerts', async () => {
+    const { service, getOverdueTransactions, getPendingReviews } =
+      buildService();
+    jest.spyOn(service, 'getDeadStock').mockResolvedValue([]);
+    jest.spyOn(service, 'getConsumptionAnomalies').mockResolvedValue([]);
+    jest.spyOn(service, 'getStockoutRisk').mockResolvedValue([]);
+    jest.spyOn(service, 'getRestockRecommendations').mockResolvedValue([
+      {
+        productId: 1,
+        warehouseId: 10,
+        available: 2,
+        pendingIncomingQuantity: 0,
+        projectedAvailable: 2,
+        reorderThreshold: 10,
+        riskLevel: 'AT_RISK',
+        projectedRiskLevel: 'AT_RISK',
+        recommendedQuantity: 8,
+        avgDailyConsumption: 0,
+        daysOfSupply: null,
+        reason: 'purchase_required',
+        explanation: 'A purchase is required.',
+      },
+    ]);
+    jest.spyOn(service, 'getTransferRecommendations').mockResolvedValue([
+      {
+        productId: 3,
+        fromWarehouseId: 20,
+        toWarehouseId: 10,
+        transferQuantity: 5,
+        fromWarehouseAvailableAfterTransfer: 10,
+        toWarehouseProjectedAvailableAfterTransfer: 5,
+        sourcePendingIncomingQuantity: 0,
+        sourceIsDeadStock: false,
+        destinationRiskLevel: 'AT_RISK',
+        destinationAvgDailyConsumption: 1,
+        destinationDaysOfSupply: 3,
+      },
+    ]);
+    getOverdueTransactions.mockResolvedValue([]);
+    getPendingReviews.mockResolvedValue([]);
+
+    const result = await service.getControlTowerAlerts({}, NOW);
+
+    expect(result.map((a) => [a.category, a.data.productId])).toEqual([
+      ['RESTOCK_RECOMMENDATION', 1],
+      ['TRANSFER_RECOMMENDATION', 3],
+    ]);
+    expect(result.every((a) => a.severity === 'WARNING')).toBe(true);
   });
 
   it('passes options through to the underlying calculations', async () => {

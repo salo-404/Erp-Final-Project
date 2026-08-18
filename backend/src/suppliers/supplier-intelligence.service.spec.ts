@@ -63,11 +63,17 @@ function makeSingleSupplierProvider(
 
 /** Multi-supplier provider — used by the compareSuppliers()/ranking tests. */
 function makeMultiSupplierProvider(
-  suppliers: { id: number; name: string; transactions: Transaction[] | null }[],
+  suppliers: {
+    id: number;
+    name: string;
+    transactions: Transaction[] | null;
+    isActive?: boolean;
+  }[],
 ): SuppliersHistoryProvider {
   const summaries: SupplierSummary[] = suppliers.map((s) => ({
     id: s.id,
     name: s.name,
+    isActive: s.isActive ?? true,
   }));
   const historyById = new Map(suppliers.map((s) => [s.id, s.transactions]));
 
@@ -280,6 +286,31 @@ describe('SupplierIntelligenceService.compareSuppliers', () => {
       'Supplier A',
       'Supplier B',
     ]);
+  });
+
+  it('excludes an inactive supplier even if it supplied the requested product (cannot be selected for a new purchase)', async () => {
+    const provider = makeMultiSupplierProvider([
+      {
+        id: 1,
+        name: 'Supplier A',
+        isActive: false,
+        transactions: [
+          makeTransaction({ id: 1, items: [makeItem(PRODUCT_X, 50)] }),
+        ],
+      },
+      {
+        id: 2,
+        name: 'Supplier B',
+        transactions: [
+          makeTransaction({ id: 2, items: [makeItem(PRODUCT_X, 60)] }),
+        ],
+      },
+    ]);
+    const service = new SupplierIntelligenceService(provider);
+
+    const comparison = await service.compareSuppliers(PRODUCT_X);
+
+    expect(comparison.map((c) => c.supplierId)).toEqual([2]);
   });
 
   it('excludes a supplier that never supplied the requested product', async () => {

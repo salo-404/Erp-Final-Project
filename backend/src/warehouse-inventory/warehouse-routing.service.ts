@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { ReservationStatus } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -39,6 +43,15 @@ export class WarehouseRoutingService {
    * text with no reliable, deterministic way to compare it against a
    * structured country/region without inventing fuzzy matching, which was
    * explicitly out of scope here).
+   *
+   * This function answers "who can fulfill a NEW order" (used by Path
+   * Optimizer and, in future, any order-placement flow), so it enforces
+   * isActive on both sides: every requested product must be active — an
+   * inactive product can never be ordered again, so if one is requested the
+   * whole call is rejected rather than silently returning no candidates —
+   * and inactive warehouses are excluded from candidates entirely,
+   * regardless of stock. Historical reads (inventory lookups by id, past
+   * transactions) are untouched by this and remain available elsewhere.
    */
   async findEligibleWarehousesForOrder(
     deliveryCountry: string | undefined,
@@ -49,10 +62,16 @@ export class WarehouseRoutingService {
 
     const productIds = items.map((item) => item.productId);
 
-    // One query: every WarehouseInventory row (across all warehouses) for
-    // any of the requested products, with the owning warehouse included.
+    await this.assertProductsActive(productIds);
+
+    // One query: every WarehouseInventory row for any of the requested
+    // products, at ACTIVE warehouses only, with the owning warehouse
+    // included.
     const inventoryRows = await this.prisma.warehouseInventory.findMany({
-      where: { productId: { in: productIds } },
+      where: {
+        productId: { in: productIds },
+        warehouse: { isActive: true },
+      },
       include: { warehouse: true },
     });
 
@@ -140,6 +159,34 @@ export class WarehouseRoutingService {
     }
 
     return eligible;
+  }
+
+  /**
+   * A product that is no longer active can never be part of a NEW order —
+   * rejects the whole call up front rather than silently returning zero
+   * candidates, which would look identical to "out of stock everywhere" and
+   * hide the real reason.
+   */
+  private async assertProductsActive(productIds: number[]): Promise<void> {
+    const uniqueProductIds = [...new Set(productIds)];
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: uniqueProductIds } },
+    });
+    const productById = new Map(
+      products.map((product) => [product.id, product]),
+    );
+
+    for (const productId of uniqueProductIds) {
+      const product = productById.get(productId);
+      if (!product) {
+        throw new NotFoundException(`Product ${productId} not found`);
+      }
+      if (!product.isActive) {
+        throw new BadRequestException(
+          `Product ${productId} is inactive and cannot be part of a new order`,
+        );
+      }
+    }
   }
 
   private validateItems(items: OrderItem[]): void {

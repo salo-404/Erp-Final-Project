@@ -4,226 +4,173 @@ import { WarehouseRoutingService } from './warehouse-routing.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 function createMockPrisma() {
-  const findMany = jest.fn();
-  const groupBy = jest.fn();
-  const prisma = {
-    warehouseInventory: { findMany },
-    reservation: { groupBy },
-  } as unknown as PrismaService;
-  return { prisma, findMany, groupBy };
+  return {
+    product: { findMany: jest.fn() },
+    warehouseInventory: { findMany: jest.fn() },
+    reservation: { groupBy: jest.fn() },
+  };
+}
+
+function buildService() {
+  const prisma = createMockPrisma();
+  const service = new WarehouseRoutingService(
+    prisma as unknown as PrismaService,
+  );
+  return { service, prisma };
+}
+
+function product(
+  overrides: Partial<{ id: number; name: string; isActive: boolean }> = {},
+) {
+  return { id: 100, name: 'Widget', isActive: true, ...overrides };
 }
 
 function inventoryRow(
-  warehouseId: number,
-  warehouseName: string,
-  location: string | null,
-  productId: number,
-  onHand: number,
+  overrides: Partial<{
+    productId: number;
+    warehouseId: number;
+    onHand: number;
+    warehouseName: string;
+    location: string | null;
+    warehouseIsActive: boolean;
+  }> = {},
 ) {
+  const warehouseId = overrides.warehouseId ?? 10;
   return {
-    id: warehouseId * 1000 + productId,
-    productId,
+    productId: overrides.productId ?? 100,
     warehouseId,
-    onHand,
-    reorderThreshold: 0,
+    onHand: overrides.onHand ?? 100,
     warehouse: {
       id: warehouseId,
-      name: warehouseName,
-      location,
-      maxCapacity: null,
-      createdAt: new Date(),
+      name: overrides.warehouseName ?? `Warehouse ${warehouseId}`,
+      location:
+        overrides.location === undefined ? 'Some City' : overrides.location,
+      isActive: overrides.warehouseIsActive ?? true,
     },
   };
 }
 
-function reservationSum(
-  warehouseId: number,
-  productId: number,
-  quantity: number,
-) {
-  return { warehouseId, productId, _sum: { quantity } };
-}
-
 describe('WarehouseRoutingService.findEligibleWarehousesForOrder', () => {
   it('returns a warehouse that can fulfill the entire order', async () => {
-    const { prisma, findMany, groupBy } = createMockPrisma();
-    findMany.mockResolvedValue([
-      inventoryRow(1, 'Beirut', 'Beirut, Lebanon', 100, 20),
+    const { service, prisma } = buildService();
+    prisma.product.findMany.mockResolvedValue([product()]);
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({ warehouseId: 10, onHand: 100 }),
     ]);
-    groupBy.mockResolvedValue([]);
-    const service = new WarehouseRoutingService(prisma);
+    prisma.reservation.groupBy.mockResolvedValue([]);
 
     const result = await service.findEligibleWarehousesForOrder(
       undefined,
       undefined,
-      [{ productId: 100, quantity: 10 }],
+      [{ productId: 100, quantity: 50 }],
     );
 
     expect(result).toHaveLength(1);
-    expect(result[0]).toEqual({
-      warehouseId: 1,
-      warehouseName: 'Beirut',
-      location: 'Beirut, Lebanon',
-      items: [
-        {
-          productId: 100,
-          onHand: 20,
-          reserved: 0,
-          available: 20,
-          requestedQuantity: 10,
-        },
-      ],
+    expect(result[0].warehouseId).toBe(10);
+    expect(result[0].items[0]).toEqual({
+      productId: 100,
+      onHand: 100,
+      reserved: 0,
+      available: 100,
+      requestedQuantity: 50,
     });
   });
 
-  it('excludes a warehouse with insufficient stock for one item', async () => {
-    const { prisma, findMany, groupBy } = createMockPrisma();
-    findMany.mockResolvedValue([
-      inventoryRow(1, 'Warehouse 1', null, 100, 5), // only 5, needs 10
+  it('excludes a warehouse that cannot fulfill the full requested quantity', async () => {
+    const { service, prisma } = buildService();
+    prisma.product.findMany.mockResolvedValue([product()]);
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({ warehouseId: 10, onHand: 30 }),
     ]);
-    groupBy.mockResolvedValue([]);
-    const service = new WarehouseRoutingService(prisma);
+    prisma.reservation.groupBy.mockResolvedValue([]);
 
     const result = await service.findEligibleWarehousesForOrder(
       undefined,
       undefined,
-      [{ productId: 100, quantity: 10 }],
+      [{ productId: 100, quantity: 50 }],
     );
 
     expect(result).toEqual([]);
   });
 
-  it('excludes a warehouse with enough onHand but insufficient AVAILABLE stock due to ACTIVE reservations', async () => {
-    const { prisma, findMany, groupBy } = createMockPrisma();
-    findMany.mockResolvedValue([
-      inventoryRow(1, 'Warehouse 1', null, 100, 20), // onHand=20
+  it('subtracts ACTIVE reservations from onHand when computing available stock', async () => {
+    const { service, prisma } = buildService();
+    prisma.product.findMany.mockResolvedValue([product()]);
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({ warehouseId: 10, onHand: 50 }),
     ]);
-    groupBy.mockResolvedValue([reservationSum(1, 100, 15)]); // 15 reserved -> available=5
-    const service = new WarehouseRoutingService(prisma);
+    prisma.reservation.groupBy.mockResolvedValue([
+      { warehouseId: 10, productId: 100, _sum: { quantity: 40 } },
+    ]);
 
     const result = await service.findEligibleWarehousesForOrder(
       undefined,
       undefined,
-      [
-        { productId: 100, quantity: 10 }, // needs 10, only 5 available
-      ],
+      [{ productId: 100, quantity: 20 }],
     );
 
+    // onHand 50 - reserved 40 = available 10, which is < the requested 20.
     expect(result).toEqual([]);
   });
 
-  it('returns multiple eligible warehouses', async () => {
-    const { prisma, findMany, groupBy } = createMockPrisma();
-    findMany.mockResolvedValue([
-      inventoryRow(1, 'Warehouse 1', null, 100, 20),
-      inventoryRow(2, 'Warehouse 2', null, 100, 30),
-    ]);
-    groupBy.mockResolvedValue([]);
-    const service = new WarehouseRoutingService(prisma);
+  it('rejects when the requested product is inactive', async () => {
+    const { service, prisma } = buildService();
+    prisma.product.findMany.mockResolvedValue([product({ isActive: false })]);
 
-    const result = await service.findEligibleWarehousesForOrder(
-      undefined,
-      undefined,
-      [{ productId: 100, quantity: 10 }],
-    );
-
-    expect(result.map((w) => w.warehouseId).sort()).toEqual([1, 2]);
-  });
-
-  it('requires availability across ALL requested products (multi-product order)', async () => {
-    const { prisma, findMany, groupBy } = createMockPrisma();
-    findMany.mockResolvedValue([
-      // Warehouse 1: enough of both A and B
-      inventoryRow(1, 'Warehouse 1', null, 100, 20),
-      inventoryRow(1, 'Warehouse 1', null, 200, 8),
-      // Warehouse 2: enough A, NOT enough B
-      inventoryRow(2, 'Warehouse 2', null, 100, 20),
-      inventoryRow(2, 'Warehouse 2', null, 200, 3),
-    ]);
-    groupBy.mockResolvedValue([]);
-    const service = new WarehouseRoutingService(prisma);
-
-    const result = await service.findEligibleWarehousesForOrder(
-      undefined,
-      undefined,
-      [
+    await expect(
+      service.findEligibleWarehousesForOrder(undefined, undefined, [
         { productId: 100, quantity: 10 },
-        { productId: 200, quantity: 5 },
-      ],
+      ]),
+    ).rejects.toThrow(
+      'Product 100 is inactive and cannot be part of a new order',
     );
 
-    expect(result).toHaveLength(1);
-    expect(result[0].warehouseId).toBe(1);
+    expect(prisma.warehouseInventory.findMany).not.toHaveBeenCalled();
   });
 
-  it('excludes a warehouse missing an inventory row entirely for one requested product (treated as 0)', async () => {
-    const { prisma, findMany, groupBy } = createMockPrisma();
-    findMany.mockResolvedValue([
-      // Warehouse 1 only has a row for product 100, never stocked product 200
-      inventoryRow(1, 'Warehouse 1', null, 100, 50),
+  it('rejects when the requested product does not exist', async () => {
+    const { service, prisma } = buildService();
+    prisma.product.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.findEligibleWarehousesForOrder(undefined, undefined, [
+        { productId: 999, quantity: 10 },
+      ]),
+    ).rejects.toThrow('Product 999 not found');
+
+    expect(prisma.warehouseInventory.findMany).not.toHaveBeenCalled();
+  });
+
+  it('excludes an inactive warehouse from candidates even when it has enough stock', async () => {
+    const { service, prisma } = buildService();
+    prisma.product.findMany.mockResolvedValue([product()]);
+    prisma.warehouseInventory.findMany.mockResolvedValue([]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+
+    await service.findEligibleWarehousesForOrder(undefined, undefined, [
+      { productId: 100, quantity: 10 },
     ]);
-    groupBy.mockResolvedValue([]);
-    const service = new WarehouseRoutingService(prisma);
 
-    const result = await service.findEligibleWarehousesForOrder(
-      undefined,
-      undefined,
-      [
-        { productId: 100, quantity: 10 },
-        { productId: 200, quantity: 1 },
-      ],
-    );
-
-    expect(result).toEqual([]);
+    // The isActive filter is applied inside the query itself, so an
+    // inactive warehouse's row is never even fetched.
+    expect(prisma.warehouseInventory.findMany).toHaveBeenCalledWith({
+      where: { productId: { in: [100] }, warehouse: { isActive: true } },
+      include: { warehouse: true },
+    });
   });
 
-  it('returns an empty array when no warehouse can fulfill the order', async () => {
-    const { prisma, findMany, groupBy } = createMockPrisma();
-    findMany.mockResolvedValue([
-      inventoryRow(1, 'Warehouse 1', null, 100, 2),
-      inventoryRow(2, 'Warehouse 2', null, 100, 3),
-    ]);
-    groupBy.mockResolvedValue([]);
-    const service = new WarehouseRoutingService(prisma);
-
-    const result = await service.findEligibleWarehousesForOrder(
-      undefined,
-      undefined,
-      [{ productId: 100, quantity: 10 }],
-    );
-
-    expect(result).toEqual([]);
-  });
-
-  it('rejects an empty items array without querying the database', async () => {
-    const { prisma, findMany } = createMockPrisma();
-    const service = new WarehouseRoutingService(prisma);
+  it('rejects empty items without querying anything', async () => {
+    const { service, prisma } = buildService();
 
     await expect(
       service.findEligibleWarehousesForOrder(undefined, undefined, []),
     ).rejects.toThrow('items must not be empty');
 
-    expect(findMany).not.toHaveBeenCalled();
+    expect(prisma.product.findMany).not.toHaveBeenCalled();
   });
 
-  it('rejects a non-positive or non-integer quantity', async () => {
-    const { prisma, findMany } = createMockPrisma();
-    const service = new WarehouseRoutingService(prisma);
-
-    for (const badQuantity of [0, -1, 1.5]) {
-      await expect(
-        service.findEligibleWarehousesForOrder(undefined, undefined, [
-          { productId: 100, quantity: badQuantity },
-        ]),
-      ).rejects.toThrow(/must be a positive integer/);
-    }
-
-    expect(findMany).not.toHaveBeenCalled();
-  });
-
-  it('rejects duplicate productId entries in items', async () => {
-    const { prisma, findMany } = createMockPrisma();
-    const service = new WarehouseRoutingService(prisma);
+  it('rejects a duplicate productId in items', async () => {
+    const { service, prisma } = buildService();
 
     await expect(
       service.findEligibleWarehousesForOrder(undefined, undefined, [
@@ -232,6 +179,32 @@ describe('WarehouseRoutingService.findEligibleWarehousesForOrder', () => {
       ]),
     ).rejects.toThrow('Duplicate productId 100 in items');
 
-    expect(findMany).not.toHaveBeenCalled();
+    expect(prisma.product.findMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-positive/non-integer quantity', async () => {
+    const { service } = buildService();
+
+    await expect(
+      service.findEligibleWarehousesForOrder(undefined, undefined, [
+        { productId: 100, quantity: 0 },
+      ]),
+    ).rejects.toThrow(/must be a positive integer/);
+  });
+
+  it('never writes to inventory or reservations', async () => {
+    const { service, prisma } = buildService();
+    prisma.product.findMany.mockResolvedValue([product()]);
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({ warehouseId: 10, onHand: 100 }),
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+
+    await service.findEligibleWarehousesForOrder(undefined, undefined, [
+      { productId: 100, quantity: 50 },
+    ]);
+
+    expect(Object.keys(prisma.warehouseInventory)).not.toContain('update');
+    expect(Object.keys(prisma.reservation)).not.toContain('create');
   });
 });

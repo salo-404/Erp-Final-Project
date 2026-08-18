@@ -543,7 +543,10 @@ describe('DocumentReviewService.resolveProduct', () => {
     const result = await service.resolveProduct('Widget');
 
     expect(prismaRoot.product.findMany).toHaveBeenCalledWith({
-      where: { name: { contains: 'Widget', mode: 'insensitive' } },
+      where: {
+        name: { contains: 'Widget', mode: 'insensitive' },
+        isActive: true,
+      },
       take: 10,
     });
     expect(result[0]).toEqual({ productId: 2, name: 'widget', score: 1 });
@@ -584,7 +587,10 @@ describe('DocumentReviewService.resolveSupplier', () => {
     const result = await service.resolveSupplier('Acme Supplies');
 
     expect(prismaRoot.supplier.findMany).toHaveBeenCalledWith({
-      where: { name: { contains: 'Acme Supplies', mode: 'insensitive' } },
+      where: {
+        name: { contains: 'Acme Supplies', mode: 'insensitive' },
+        isActive: true,
+      },
       take: 10,
     });
     expect(result[0]).toEqual({

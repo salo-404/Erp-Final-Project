@@ -103,10 +103,10 @@ function buildService(tx: MockTx) {
   return { service, reserve, fulfill, release, recordMovement, prismaRoot };
 }
 
-const SUPPLIER = { id: 1, name: 'Acme Supplies' };
-const WAREHOUSE_A = { id: 10, name: 'Warehouse A' };
-const WAREHOUSE_B = { id: 20, name: 'Warehouse B' };
-const PRODUCT = { id: 100, name: 'Widget' };
+const SUPPLIER = { id: 1, name: 'Acme Supplies', isActive: true };
+const WAREHOUSE_A = { id: 10, name: 'Warehouse A', isActive: true };
+const WAREHOUSE_B = { id: 20, name: 'Warehouse B', isActive: true };
+const PRODUCT = { id: 100, name: 'Widget', isActive: true };
 
 function setupExistenceChecks(tx: MockTx) {
   tx.supplier.findUnique.mockResolvedValue(SUPPLIER);
@@ -121,6 +121,24 @@ function setupExistenceChecks(tx: MockTx) {
 }
 
 describe('InventoryTransactionsService.createIncoming', () => {
+  it('bug fix: rejects a duplicate productId across items', async () => {
+    const tx = createMockTx();
+    const { service } = buildService(tx);
+
+    await expect(
+      service.createIncoming({
+        supplierId: 1,
+        destinationWarehouseId: 10,
+        items: [
+          { productId: 100, quantity: 5, price: 10 },
+          { productId: 100, quantity: 3, price: 12 },
+        ],
+      }),
+    ).rejects.toThrow('Duplicate productId 100 in items');
+
+    expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+  });
+
   it('creates a PENDING INCOMING transaction with its items and touches no reservation/stock', async () => {
     const tx = createMockTx();
     setupExistenceChecks(tx);
@@ -128,14 +146,14 @@ describe('InventoryTransactionsService.createIncoming', () => {
       id: 1,
       type: 'INCOMING',
       status: 'PENDING',
-      items: [{ productId: 100, quantity: 5 }],
+      items: [{ productId: 100, quantity: 5, price: 10 }],
     });
     const { service, reserve, recordMovement } = buildService(tx);
 
     const result = await service.createIncoming({
       supplierId: 1,
       destinationWarehouseId: 10,
-      items: [{ productId: 100, quantity: 5 }],
+      items: [{ productId: 100, quantity: 5, price: 10 }],
     });
 
     expect(tx.inventoryTransaction.create).toHaveBeenCalledWith({
@@ -146,7 +164,7 @@ describe('InventoryTransactionsService.createIncoming', () => {
         destinationWarehouseId: 10,
         expectedDate: undefined,
         documentUrl: undefined,
-        items: { create: [{ productId: 100, quantity: 5, price: undefined }] },
+        items: { create: [{ productId: 100, quantity: 5, price: 10 }] },
       },
       include: { items: true },
     });
@@ -164,9 +182,27 @@ describe('InventoryTransactionsService.createIncoming', () => {
       service.createIncoming({
         supplierId: 999,
         destinationWarehouseId: 10,
-        items: [{ productId: 100, quantity: 5 }],
+        items: [{ productId: 100, quantity: 5, price: 10 }],
       }),
     ).rejects.toThrow('Supplier 999 not found');
+
+    expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the supplier is inactive', async () => {
+    const tx = createMockTx();
+    tx.supplier.findUnique.mockResolvedValue({ ...SUPPLIER, isActive: false });
+    const { service } = buildService(tx);
+
+    await expect(
+      service.createIncoming({
+        supplierId: 1,
+        destinationWarehouseId: 10,
+        items: [{ productId: 100, quantity: 5, price: 10 }],
+      }),
+    ).rejects.toThrow(
+      'Supplier 1 is inactive and cannot be used for a new transaction',
+    );
 
     expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
   });
@@ -181,9 +217,31 @@ describe('InventoryTransactionsService.createIncoming', () => {
       service.createIncoming({
         supplierId: 1,
         destinationWarehouseId: 999,
-        items: [{ productId: 100, quantity: 5 }],
+        items: [{ productId: 100, quantity: 5, price: 10 }],
       }),
     ).rejects.toThrow('Warehouse 999 not found');
+
+    expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the destination warehouse is inactive', async () => {
+    const tx = createMockTx();
+    tx.supplier.findUnique.mockResolvedValue(SUPPLIER);
+    tx.warehouse.findUnique.mockResolvedValue({
+      ...WAREHOUSE_A,
+      isActive: false,
+    });
+    const { service } = buildService(tx);
+
+    await expect(
+      service.createIncoming({
+        supplierId: 1,
+        destinationWarehouseId: 10,
+        items: [{ productId: 100, quantity: 5, price: 10 }],
+      }),
+    ).rejects.toThrow(
+      'Warehouse 10 is inactive and cannot be used for a new transaction',
+    );
 
     expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
   });
@@ -199,11 +257,78 @@ describe('InventoryTransactionsService.createIncoming', () => {
       service.createIncoming({
         supplierId: 1,
         destinationWarehouseId: 10,
-        items: [{ productId: 999, quantity: 5 }],
+        items: [{ productId: 999, quantity: 5, price: 10 }],
       }),
     ).rejects.toThrow('Product 999 not found');
 
     expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects when a product is inactive', async () => {
+    const tx = createMockTx();
+    tx.supplier.findUnique.mockResolvedValue(SUPPLIER);
+    tx.warehouse.findUnique.mockResolvedValue(WAREHOUSE_A);
+    tx.product.findUnique.mockResolvedValue({ ...PRODUCT, isActive: false });
+    const { service } = buildService(tx);
+
+    await expect(
+      service.createIncoming({
+        supplierId: 1,
+        destinationWarehouseId: 10,
+        items: [{ productId: 100, quantity: 5, price: 10 }],
+      }),
+    ).rejects.toThrow(
+      'Product 100 is inactive and cannot be used for a new transaction',
+    );
+
+    expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an item without a price (purchase items must have a price)', async () => {
+    const tx = createMockTx();
+    const { service } = buildService(tx);
+
+    await expect(
+      service.createIncoming({
+        supplierId: 1,
+        destinationWarehouseId: 10,
+        items: [{ productId: 100, quantity: 5 }],
+      }),
+    ).rejects.toThrow(
+      'price is required for product 100 on a purchase (INCOMING) transaction',
+    );
+
+    expect(tx.supplier.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('rejects an item with an explicit null price (missing price is never treated as 0)', async () => {
+    const tx = createMockTx();
+    const { service } = buildService(tx);
+
+    await expect(
+      service.createIncoming({
+        supplierId: 1,
+        destinationWarehouseId: 10,
+        items: [{ productId: 100, quantity: 5, price: null as never }],
+      }),
+    ).rejects.toThrow(
+      'price is required for product 100 on a purchase (INCOMING) transaction',
+    );
+  });
+
+  it('rejects a negative or non-finite price', async () => {
+    const tx = createMockTx();
+    const { service } = buildService(tx);
+
+    for (const badPrice of [-1, NaN, Infinity]) {
+      await expect(
+        service.createIncoming({
+          supplierId: 1,
+          destinationWarehouseId: 10,
+          items: [{ productId: 100, quantity: 5, price: badPrice }],
+        }),
+      ).rejects.toThrow('price for product 100 must be a non-negative number');
+    }
   });
 
   it('rejects empty items without touching the database', async () => {
@@ -240,6 +365,24 @@ describe('InventoryTransactionsService.createIncoming', () => {
 });
 
 describe('InventoryTransactionsService.createOutgoing', () => {
+  it('bug fix: rejects a duplicate productId across items (would make later reservation lookups by productId ambiguous)', async () => {
+    const tx = createMockTx();
+    const { service, reserve } = buildService(tx);
+
+    await expect(
+      service.createOutgoing({
+        sourceWarehouseId: 10,
+        items: [
+          { productId: 100, quantity: 5 },
+          { productId: 100, quantity: 3 },
+        ],
+      }),
+    ).rejects.toThrow('Duplicate productId 100 in items');
+
+    expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
   it('creates a PENDING OUTGOING transaction and reserves every item at the source warehouse', async () => {
     const tx = createMockTx();
     setupExistenceChecks(tx);
@@ -291,6 +434,42 @@ describe('InventoryTransactionsService.createOutgoing', () => {
     expect(result.status).toBe('PENDING');
   });
 
+  it('confirmed rule: the transaction -> reservation flow validates active warehouse/product BEFORE reserve() runs, and reserve() itself performs no isActive check (InventoryTransactionsService is the sole controlled entry point)', async () => {
+    const tx = createMockTx();
+    const callOrder: string[] = [];
+    tx.warehouse.findUnique.mockImplementation(() => {
+      callOrder.push('assertWarehouseExists');
+      return Promise.resolve(WAREHOUSE_A);
+    });
+    tx.product.findUnique.mockImplementation(() => {
+      callOrder.push('assertProductsExist');
+      return Promise.resolve(PRODUCT);
+    });
+    tx.inventoryTransaction.create.mockResolvedValue({
+      id: 5,
+      type: 'OUTGOING',
+      status: 'PENDING',
+      items: [{ productId: 100, quantity: 5 }],
+    });
+    const { service, reserve } = buildService(tx);
+    reserve.mockImplementation(() => {
+      callOrder.push('reserve');
+      return Promise.resolve({ id: 1, status: 'ACTIVE' } as never);
+    });
+
+    const result = await service.createOutgoing({
+      sourceWarehouseId: 10,
+      items: [{ productId: 100, quantity: 5 }],
+    });
+
+    expect(callOrder).toEqual([
+      'assertWarehouseExists',
+      'assertProductsExist',
+      'reserve',
+    ]);
+    expect(result.status).toBe('PENDING');
+  });
+
   it('rejects when the source warehouse does not exist', async () => {
     const tx = createMockTx();
     tx.warehouse.findUnique.mockResolvedValue(null);
@@ -304,6 +483,45 @@ describe('InventoryTransactionsService.createOutgoing', () => {
     ).rejects.toThrow('Warehouse 999 not found');
 
     expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the source warehouse is inactive', async () => {
+    const tx = createMockTx();
+    tx.warehouse.findUnique.mockResolvedValue({
+      ...WAREHOUSE_A,
+      isActive: false,
+    });
+    const { service, reserve } = buildService(tx);
+
+    await expect(
+      service.createOutgoing({
+        sourceWarehouseId: 10,
+        items: [{ productId: 100, quantity: 5 }],
+      }),
+    ).rejects.toThrow(
+      'Warehouse 10 is inactive and cannot be used for a new transaction',
+    );
+
+    expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('rejects when a product is inactive', async () => {
+    const tx = createMockTx();
+    tx.warehouse.findUnique.mockResolvedValue(WAREHOUSE_A);
+    tx.product.findUnique.mockResolvedValue({ ...PRODUCT, isActive: false });
+    const { service, reserve } = buildService(tx);
+
+    await expect(
+      service.createOutgoing({
+        sourceWarehouseId: 10,
+        items: [{ productId: 100, quantity: 5 }],
+      }),
+    ).rejects.toThrow(
+      'Product 100 is inactive and cannot be used for a new transaction',
+    );
+
     expect(reserve).not.toHaveBeenCalled();
   });
 
@@ -329,6 +547,25 @@ describe('InventoryTransactionsService.createOutgoing', () => {
 });
 
 describe('InventoryTransactionsService.createTransfer', () => {
+  it('bug fix: rejects a duplicate productId across items', async () => {
+    const tx = createMockTx();
+    const { service, reserve } = buildService(tx);
+
+    await expect(
+      service.createTransfer({
+        sourceWarehouseId: 10,
+        destinationWarehouseId: 20,
+        items: [
+          { productId: 100, quantity: 3 },
+          { productId: 100, quantity: 2 },
+        ],
+      }),
+    ).rejects.toThrow('Duplicate productId 100 in items');
+
+    expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
   it('creates a PENDING TRANSFER transaction and reserves stock at the SOURCE warehouse only', async () => {
     const tx = createMockTx();
     setupExistenceChecks(tx);
@@ -398,6 +635,73 @@ describe('InventoryTransactionsService.createTransfer', () => {
     ).rejects.toThrow('Warehouse 999 not found');
 
     expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the source warehouse is inactive', async () => {
+    const tx = createMockTx();
+    tx.warehouse.findUnique.mockResolvedValue({
+      ...WAREHOUSE_A,
+      isActive: false,
+    });
+    const { service, reserve } = buildService(tx);
+
+    await expect(
+      service.createTransfer({
+        sourceWarehouseId: 10,
+        destinationWarehouseId: 20,
+        items: [{ productId: 100, quantity: 3 }],
+      }),
+    ).rejects.toThrow(
+      'Warehouse 10 is inactive and cannot be used for a new transaction',
+    );
+
+    expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the destination warehouse is inactive', async () => {
+    const tx = createMockTx();
+    tx.warehouse.findUnique.mockImplementation(
+      ({ where }: { where: { id: number } }) =>
+        Promise.resolve(
+          where.id === WAREHOUSE_A.id
+            ? WAREHOUSE_A
+            : { ...WAREHOUSE_B, id: where.id, isActive: false },
+        ),
+    );
+    const { service, reserve } = buildService(tx);
+
+    await expect(
+      service.createTransfer({
+        sourceWarehouseId: 10,
+        destinationWarehouseId: 20,
+        items: [{ productId: 100, quantity: 3 }],
+      }),
+    ).rejects.toThrow(
+      'Warehouse 20 is inactive and cannot be used for a new transaction',
+    );
+
+    expect(tx.inventoryTransaction.create).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('rejects when a product is inactive', async () => {
+    const tx = createMockTx();
+    tx.warehouse.findUnique.mockResolvedValue(WAREHOUSE_A);
+    tx.product.findUnique.mockResolvedValue({ ...PRODUCT, isActive: false });
+    const { service, reserve } = buildService(tx);
+
+    await expect(
+      service.createTransfer({
+        sourceWarehouseId: 10,
+        destinationWarehouseId: 20,
+        items: [{ productId: 100, quantity: 3 }],
+      }),
+    ).rejects.toThrow(
+      'Product 100 is inactive and cannot be used for a new transaction',
+    );
+
     expect(reserve).not.toHaveBeenCalled();
   });
 
@@ -695,6 +999,72 @@ describe('InventoryTransactionsService.update', () => {
     });
   });
 
+  it('confirmed rule: a quantity-only change never re-validates the unchanged product — succeeds even if that product has since become inactive', async () => {
+    const tx = createMockTx();
+    tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+    tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+      id: 1,
+      type: 'OUTGOING',
+      sourceWarehouseId: 10,
+      destinationWarehouseId: null,
+      items: [{ id: 11, productId: 100, quantity: 5 }],
+    });
+    tx.reservation.findFirst.mockResolvedValue({
+      id: 99,
+      productId: 100,
+      status: 'ACTIVE',
+    });
+    // Deliberately never stub tx.product.findUnique to resolve a value —
+    // if update() ever called it for this unchanged item, the mock would
+    // resolve `undefined` and the (existing) assertProductsExist NotFound
+    // check would make this test fail, proving the product is never
+    // re-checked.
+    const { service, release, reserve } = buildService(tx);
+
+    await expect(
+      service.update(1, { items: [{ itemId: 11, quantity: 9 }] }),
+    ).resolves.toBeDefined();
+
+    expect(tx.product.findUnique).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledWith(99, tx);
+    expect(reserve).toHaveBeenCalledWith(
+      { transactionId: 1, productId: 100, warehouseId: 10, quantity: 9 },
+      tx,
+    );
+  });
+
+  it('confirmed rule: an item change never re-validates the unchanged sourceWarehouseId — succeeds even if that warehouse has since become inactive', async () => {
+    const tx = createMockTx();
+    tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+    tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+      id: 1,
+      type: 'OUTGOING',
+      sourceWarehouseId: 10,
+      destinationWarehouseId: null,
+      items: [{ id: 11, productId: 100, quantity: 5 }],
+    });
+    tx.reservation.findFirst.mockResolvedValue({
+      id: 99,
+      productId: 100,
+      status: 'ACTIVE',
+    });
+    // sourceWarehouseId is NOT part of this update input, so
+    // assertWarehouseExists must never be called for it, regardless of
+    // whether warehouse 10 is active or inactive in reality.
+    const { service, release, reserve } = buildService(tx);
+
+    await expect(
+      service.update(1, { items: [{ itemId: 11, quantity: 9 }] }),
+    ).resolves.toBeDefined();
+
+    expect(tx.warehouse.findUnique).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledWith(99, tx);
+    expect(reserve).toHaveBeenCalledWith(
+      { transactionId: 1, productId: 100, warehouseId: 10, quantity: 9 },
+      tx,
+    );
+  });
+
   it('synchronizes the reservation when an item product changes', async () => {
     const tx = createMockTx();
     tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
@@ -710,7 +1080,11 @@ describe('InventoryTransactionsService.update', () => {
       productId: 100,
       status: 'ACTIVE',
     });
-    tx.product.findUnique.mockResolvedValue({ id: 200, name: 'Gadget' });
+    tx.product.findUnique.mockResolvedValue({
+      id: 200,
+      name: 'Gadget',
+      isActive: true,
+    });
     const { service, release, reserve } = buildService(tx);
 
     await service.update(1, { items: [{ itemId: 11, productId: 200 }] });
@@ -758,6 +1132,57 @@ describe('InventoryTransactionsService.update', () => {
       where: { id: 1 },
       data: { sourceWarehouseId: 20 },
     });
+  });
+
+  it('rejects changing to an inactive product', async () => {
+    const tx = createMockTx();
+    tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+    tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+      id: 1,
+      type: 'OUTGOING',
+      sourceWarehouseId: 10,
+      destinationWarehouseId: null,
+      items: [{ id: 11, productId: 100, quantity: 5 }],
+    });
+    tx.product.findUnique.mockResolvedValue({
+      id: 200,
+      name: 'Gadget',
+      isActive: false,
+    });
+    const { service, release, reserve } = buildService(tx);
+
+    await expect(
+      service.update(1, { items: [{ itemId: 11, productId: 200 }] }),
+    ).rejects.toThrow(
+      'Product 200 is inactive and cannot be used for a new transaction',
+    );
+
+    expect(release).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('rejects changing sourceWarehouseId to an inactive warehouse', async () => {
+    const tx = createMockTx();
+    tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+    tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+      id: 1,
+      type: 'TRANSFER',
+      sourceWarehouseId: 10,
+      destinationWarehouseId: 30,
+      items: [{ id: 11, productId: 100, quantity: 5 }],
+    });
+    tx.warehouse.findUnique.mockResolvedValue({
+      ...WAREHOUSE_B,
+      isActive: false,
+    });
+    const { service, release, reserve } = buildService(tx);
+
+    await expect(service.update(1, { sourceWarehouseId: 20 })).rejects.toThrow(
+      'Warehouse 20 is inactive and cannot be used for a new transaction',
+    );
+
+    expect(release).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
   });
 
   it('rejects sourceWarehouseId equal to destinationWarehouseId', async () => {
@@ -886,6 +1311,28 @@ describe('InventoryTransactionsService.findOneTransaction', () => {
 
     const result = await service.findOneTransaction(1);
 
+    expect(prismaRoot.inventoryTransaction.findUnique).toHaveBeenCalledWith({
+      where: { id: 1 },
+      include: { items: true },
+    });
+    expect(result).toEqual(txnRow);
+  });
+
+  it('remains readable for a historical transaction whose product/warehouse have since become inactive (no isActive filter on reads)', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot } = buildService(tx);
+    const txnRow = {
+      id: 1,
+      type: 'OUTGOING',
+      status: 'COMPLETED',
+      sourceWarehouseId: 10,
+      items: [{ id: 11, productId: 100, quantity: 5 }],
+    };
+    prismaRoot.inventoryTransaction.findUnique.mockResolvedValue(txnRow);
+
+    const result = await service.findOneTransaction(1);
+
+    // No isActive-related where clause was ever applied to this read.
     expect(prismaRoot.inventoryTransaction.findUnique).toHaveBeenCalledWith({
       where: { id: 1 },
       include: { items: true },
@@ -1056,6 +1503,143 @@ describe('InventoryTransactionsService.findAllTransactions', () => {
 
     expect(tx.inventoryTransaction.findMany).toHaveBeenCalled();
     expect(prismaRoot.inventoryTransaction.findMany).not.toHaveBeenCalled();
+  });
+});
+
+function decimal(value: number) {
+  return { toNumber: () => value };
+}
+
+describe('InventoryTransactionsService.calculateTransactionCost', () => {
+  it('sums quantity × price across every item, all priced', () => {
+    const tx = createMockTx();
+    const { service } = buildService(tx);
+
+    const result = service.calculateTransactionCost([
+      { quantity: 3, price: decimal(19.99) },
+      { quantity: 2, price: decimal(5) },
+    ]);
+
+    expect(result.totalCost).toBeCloseTo(69.97, 5);
+    expect(result.pricedItemCount).toBe(2);
+    expect(result.totalItemCount).toBe(2);
+    expect(result.fullyPriced).toBe(true);
+  });
+
+  it('excludes unpriced items from the sum rather than treating them as free, and marks the result as not fully priced', () => {
+    const tx = createMockTx();
+    const { service } = buildService(tx);
+
+    const result = service.calculateTransactionCost([
+      { quantity: 3, price: decimal(10) },
+      { quantity: 5, price: null },
+    ]);
+
+    expect(result.totalCost).toBe(30);
+    expect(result.pricedItemCount).toBe(1);
+    expect(result.totalItemCount).toBe(2);
+    expect(result.fullyPriced).toBe(false);
+  });
+
+  it('returns totalCost: null when no item has a price', () => {
+    const tx = createMockTx();
+    const { service } = buildService(tx);
+
+    const result = service.calculateTransactionCost([
+      { quantity: 3, price: null },
+      { quantity: 5, price: null },
+    ]);
+
+    expect(result.totalCost).toBeNull();
+    expect(result.pricedItemCount).toBe(0);
+    expect(result.fullyPriced).toBe(false);
+  });
+
+  it('handles an empty items array deterministically', () => {
+    const tx = createMockTx();
+    const { service } = buildService(tx);
+
+    const result = service.calculateTransactionCost([]);
+
+    expect(result).toEqual({
+      totalCost: null,
+      pricedItemCount: 0,
+      totalItemCount: 0,
+      fullyPriced: false,
+    });
+  });
+
+  it('is a pure calculation — same input always produces the same output, no DB access', () => {
+    const tx = createMockTx();
+    const { service } = buildService(tx);
+    const items = [{ quantity: 4, price: decimal(2.5) }];
+
+    const first = service.calculateTransactionCost(items);
+    const second = service.calculateTransactionCost(items);
+
+    expect(first).toEqual(second);
+    expect(first.totalCost).toBe(10);
+  });
+});
+
+describe('InventoryTransactionsService.getTransactionWithCost', () => {
+  it('fetches the transaction via findOneTransaction() and attaches its cost summary', async () => {
+    const txClient = createMockTx();
+    const { service, prismaRoot } = buildService(txClient);
+    const txnRow = {
+      id: 1,
+      type: 'INCOMING',
+      status: 'PENDING',
+      items: [
+        { id: 11, productId: 100, quantity: 3, price: decimal(10) },
+        { id: 12, productId: 200, quantity: 2, price: decimal(5) },
+      ],
+    };
+    prismaRoot.inventoryTransaction.findUnique.mockResolvedValue(txnRow);
+
+    const result = await service.getTransactionWithCost(1);
+
+    expect(prismaRoot.inventoryTransaction.findUnique).toHaveBeenCalledWith({
+      where: { id: 1 },
+      include: { items: true },
+    });
+    expect(result.transaction).toEqual(txnRow);
+    expect(result.cost).toEqual({
+      totalCost: 40,
+      pricedItemCount: 2,
+      totalItemCount: 2,
+      fullyPriced: true,
+    });
+  });
+
+  it('propagates NotFoundException when the transaction does not exist', async () => {
+    const txClient = createMockTx();
+    const { service, prismaRoot } = buildService(txClient);
+    prismaRoot.inventoryTransaction.findUnique.mockResolvedValue(null);
+
+    await expect(service.getTransactionWithCost(999)).rejects.toThrow(
+      'InventoryTransaction 999 not found',
+    );
+  });
+
+  it('never touches stock, reservations, or transaction status', async () => {
+    const txClient = createMockTx();
+    const { service, prismaRoot, reserve, fulfill, release, recordMovement } =
+      buildService(txClient);
+    prismaRoot.inventoryTransaction.findUnique.mockResolvedValue({
+      id: 1,
+      status: 'PENDING',
+      items: [{ id: 11, productId: 100, quantity: 3, price: decimal(10) }],
+    });
+
+    await service.getTransactionWithCost(1);
+
+    expect(reserve).not.toHaveBeenCalled();
+    expect(fulfill).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(recordMovement).not.toHaveBeenCalled();
+    expect(txClient.inventoryTransaction.update).not.toHaveBeenCalled();
+    expect(txClient.inventoryTransaction.updateMany).not.toHaveBeenCalled();
   });
 });
 

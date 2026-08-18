@@ -23,10 +23,22 @@ export interface DeadStockEntry {
   productId: number;
   warehouseId: number;
   onHand: number;
-  /** null when this product/warehouse pair has never had a StockMovement. */
+  /** null when this product/warehouse pair has never had a StockMovement (of ANY type). */
   lastMovementAt: Date | null;
   /** null when lastMovementAt is null. */
   daysSinceLastMovement: number | null;
+  /**
+   * Same idea as lastMovementAt, but scoped to OUTGOING/TRANSFER_OUT only —
+   * the customer-facing "did anyone actually take this stock" signal Control
+   * Tower needs to explain an alert, distinct from warehouse-side movement
+   * (INCOMING/TRANSFER_IN/ADJUSTMENT) which isn't customer demand. null when
+   * this product/warehouse pair has never had a consumption-type movement.
+   * Purely additional information — does NOT change which rows are flagged
+   * as dead stock; the existing any-movement-type cutoff below is unchanged.
+   */
+  lastOutgoingMovementAt: Date | null;
+  /** null when lastOutgoingMovementAt is null. */
+  daysSinceLastOutgoingMovement: number | null;
 }
 
 export type ConsumptionAnomalyDirection = 'INCREASE' | 'DECREASE';
@@ -73,7 +85,24 @@ export interface StockoutRiskEntry {
   avgDailyConsumption: number;
   /** available / avgDailyConsumption; null when avgDailyConsumption is 0 (indefinite runway, not computable). */
   daysOfSupply: number | null;
+  /**
+   * referenceDate + daysOfSupply days — derived from daysOfSupply, not a
+   * separate calculation. null under exactly the same condition
+   * daysOfSupply is null (zero/no consumption data): never invented, never
+   * a guessed date.
+   */
+  predictedStockoutDate: Date | null;
 }
+
+/**
+ * Why a restock recommendation exists, per the confirmed decision tree:
+ * low/at-risk stock (still at risk AFTER pending incoming is accounted for —
+ * a row pending incoming would fully resolve is excluded entirely, not
+ * returned as a third "no action needed" reason) -> can another warehouse
+ * provide it (getTransferRecommendations())? -> YES: transfer_available.
+ * NO -> purchase_required.
+ */
+export type RestockReason = 'transfer_available' | 'purchase_required';
 
 export interface RestockRecommendation {
   productId: number;
@@ -88,6 +117,9 @@ export interface RestockRecommendation {
   recommendedQuantity: number;
   avgDailyConsumption: number;
   daysOfSupply: number | null;
+  reason: RestockReason;
+  /** Human-readable explanation of why this recommendation (and its reason) exists — for Control Tower/dashboard display, built entirely from fields already on this entry. */
+  explanation: string;
 }
 
 export interface TransferRecommendation {
@@ -99,6 +131,16 @@ export interface TransferRecommendation {
   fromWarehouseAvailableAfterTransfer: number;
   /** Recipient's `projectedAvailable` after this and any earlier recommended transfers into it are applied. */
   toWarehouseProjectedAvailableAfterTransfer: number;
+  /** Donor's own pending incoming for this product — context: the donor may itself be about to be replenished. Drawn straight from the same getStockoutRisk() entry already used to compute this match, not a new query. */
+  sourcePendingIncomingQuantity: number;
+  /** True when this exact (productId, fromWarehouseId) pair also appears in getDeadStock() — the donor's surplus is also slow-moving/idle stock, which is useful context for why donating it is low-cost. */
+  sourceIsDeadStock: boolean;
+  /** Recipient's CURRENT (pre-transfer) risk level, for urgency context. */
+  destinationRiskLevel: StockoutRiskLevel;
+  /** Recipient's average daily consumption — the demand signal behind the shortage. */
+  destinationAvgDailyConsumption: number;
+  /** Recipient's current days of supply before this transfer is applied. */
+  destinationDaysOfSupply: number | null;
 }
 
 export type ControlTowerAlertSeverity = 'CRITICAL' | 'WARNING' | 'INFO';
@@ -108,7 +150,9 @@ export type ControlTowerAlertCategory =
   | 'CONSUMPTION_ANOMALY'
   | 'STOCKOUT_RISK'
   | 'OVERDUE_TRANSACTION'
-  | 'PENDING_DOCUMENT_REVIEW';
+  | 'PENDING_DOCUMENT_REVIEW'
+  | 'RESTOCK_RECOMMENDATION'
+  | 'TRANSFER_RECOMMENDATION';
 
 /**
  * One structured alert wrapping an entry already produced by an existing,
@@ -185,13 +229,19 @@ export class StockInsightsService {
     const client = tx ?? this.prisma;
     const cutoff = new Date(referenceDate.getTime() - inactivityDays * DAY_MS);
 
-    const [inventoryRows, lastMovements] = await Promise.all([
-      client.warehouseInventory.findMany({ where: { onHand: { gt: 0 } } }),
-      client.stockMovement.groupBy({
-        by: ['productId', 'warehouseId'],
-        _max: { createdAt: true },
-      }),
-    ]);
+    const [inventoryRows, lastMovements, lastOutgoingMovements] =
+      await Promise.all([
+        client.warehouseInventory.findMany({ where: { onHand: { gt: 0 } } }),
+        client.stockMovement.groupBy({
+          by: ['productId', 'warehouseId'],
+          _max: { createdAt: true },
+        }),
+        client.stockMovement.groupBy({
+          by: ['productId', 'warehouseId'],
+          where: { type: { in: [...CONSUMPTION_TYPES] } },
+          _max: { createdAt: true },
+        }),
+      ]);
 
     const lastMovementByKey = new Map<string, Date>();
     for (const movement of lastMovements) {
@@ -203,15 +253,31 @@ export class StockInsightsService {
       }
     }
 
+    const lastOutgoingMovementByKey = new Map<string, Date>();
+    for (const movement of lastOutgoingMovements) {
+      if (movement._max.createdAt) {
+        lastOutgoingMovementByKey.set(
+          this.inventoryKey(movement.productId, movement.warehouseId),
+          movement._max.createdAt,
+        );
+      }
+    }
+
     return inventoryRows
       .map((row) => {
-        const lastMovementAt =
-          lastMovementByKey.get(
-            this.inventoryKey(row.productId, row.warehouseId),
-          ) ?? null;
+        const key = this.inventoryKey(row.productId, row.warehouseId);
+        const lastMovementAt = lastMovementByKey.get(key) ?? null;
         const daysSinceLastMovement = lastMovementAt
           ? Math.floor(
               (referenceDate.getTime() - lastMovementAt.getTime()) / DAY_MS,
+            )
+          : null;
+        const lastOutgoingMovementAt =
+          lastOutgoingMovementByKey.get(key) ?? null;
+        const daysSinceLastOutgoingMovement = lastOutgoingMovementAt
+          ? Math.floor(
+              (referenceDate.getTime() - lastOutgoingMovementAt.getTime()) /
+                DAY_MS,
             )
           : null;
         return {
@@ -220,6 +286,8 @@ export class StockInsightsService {
           onHand: row.onHand,
           lastMovementAt,
           daysSinceLastMovement,
+          lastOutgoingMovementAt,
+          daysSinceLastOutgoingMovement,
         };
       })
       .filter(
@@ -260,11 +328,23 @@ export class StockInsightsService {
    * they represent the most extreme case: a change from zero), tie-broken
    * by productId ascending, for deterministic output suitable for
    * ControlTowerService.
+   *
+   * `minimumQuantityChange` (default 0 — a no-op) exists to let a caller
+   * suppress noise like "1 unit -> 2 units = 100% increase": when set above
+   * 0, a product is only flagged if the ABSOLUTE unit change also meets
+   * this floor, in addition to the percentage threshold. No schema field or
+   * documented business rule currently defines what that floor should be
+   * (no "typical order size"/"minimum meaningful quantity" concept exists
+   * anywhere in this project), so no non-zero default is invented here —
+   * this stays exactly the existing percentage-only behavior until a real
+   * value is confirmed and passed in by a caller. See the report for this
+   * open decision.
    */
   async getConsumptionAnomalies(
     windowDays = 30,
     thresholdPercent = 50,
     referenceDate: Date = new Date(),
+    minimumQuantityChange = 0,
   ): Promise<ConsumptionAnomaly[]> {
     if (!Number.isInteger(windowDays) || windowDays <= 0) {
       throw new BadRequestException('windowDays must be a positive integer');
@@ -272,6 +352,11 @@ export class StockInsightsService {
     if (typeof thresholdPercent !== 'number' || thresholdPercent <= 0) {
       throw new BadRequestException(
         'thresholdPercent must be a positive number',
+      );
+    }
+    if (!Number.isInteger(minimumQuantityChange) || minimumQuantityChange < 0) {
+      throw new BadRequestException(
+        'minimumQuantityChange must be a non-negative integer',
       );
     }
 
@@ -313,7 +398,7 @@ export class StockInsightsService {
       const baselineQuantity = baselineByProduct.get(productId) ?? 0;
 
       if (baselineQuantity === 0) {
-        if (recentQuantity > 0) {
+        if (recentQuantity > 0 && recentQuantity >= minimumQuantityChange) {
           anomalies.push({
             productId,
             recentQuantity,
@@ -327,7 +412,11 @@ export class StockInsightsService {
 
       const percentChange =
         ((recentQuantity - baselineQuantity) / baselineQuantity) * 100;
-      if (Math.abs(percentChange) >= thresholdPercent) {
+      const absoluteChange = Math.abs(recentQuantity - baselineQuantity);
+      if (
+        Math.abs(percentChange) >= thresholdPercent &&
+        absoluteChange >= minimumQuantityChange
+      ) {
         anomalies.push({
           productId,
           recentQuantity,
@@ -372,11 +461,26 @@ export class StockInsightsService {
    *     StockMovementsService.getLedger() + OUTGOING/TRANSFER_OUT scope
    *     getConsumptionAnomalies() already uses, over `consumptionWindowDays`
    *     (default 30, caller-configurable, not a hidden constant).
+   *   - `predictedStockoutDate` = referenceDate + daysOfSupply — derived
+   *     from daysOfSupply, not a separate calculation. null whenever
+   *     daysOfSupply is null (zero or insufficient consumption data): never
+   *     an invented date.
    *
    * Never writes anything. Sorted by risk severity (OUT_OF_STOCK, then
    * AT_RISK, then OK), tie-broken by (productId, warehouseId), for
    * deterministic output suitable for getRestockRecommendations(),
    * getTransferRecommendations(), getControlTowerAlerts(), and the frontend.
+   *
+   * Only considers ACTIVE products at ACTIVE warehouses — restocking or
+   * transferring stock for a discontinued product, or into/out of a
+   * decommissioned warehouse, is a NEW operational decision this data feeds
+   * directly (getRestockRecommendations/getTransferRecommendations reuse
+   * this method's output verbatim), so the isActive filter lives here once
+   * rather than being duplicated in each of them. getDeadStock() and
+   * getConsumptionAnomalies() are deliberately NOT filtered — they answer a
+   * different, historical question ("what happened / what's sitting idle"),
+   * where an inactive product with leftover stock is exactly what should
+   * still surface.
    */
   async getStockoutRisk(
     consumptionWindowDays = 30,
@@ -398,7 +502,9 @@ export class StockInsightsService {
 
     const [inventoryRows, reservedGroups, pendingTransactions, movements] =
       await Promise.all([
-        client.warehouseInventory.findMany(),
+        client.warehouseInventory.findMany({
+          where: { product: { isActive: true }, warehouse: { isActive: true } },
+        }),
         client.reservation.groupBy({
           by: ['productId', 'warehouseId'],
           where: { status: ReservationStatus.ACTIVE },
@@ -465,6 +571,13 @@ export class StockInsightsService {
         const avgDailyConsumption = totalConsumption / consumptionWindowDays;
         const daysOfSupply =
           avgDailyConsumption > 0 ? available / avgDailyConsumption : null;
+        // Derived from daysOfSupply, not a separate calculation — null under
+        // the exact same "no/insufficient consumption data" condition, so no
+        // date is ever invented.
+        const predictedStockoutDate =
+          daysOfSupply !== null
+            ? new Date(referenceDate.getTime() + daysOfSupply * DAY_MS)
+            : null;
 
         return {
           productId: row.productId,
@@ -482,6 +595,7 @@ export class StockInsightsService {
           ),
           avgDailyConsumption,
           daysOfSupply,
+          predictedStockoutDate,
         };
       })
       .sort(
@@ -494,15 +608,33 @@ export class StockInsightsService {
 
   /**
    * Read-only. Reuses getStockoutRisk() (no separate risk calculation) and
-   * recommends a quantity for every row still at risk AFTER accounting for
-   * pending incoming stock (`projectedRiskLevel !== 'OK'`) — a row whose
-   * pending incoming already resolves it is not recommended again.
+   * walks the confirmed decision tree for every row STILL at risk AFTER
+   * pending incoming stock is accounted for (`projectedRiskLevel !== 'OK'`):
+   * a row pending incoming would fully resolve is excluded from the results
+   * entirely — no recommendation, no `recommendedQuantity: 0` placeholder,
+   * nothing to act on.
+   *   1. Can another warehouse provide it? Reuses getTransferRecommendations()
+   *      (no donor-matching logic duplicated here) and checks whether this
+   *      (productId, warehouseId) appears as a `toWarehouseId` in its output
+   *      -> reason: 'transfer_available'.
+   *   2. Otherwise -> reason: 'purchase_required'.
    * `recommendedQuantity` brings `projectedAvailable` back up to the
    * existing `reorderThreshold` field; no separate "target stock level"
    * field exists in the schema, so reorderThreshold is used as both trigger
    * and target (see report — flagged as an assumption, not invented
-   * silently). Sorted by projectedRiskLevel severity, then recommended
-   * quantity descending, then (productId, warehouseId).
+   * silently). `explanation` is a human-readable sentence built entirely
+   * from fields already on the entry — no new computation. Sorted by
+   * projectedRiskLevel severity, then recommended quantity descending, then
+   * (productId, warehouseId).
+   *
+   * Note: this calls getStockoutRisk() once directly and once more inside
+   * getTransferRecommendations() (which calls it independently) — a known,
+   * accepted minor re-fetch of read-only data, not a duplication of
+   * business logic; both calls reuse the exact same formulas.
+   *
+   * Inactive products/warehouses are already excluded by getStockoutRisk()
+   * itself, so they never reach this method — no separate isActive check
+   * needed here.
    */
   async getRestockRecommendations(
     consumptionWindowDays = 30,
@@ -515,24 +647,57 @@ export class StockInsightsService {
       tx,
     );
 
-    return riskEntries
-      .filter((entry) => entry.projectedRiskLevel !== 'OK')
-      .map((entry) => ({
-        productId: entry.productId,
-        warehouseId: entry.warehouseId,
-        available: entry.available,
-        pendingIncomingQuantity: entry.pendingIncomingQuantity,
-        projectedAvailable: entry.projectedAvailable,
-        reorderThreshold: entry.reorderThreshold,
-        riskLevel: entry.riskLevel,
-        projectedRiskLevel: entry.projectedRiskLevel,
-        recommendedQuantity: Math.max(
+    // Only rows STILL at risk after pending incoming is accounted for.
+    // A row pending incoming would fully resolve is excluded entirely —
+    // there is nothing to recommend for it, not even a zero-quantity,
+    // informational row.
+    const candidates = riskEntries.filter(
+      (entry) => entry.projectedRiskLevel !== 'OK',
+    );
+
+    const transferAvailableKeys = candidates.length
+      ? new Set(
+          (
+            await this.getTransferRecommendations(
+              consumptionWindowDays,
+              referenceDate,
+              tx,
+            )
+          ).map((transfer) =>
+            this.inventoryKey(transfer.productId, transfer.toWarehouseId),
+          ),
+        )
+      : new Set<string>();
+
+    return candidates
+      .map((entry) => {
+        const recommendedQuantity = Math.max(
           entry.reorderThreshold - entry.projectedAvailable,
           0,
-        ),
-        avgDailyConsumption: entry.avgDailyConsumption,
-        daysOfSupply: entry.daysOfSupply,
-      }))
+        );
+        const reason: RestockReason = transferAvailableKeys.has(
+          this.inventoryKey(entry.productId, entry.warehouseId),
+        )
+          ? 'transfer_available'
+          : 'purchase_required';
+        const explanation = this.explainRestockReason(reason, entry);
+
+        return {
+          productId: entry.productId,
+          warehouseId: entry.warehouseId,
+          available: entry.available,
+          pendingIncomingQuantity: entry.pendingIncomingQuantity,
+          projectedAvailable: entry.projectedAvailable,
+          reorderThreshold: entry.reorderThreshold,
+          riskLevel: entry.riskLevel,
+          projectedRiskLevel: entry.projectedRiskLevel,
+          recommendedQuantity,
+          avgDailyConsumption: entry.avgDailyConsumption,
+          daysOfSupply: entry.daysOfSupply,
+          reason,
+          explanation,
+        };
+      })
       .sort(
         (a, b) =>
           RISK_SEVERITY[a.projectedRiskLevel] -
@@ -541,6 +706,18 @@ export class StockInsightsService {
           a.productId - b.productId ||
           a.warehouseId - b.warehouseId,
       );
+  }
+
+  private explainRestockReason(
+    reason: RestockReason,
+    entry: StockoutRiskEntry,
+  ): string {
+    switch (reason) {
+      case 'transfer_available':
+        return `Another warehouse currently holds surplus stock of this product, so the shortfall can be covered by an internal transfer instead of a new purchase.`;
+      case 'purchase_required':
+        return `No pending incoming stock and no warehouse surplus are available for this product, so a new purchase is required to reach the reorder threshold (${entry.reorderThreshold}).`;
+    }
   }
 
   /**
@@ -556,9 +733,25 @@ export class StockInsightsService {
    * processed in warehouseId order, each donor filling each deficit by
    * min(remaining need, remaining donatable) before moving to the next.
    * This is a simple availability-matching recommendation, not a logistics/
-   * route optimizer (out of scope — see Path Optimizer in other phases).
-   * Never writes anything; a real transfer still has to go through
-   * InventoryTransactionsService.createTransfer() + complete() elsewhere.
+   * route optimizer (out of scope — see Path Optimizer in other phases;
+   * Path Optimizer answers "which eligible warehouse is nearest", this
+   * answers "where should stock come from" — kept separate, no dependency
+   * between them). Never writes anything; a real transfer still has to go
+   * through InventoryTransactionsService.createTransfer() + complete()
+   * elsewhere.
+   *
+   * Each recommendation also carries context drawn from data already
+   * fetched for this call — no new formula, no extra query beyond one
+   * reused getDeadStock() call: the donor's own pending incoming quantity,
+   * whether the donor's stock is itself flagged dead/slow-moving (useful
+   * context for why donating it is low-cost), and the recipient's current
+   * risk level / demand / days of supply (why the shortage matters).
+   * "Warehouse capacity" (Warehouse.maxCapacity) is NOT factored in — see
+   * report, flagged as an open decision rather than guessed.
+   *
+   * Inactive products/warehouses are already excluded by getStockoutRisk()
+   * itself (both as a potential source and a potential destination), so
+   * they never reach this method — no separate isActive check needed here.
    */
   async getTransferRecommendations(
     consumptionWindowDays = 30,
@@ -586,9 +779,27 @@ export class StockInsightsService {
       projectedRemainingByKey.set(key, entry.projectedAvailable);
     }
 
+    // Only fetched when at least one row is at risk — reused (the same
+    // confirmed 60-day rule), not recalculated, and gives each recommended
+    // donor extra context: is the stock it's donating also slow-moving?
+    const hasAnyDeficit = riskEntries.some(
+      (entry) => entry.projectedRiskLevel !== 'OK',
+    );
+    const deadStockKeys = hasAnyDeficit
+      ? new Set(
+          (await this.getDeadStock(undefined, referenceDate, tx)).map((entry) =>
+            this.inventoryKey(entry.productId, entry.warehouseId),
+          ),
+        )
+      : new Set<string>();
+
     const recommendations: TransferRecommendation[] = [];
 
     for (const [productId, entries] of byProduct) {
+      const entryByWarehouseId = new Map(
+        entries.map((entry) => [entry.warehouseId, entry]),
+      );
+
       const deficits = entries
         .filter((entry) => entry.projectedRiskLevel !== 'OK')
         .map((entry) => ({
@@ -648,6 +859,11 @@ export class StockInsightsService {
             toWarehouseProjectedAvailableAfterTransfer,
           );
 
+          // Present on every row processed here — entryByWarehouseId is
+          // built from the same `entries` deficits/donors were derived from.
+          const donorEntry = entryByWarehouseId.get(donor.warehouseId)!;
+          const recipientEntry = entryByWarehouseId.get(deficit.warehouseId)!;
+
           recommendations.push({
             productId,
             fromWarehouseId: donor.warehouseId,
@@ -655,6 +871,11 @@ export class StockInsightsService {
             transferQuantity,
             fromWarehouseAvailableAfterTransfer,
             toWarehouseProjectedAvailableAfterTransfer,
+            sourcePendingIncomingQuantity: donorEntry.pendingIncomingQuantity,
+            sourceIsDeadStock: deadStockKeys.has(donorKey),
+            destinationRiskLevel: recipientEntry.riskLevel,
+            destinationAvgDailyConsumption: recipientEntry.avgDailyConsumption,
+            destinationDaysOfSupply: recipientEntry.daysOfSupply,
           });
 
           deficit.remaining -= transferQuantity;
@@ -673,7 +894,8 @@ export class StockInsightsService {
 
   /**
    * Read-only. Aggregates already-computed results from this service
-   * (getDeadStock, getConsumptionAnomalies, getStockoutRisk),
+   * (getDeadStock, getConsumptionAnomalies, getStockoutRisk,
+   * getRestockRecommendations, getTransferRecommendations),
    * InventoryTransactionsService.getOverdueTransactions(), and
    * DocumentReviewService.getPendingReviews() into one structured alert
    * list — no calculation happens here beyond severity classification and
@@ -682,9 +904,17 @@ export class StockInsightsService {
    * without re-deriving anything. Confirmed severity mapping: stockout risk
    * (OUT_OF_STOCK and AT_RISK alike) -> CRITICAL; overdue transactions and
    * consumption anomalies -> WARNING; dead stock and pending document
-   * review -> INFO. Sorted by severity (CRITICAL, WARNING, INFO); order
-   * within a severity follows the already-deterministic order of the
-   * underlying source list (stable sort).
+   * review -> INFO. Restock/transfer recommendations -> WARNING (new in
+   * this phase, not previously confirmed — see report). Sorted by severity
+   * (CRITICAL, WARNING, INFO); order within a severity follows the
+   * already-deterministic order of the underlying source list (stable
+   * sort).
+   *
+   * Calling getRestockRecommendations()/getTransferRecommendations() here
+   * means getStockoutRisk() is recomputed multiple times within one
+   * aggregation call (see notes on those two methods) — an accepted,
+   * documented tradeoff of composing existing read-only functions as black
+   * boxes rather than duplicating any of their logic.
    */
   async getControlTowerAlerts(
     options: ControlTowerAlertOptions = {},
@@ -697,6 +927,8 @@ export class StockInsightsService {
       stockoutRisk,
       overdueTransactions,
       pendingReviews,
+      restockRecommendations,
+      transferRecommendations,
     ] = await Promise.all([
       this.getDeadStock(options.deadStockInactivityDays, referenceDate, tx),
       this.getConsumptionAnomalies(
@@ -710,6 +942,16 @@ export class StockInsightsService {
         tx,
       ),
       this.documentReviewService.getPendingReviews(tx),
+      this.getRestockRecommendations(
+        options.consumptionWindowDays,
+        referenceDate,
+        tx,
+      ),
+      this.getTransferRecommendations(
+        options.consumptionWindowDays,
+        referenceDate,
+        tx,
+      ),
     ]);
 
     const alerts: ControlTowerAlert[] = [];
@@ -747,13 +989,18 @@ export class StockInsightsService {
       // Confirmed severity mapping: every non-OK stockout risk entry
       // (OUT_OF_STOCK and AT_RISK alike) is CRITICAL — stockout risk has no
       // WARNING tier of its own.
+      const stockoutDateSuffix =
+        entry.predictedStockoutDate !== null
+          ? ` (predicted stockout: ${entry.predictedStockoutDate.toISOString()})`
+          : '';
       alerts.push({
         category: 'STOCKOUT_RISK',
         severity: 'CRITICAL',
         message:
-          entry.riskLevel === 'OUT_OF_STOCK'
+          (entry.riskLevel === 'OUT_OF_STOCK'
             ? `Product ${entry.productId} is out of stock in warehouse ${entry.warehouseId} (available: ${entry.available})`
-            : `Product ${entry.productId} in warehouse ${entry.warehouseId} is at risk (available: ${entry.available}, reorderThreshold: ${entry.reorderThreshold})`,
+            : `Product ${entry.productId} in warehouse ${entry.warehouseId} is at risk (available: ${entry.available}, reorderThreshold: ${entry.reorderThreshold})`) +
+          stockoutDateSuffix,
         data: entry as unknown as Record<string, unknown>,
         referenceDate,
       });
@@ -775,6 +1022,26 @@ export class StockInsightsService {
         severity: 'INFO',
         message: `Document review ${review.id} (${review.transactionType}) is awaiting a decision`,
         data: review,
+        referenceDate,
+      });
+    }
+
+    for (const recommendation of restockRecommendations) {
+      alerts.push({
+        category: 'RESTOCK_RECOMMENDATION',
+        severity: 'WARNING',
+        message: `Product ${recommendation.productId} in warehouse ${recommendation.warehouseId} needs ${recommendation.recommendedQuantity} more units (${recommendation.reason}): ${recommendation.explanation}`,
+        data: recommendation as unknown as Record<string, unknown>,
+        referenceDate,
+      });
+    }
+
+    for (const transfer of transferRecommendations) {
+      alerts.push({
+        category: 'TRANSFER_RECOMMENDATION',
+        severity: 'WARNING',
+        message: `Transfer ${transfer.transferQuantity} units of product ${transfer.productId} from warehouse ${transfer.fromWarehouseId} to warehouse ${transfer.toWarehouseId}`,
+        data: transfer as unknown as Record<string, unknown>,
         referenceDate,
       });
     }
