@@ -14,6 +14,85 @@ import { PrismaService } from '../../prisma/prisma.service';
 export class CalendarService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async getCalendarEvents(startDate?: string, endDate?: string) {
+    const parsedStartDate =
+      startDate !== undefined ? new Date(startDate) : undefined;
+    const parsedEndDate =
+      endDate !== undefined ? new Date(endDate) : undefined;
+
+    if (parsedStartDate && Number.isNaN(parsedStartDate.getTime())) {
+      throw new BadRequestException('Invalid start date');
+    }
+
+    if (parsedEndDate && Number.isNaN(parsedEndDate.getTime())) {
+      throw new BadRequestException('Invalid end date');
+    }
+
+    if (
+      parsedStartDate &&
+      parsedEndDate &&
+      parsedEndDate <= parsedStartDate
+    ) {
+      throw new BadRequestException('End date must be after start date');
+    }
+
+    const credentialsPath = path.join(
+      process.cwd(),
+      'credentials',
+      'google-oauth.json',
+    );
+
+    const tokenPath = path.join(
+      process.cwd(),
+      'credentials',
+      'google-token.json',
+    );
+
+    const credentialsFile = await fs.readFile(credentialsPath, 'utf8');
+    const tokenFile = await fs.readFile(tokenPath, 'utf8');
+
+    const credentials = JSON.parse(credentialsFile);
+    const tokens = JSON.parse(tokenFile);
+
+    const { client_id, client_secret, redirect_uris } =
+      credentials.installed;
+
+    const oauth2Client = new google.auth.OAuth2(
+      client_id,
+      client_secret,
+      redirect_uris[0],
+    );
+
+    oauth2Client.setCredentials(tokens);
+
+    const calendar = google.calendar({
+      version: 'v3',
+      auth: oauth2Client,
+    });
+
+    const response = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: parsedStartDate
+        ? parsedStartDate.toISOString()
+        : new Date().toISOString(),
+      ...(parsedEndDate && {
+        timeMax: parsedEndDate.toISOString(),
+      }),
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 100,
+    });
+
+    return (response.data.items ?? []).map((event) => ({
+      id: event.id,
+      title: event.summary,
+      description: event.description,
+      startDate: event.start?.dateTime ?? event.start?.date,
+      endDate: event.end?.dateTime ?? event.end?.date,
+      eventLink: event.htmlLink,
+    }));
+  }
+
   async createCalendarEvent(dto: CreateCalendarEventDto) {
     const credentialsPath = path.join(
       process.cwd(),
