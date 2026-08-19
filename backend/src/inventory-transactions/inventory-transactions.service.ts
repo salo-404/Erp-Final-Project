@@ -52,11 +52,18 @@ export interface UpdateTransactionItemChange {
   itemId: number;
   productId?: number;
   quantity?: number;
+  price?: number;
 }
 
 export interface UpdateTransactionInput {
   /** OUTGOING/TRANSFER only — changing this resynchronizes every item's reservation. */
   sourceWarehouseId?: number;
+  /** INCOMING/TRANSFER only — never touches a reservation (only the source leg is ever reserved). */
+  destinationWarehouseId?: number;
+  /** INCOMING only. */
+  supplierId?: number;
+  /** Any transaction type. */
+  expectedDate?: Date;
   items?: UpdateTransactionItemChange[];
 }
 
@@ -244,8 +251,15 @@ export class InventoryTransactionsService {
   }
 
   /**
-   * Updates a PENDING transaction. Supports changing sourceWarehouseId
-   * (OUTGOING/TRANSFER only) and/or individual items' productId/quantity.
+   * Updates a PENDING transaction — only planned/not-yet-executed data:
+   * sourceWarehouseId (OUTGOING/TRANSFER only), destinationWarehouseId
+   * (INCOMING/TRANSFER only), supplierId (INCOMING only), expectedDate (any
+   * type), and/or individual items' productId/quantity/price. Transaction
+   * type, status, and identity (id) are never editable here — there is no
+   * field for them on UpdateTransactionInput, so there is nothing for a
+   * caller to even attempt to change; the PENDING-only guard below is what
+   * enforces "not yet executed."
+   *
    * Every changed item's reservation (if the transaction type has one) is
    * synchronized by releasing the old reservation and creating a new one
    * reflecting the updated product/quantity/warehouse — the same
@@ -254,7 +268,14 @@ export class InventoryTransactionsService {
    * insufficient stock), the whole update rolls back, including the
    * already-released old reservation, so nothing is left missing or
    * incorrect. INCOMING transactions have no reservations to synchronize;
-   * item changes are applied directly.
+   * item changes are applied directly. destinationWarehouseId/supplierId/
+   * expectedDate never touch a reservation regardless of type (only the
+   * source leg is ever reserved, per createOutgoing()/createTransfer()).
+   *
+   * The final item list (after applying every change) must not contain two
+   * items with the same productId — same rule validateItems() already
+   * enforces at creation, applied here too since a duplicate would make
+   * reservation lookups keyed on (transactionId, productId) ambiguous.
    */
   async update(
     id: number,
@@ -628,18 +649,55 @@ export class InventoryTransactionsService {
       include: { items: true },
     });
 
+    const newSourceWarehouseIdForValidation =
+      input.sourceWarehouseId ?? transaction.sourceWarehouseId;
+    const newDestinationWarehouseIdForValidation =
+      input.destinationWarehouseId ?? transaction.destinationWarehouseId;
+
+    if (
+      input.sourceWarehouseId !== undefined &&
+      transaction.type === InventoryTransactionType.INCOMING
+    ) {
+      throw new BadRequestException(
+        'sourceWarehouseId cannot be set on an INCOMING transaction',
+      );
+    }
+    if (
+      input.destinationWarehouseId !== undefined &&
+      transaction.type === InventoryTransactionType.OUTGOING
+    ) {
+      throw new BadRequestException(
+        'destinationWarehouseId cannot be set on an OUTGOING transaction',
+      );
+    }
+    if (
+      (input.sourceWarehouseId !== undefined ||
+        input.destinationWarehouseId !== undefined) &&
+      transaction.type === InventoryTransactionType.TRANSFER &&
+      newSourceWarehouseIdForValidation ===
+        newDestinationWarehouseIdForValidation
+    ) {
+      throw new BadRequestException(
+        'sourceWarehouseId and destinationWarehouseId must be different',
+      );
+    }
+    if (
+      input.supplierId !== undefined &&
+      transaction.type !== InventoryTransactionType.INCOMING
+    ) {
+      throw new BadRequestException(
+        'supplierId can only be set on an INCOMING transaction',
+      );
+    }
+
     if (input.sourceWarehouseId !== undefined) {
-      if (transaction.type === InventoryTransactionType.INCOMING) {
-        throw new BadRequestException(
-          'sourceWarehouseId cannot be set on an INCOMING transaction',
-        );
-      }
-      if (input.sourceWarehouseId === transaction.destinationWarehouseId) {
-        throw new BadRequestException(
-          'sourceWarehouseId and destinationWarehouseId must be different',
-        );
-      }
       await this.assertWarehouseExists(tx, input.sourceWarehouseId);
+    }
+    if (input.destinationWarehouseId !== undefined) {
+      await this.assertWarehouseExists(tx, input.destinationWarehouseId);
+    }
+    if (input.supplierId !== undefined) {
+      await this.assertSupplierExists(tx, input.supplierId);
     }
 
     const itemChangesById = new Map(
@@ -651,6 +709,17 @@ export class InventoryTransactionsService {
           `Transaction item ${itemId} not found on transaction ${id}`,
         );
       }
+    }
+
+    // The final item list (after every change is applied) must not contain
+    // two items with the same productId — see update()'s doc comment.
+    const finalProductIds = transaction.items.map(
+      (item) => itemChangesById.get(item.id)?.productId ?? item.productId,
+    );
+    if (new Set(finalProductIds).size !== finalProductIds.length) {
+      throw new BadRequestException(
+        'Update would result in duplicate productId values across items',
+      );
     }
 
     const hasReservations =
@@ -706,6 +775,7 @@ export class InventoryTransactionsService {
               ...(change.quantity !== undefined
                 ? { quantity: change.quantity }
                 : {}),
+              ...(change.price !== undefined ? { price: change.price } : {}),
             },
           });
         }
@@ -729,15 +799,30 @@ export class InventoryTransactionsService {
             ...(change.quantity !== undefined
               ? { quantity: change.quantity }
               : {}),
+            ...(change.price !== undefined ? { price: change.price } : {}),
           },
         });
       }
     }
 
-    if (sourceWarehouseChanging) {
+    const transactionFieldChanges: Prisma.InventoryTransactionUpdateInput = {
+      ...(sourceWarehouseChanging
+        ? { sourceWarehouseId: input.sourceWarehouseId }
+        : {}),
+      ...(input.destinationWarehouseId !== undefined
+        ? { destinationWarehouseId: input.destinationWarehouseId }
+        : {}),
+      ...(input.supplierId !== undefined
+        ? { supplierId: input.supplierId }
+        : {}),
+      ...(input.expectedDate !== undefined
+        ? { expectedDate: input.expectedDate }
+        : {}),
+    };
+    if (Object.keys(transactionFieldChanges).length > 0) {
       await tx.inventoryTransaction.update({
         where: { id },
-        data: { sourceWarehouseId: input.sourceWarehouseId },
+        data: transactionFieldChanges,
       });
     }
 
@@ -763,6 +848,16 @@ export class InventoryTransactionsService {
       ) {
         throw new BadRequestException(
           `Invalid productId for item ${change.itemId}: ${change.productId}`,
+        );
+      }
+      if (
+        change.price !== undefined &&
+        (typeof change.price !== 'number' ||
+          !Number.isFinite(change.price) ||
+          change.price < 0)
+      ) {
+        throw new BadRequestException(
+          `price for item ${change.itemId} must be a non-negative number`,
         );
       }
     }

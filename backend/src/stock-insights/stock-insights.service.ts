@@ -13,28 +13,46 @@ import { DocumentReviewService } from '../document-review/document-review.servic
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Same two outgoing-movement types StockMovementsService treats as decreasing onHand — not redefined, just referenced. */
+/** Same two outgoing-movement types StockMovementsService treats as decreasing onHand — not redefined, just referenced. Used only by getStockoutRisk()'s avgDailyConsumption, where "stock leaving this warehouse" (including an internal transfer out) is the relevant signal. */
 const CONSUMPTION_TYPES: ReadonlySet<StockMovementType> = new Set([
   StockMovementType.OUTGOING,
   StockMovementType.TRANSFER_OUT,
+]);
+
+/**
+ * TRUE customer consumption — OUTGOING only. TRANSFER_OUT is stock moving to
+ * another of our own warehouses, not stock leaving the business, so it must
+ * not reset the dead-stock clock (getDeadStock()) or count toward a
+ * consumption anomaly (getConsumptionAnomalies()). Deliberately a separate
+ * constant from CONSUMPTION_TYPES above rather than redefining it, since
+ * getStockoutRisk()'s avgDailyConsumption is a different question ("how fast
+ * is stock leaving this warehouse, for replenishment planning") and was not
+ * part of this change.
+ */
+const CUSTOMER_CONSUMPTION_TYPES: ReadonlySet<StockMovementType> = new Set([
+  StockMovementType.OUTGOING,
 ]);
 
 export interface DeadStockEntry {
   productId: number;
   warehouseId: number;
   onHand: number;
-  /** null when this product/warehouse pair has never had a StockMovement (of ANY type). */
+  /**
+   * Preserved historical field — last StockMovement of ANY type (including
+   * TRANSFER_IN/OUT, INCOMING, ADJUSTMENT). Informational only; does NOT
+   * determine dead-stock status (see lastOutgoingMovementAt below). null
+   * when this product/warehouse pair has never had a StockMovement.
+   */
   lastMovementAt: Date | null;
   /** null when lastMovementAt is null. */
   daysSinceLastMovement: number | null;
   /**
-   * Same idea as lastMovementAt, but scoped to OUTGOING/TRANSFER_OUT only —
-   * the customer-facing "did anyone actually take this stock" signal Control
-   * Tower needs to explain an alert, distinct from warehouse-side movement
-   * (INCOMING/TRANSFER_IN/ADJUSTMENT) which isn't customer demand. null when
-   * this product/warehouse pair has never had a consumption-type movement.
-   * Purely additional information — does NOT change which rows are flagged
-   * as dead stock; the existing any-movement-type cutoff below is unchanged.
+   * Last OUTGOING movement only — true customer consumption. Internal
+   * transfers, incoming purchases, and adjustments do NOT count here, so
+   * they never reset this clock. THIS is what determines dead-stock status
+   * below: a row is dead stock when onHand > 0 and this is null or at/before
+   * the cutoff. null when this product/warehouse pair has never had an
+   * OUTGOING movement.
    */
   lastOutgoingMovementAt: Date | null;
   /** null when lastOutgoingMovementAt is null. */
@@ -194,9 +212,17 @@ export class StockInsightsService {
 
   /**
    * Read-only. Flags every (productId, warehouseId) pair that currently
-   * holds stock (onHand > 0) but has had no StockMovement in the last
-   * `inactivityDays` — or has never had one at all. Zero-onHand rows are
-   * never "dead stock": there is nothing sitting idle to flag.
+   * holds stock (onHand > 0) but has had no OUTGOING (true customer
+   * consumption) movement in the last `inactivityDays` — or has never had
+   * one at all. Zero-onHand rows are never "dead stock": there is nothing
+   * sitting idle to flag.
+   *
+   * Only an OUTGOING movement resets the clock. TRANSFER_IN/OUT, INCOMING,
+   * and ADJUSTMENT are warehouse-side movements, not customer demand, so
+   * none of them count as "this stock is moving" for this purpose — a
+   * product that's only ever shuffled between warehouses (or restocked, or
+   * manually corrected) for 60+ days without ever actually selling is still
+   * dead stock.
    *
    * `inactivityDays` defaults to 60 (the project's confirmed dead-stock
    * threshold) but remains an explicit, caller-configurable parameter
@@ -238,7 +264,7 @@ export class StockInsightsService {
         }),
         client.stockMovement.groupBy({
           by: ['productId', 'warehouseId'],
-          where: { type: { in: [...CONSUMPTION_TYPES] } },
+          where: { type: { in: [...CUSTOMER_CONSUMPTION_TYPES] } },
           _max: { createdAt: true },
         }),
       ]);
@@ -292,8 +318,8 @@ export class StockInsightsService {
       })
       .filter(
         (entry) =>
-          entry.lastMovementAt === null ||
-          entry.lastMovementAt.getTime() <= cutoff.getTime(),
+          entry.lastOutgoingMovementAt === null ||
+          entry.lastOutgoingMovementAt.getTime() <= cutoff.getTime(),
       )
       .sort(
         (a, b) => a.productId - b.productId || a.warehouseId - b.warehouseId,
@@ -301,13 +327,14 @@ export class StockInsightsService {
   }
 
   /**
-   * Read-only. Compares each product's total consumption (OUTGOING +
-   * TRANSFER_OUT quantity, summed across warehouses) in the most recent
-   * `windowDays` against the same-length window immediately before it, and
-   * flags products whose change exceeds `thresholdPercent`. Consumption
-   * scope (OUTGOING + TRANSFER_OUT) matches exactly the "decreasing" types
-   * StockMovementsService already treats as reducing onHand — not a new
-   * rule, just the existing one applied read-only.
+   * Read-only. Compares each product's total consumption (OUTGOING quantity
+   * only, summed across warehouses) in the most recent `windowDays` against
+   * the same-length window immediately before it, and flags products whose
+   * change exceeds `thresholdPercent`. Only OUTGOING counts as consumption
+   * here — an internal TRANSFER_OUT moves stock to another of our own
+   * warehouses rather than to a customer, and an INCOMING purchase or an
+   * ADJUSTMENT isn't consumption at all, so none of them should be able to
+   * manufacture or mask a consumption anomaly.
    *
    * `windowDays` (default 30) and `thresholdPercent` (default 50) are not
    * documented anywhere in the schema/project docs, so both are explicit,
@@ -374,7 +401,7 @@ export class StockInsightsService {
     const baselineByProduct = new Map<number, number>();
 
     for (const movement of movements) {
-      if (!CONSUMPTION_TYPES.has(movement.type)) {
+      if (!CUSTOMER_CONSUMPTION_TYPES.has(movement.type)) {
         continue;
       }
       const bucket =
@@ -746,8 +773,18 @@ export class StockInsightsService {
    * whether the donor's stock is itself flagged dead/slow-moving (useful
    * context for why donating it is low-cost), and the recipient's current
    * risk level / demand / days of supply (why the shortage matters).
-   * "Warehouse capacity" (Warehouse.maxCapacity) is NOT factored in — see
-   * report, flagged as an open decision rather than guessed.
+   *
+   * Destination warehouse capacity (Warehouse.maxCapacity) IS factored in:
+   * a recommended transferQuantity is additionally capped so it never pushes
+   * the destination's total onHand (across every product, not just the one
+   * being transferred — capacity is warehouse-wide) past maxCapacity. The
+   * remaining headroom is tracked per warehouse and decremented as
+   * recommendations are added, so multiple products transferring into the
+   * same warehouse across this method's outer loop still respect one shared
+   * capacity limit. A warehouse with maxCapacity === null is unlimited (same
+   * convention as WarehouseInventoryService.getWarehouseCapacity()). If a
+   * destination has zero remaining headroom, no transfer into it is
+   * recommended at all.
    *
    * Inactive products/warehouses are already excluded by getStockoutRisk()
    * itself (both as a potential source and a potential destination), so
@@ -793,6 +830,46 @@ export class StockInsightsService {
         )
       : new Set<string>();
 
+    // Remaining destination capacity headroom, per warehouse (warehouse-wide,
+    // not per-product — matches WarehouseInventoryService.getWarehouseCapacity()'s
+    // maxCapacity - currentStock formula). A warehouseId absent from this map
+    // has no cap (maxCapacity === null, i.e. unlimited).
+    const client = tx ?? this.prisma;
+    const destinationWarehouseIds = [
+      ...new Set(
+        riskEntries
+          .filter((entry) => entry.projectedRiskLevel !== 'OK')
+          .map((entry) => entry.warehouseId),
+      ),
+    ];
+    const remainingCapacityByWarehouseId = new Map<number, number>();
+    if (destinationWarehouseIds.length > 0) {
+      const [warehouses, onHandTotals] = await Promise.all([
+        client.warehouse.findMany({
+          where: { id: { in: destinationWarehouseIds } },
+        }),
+        client.warehouseInventory.groupBy({
+          by: ['warehouseId'],
+          where: { warehouseId: { in: destinationWarehouseIds } },
+          _sum: { onHand: true },
+        }),
+      ]);
+      const totalOnHandByWarehouseId = new Map<number, number>();
+      for (const group of onHandTotals) {
+        totalOnHandByWarehouseId.set(group.warehouseId, group._sum.onHand ?? 0);
+      }
+      for (const warehouse of warehouses) {
+        if (warehouse.maxCapacity === null) {
+          continue;
+        }
+        const currentStock = totalOnHandByWarehouseId.get(warehouse.id) ?? 0;
+        remainingCapacityByWarehouseId.set(
+          warehouse.id,
+          Math.max(warehouse.maxCapacity - currentStock, 0),
+        );
+      }
+    }
+
     const recommendations: TransferRecommendation[] = [];
 
     for (const [productId, entries] of byProduct) {
@@ -825,6 +902,15 @@ export class StockInsightsService {
       }
 
       for (const deficit of deficits) {
+        const destinationHeadroom = remainingCapacityByWarehouseId.get(
+          deficit.warehouseId,
+        );
+        // undefined => unlimited (maxCapacity === null); a defined 0 means
+        // the destination has no room left at all, so no donor can help it.
+        if (destinationHeadroom !== undefined && destinationHeadroom <= 0) {
+          continue;
+        }
+
         for (const donor of donors) {
           if (deficit.remaining <= 0) {
             break;
@@ -836,9 +922,21 @@ export class StockInsightsService {
             continue;
           }
 
-          const transferQuantity = Math.min(deficit.remaining, donor.remaining);
+          const currentHeadroom = remainingCapacityByWarehouseId.get(
+            deficit.warehouseId,
+          );
+          const transferQuantity =
+            currentHeadroom !== undefined
+              ? Math.min(deficit.remaining, donor.remaining, currentHeadroom)
+              : Math.min(deficit.remaining, donor.remaining);
           if (transferQuantity <= 0) {
             continue;
+          }
+          if (currentHeadroom !== undefined) {
+            remainingCapacityByWarehouseId.set(
+              deficit.warehouseId,
+              currentHeadroom - transferQuantity,
+            );
           }
 
           const donorKey = this.inventoryKey(productId, donor.warehouseId);

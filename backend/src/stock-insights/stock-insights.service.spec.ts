@@ -19,13 +19,23 @@ import type {
 
 function createMockPrisma() {
   return {
-    warehouseInventory: { findMany: jest.fn() },
+    warehouseInventory: {
+      findMany: jest.fn(),
+      // Defaults to [] (no onHand totals) so getTransferRecommendations()'s
+      // capacity lookup finds nothing and treats every warehouse as
+      // unlimited by default. Tests that care about capacity override this.
+      groupBy: jest.fn().mockResolvedValue([]),
+    },
     // Defaults to [] so any getDeadStock() call made incidentally (e.g. from
     // getTransferRecommendations()'s dead-stock context lookup) doesn't
     // require every unrelated test to stub it explicitly. Tests that care
     // about dead-stock content override this per-call.
     stockMovement: { groupBy: jest.fn().mockResolvedValue([]) },
     reservation: { groupBy: jest.fn() },
+    // Defaults to [] (no warehouses found -> no maxCapacity known -> treated
+    // as unlimited) so getTransferRecommendations()'s capacity cap is a
+    // no-op unless a test explicitly stubs a warehouse with a maxCapacity.
+    warehouse: { findMany: jest.fn().mockResolvedValue([]) },
   };
 }
 
@@ -295,7 +305,7 @@ describe('StockInsightsService.getDeadStock', () => {
     expect(result).toEqual([]);
   });
 
-  it('confirmed rule: a movement of ANY supported type (e.g. ADJUSTMENT) resets the 60-day inactivity period — eligibility is not OUTGOING-only', async () => {
+  it('confirmed rule: a recent movement of a non-OUTGOING type (e.g. ADJUSTMENT) does NOT reset the 60-day inactivity period — eligibility is OUTGOING-only', async () => {
     const { service, prisma } = buildService();
     const recentAdjustment = new Date('2026-05-20T00:00:00.000Z');
     prisma.warehouseInventory.findMany.mockResolvedValue([
@@ -308,8 +318,9 @@ describe('StockInsightsService.getDeadStock', () => {
       },
     ]);
     // Only the any-movement-type groupBy (no `where`) returns a row; the
-    // outgoing-only groupBy (has `where`) returns nothing — i.e. the only
-    // recorded movement is a non-OUTGOING one (e.g. an ADJUSTMENT).
+    // OUTGOING-only groupBy (has `where`) returns nothing — i.e. the only
+    // recorded movement is a non-OUTGOING one (e.g. an ADJUSTMENT), so this
+    // product/warehouse pair has never had a real customer-consumption event.
     prisma.stockMovement.groupBy.mockImplementation(
       (args: { where?: unknown }) =>
         Promise.resolve(
@@ -327,9 +338,65 @@ describe('StockInsightsService.getDeadStock', () => {
 
     const result = await service.getDeadStock(60, NOW);
 
-    // Not flagged dead: the ADJUSTMENT movement (any supported type) reset
-    // the inactivity clock, exactly per the existing ledger-wide rule.
-    expect(result).toEqual([]);
+    // Flagged dead: the recent ADJUSTMENT does not reset the clock, and
+    // there has never been an OUTGOING movement (lastOutgoingMovementAt is
+    // null) — exactly the "no customer consumption" case dead stock exists
+    // to catch, even though something else moved recently.
+    expect(result).toEqual([
+      {
+        productId: 600,
+        warehouseId: 10,
+        onHand: 10,
+        lastMovementAt: recentAdjustment,
+        daysSinceLastMovement: 12,
+        lastOutgoingMovementAt: null,
+        daysSinceLastOutgoingMovement: null,
+      },
+    ]);
+  });
+
+  it('confirmed rule: a recent internal TRANSFER_IN/TRANSFER_OUT also does not reset the clock — only OUTGOING (a real sale) counts', async () => {
+    const { service, prisma } = buildService();
+    const recentTransfer = new Date('2026-05-25T00:00:00.000Z');
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      {
+        id: 1,
+        productId: 700,
+        warehouseId: 10,
+        onHand: 15,
+        reorderThreshold: 0,
+      },
+    ]);
+    // Any-movement-type groupBy sees the recent TRANSFER_OUT; the
+    // OUTGOING-only groupBy sees nothing — this pair has never had a sale.
+    prisma.stockMovement.groupBy.mockImplementation(
+      (args: { where?: unknown }) =>
+        Promise.resolve(
+          args.where
+            ? []
+            : [
+                {
+                  productId: 700,
+                  warehouseId: 10,
+                  _max: { createdAt: recentTransfer },
+                },
+              ],
+        ),
+    );
+
+    const result = await service.getDeadStock(60, NOW);
+
+    expect(result).toEqual([
+      {
+        productId: 700,
+        warehouseId: 10,
+        onHand: 15,
+        lastMovementAt: recentTransfer,
+        daysSinceLastMovement: 7,
+        lastOutgoingMovementAt: null,
+        daysSinceLastOutgoingMovement: null,
+      },
+    ]);
   });
 
   it('distinguishes lastOutgoingMovementAt from lastMovementAt: a recent INCOMING restock does not count as "customer" activity', async () => {
@@ -372,14 +439,12 @@ describe('StockInsightsService.getDeadStock', () => {
     // The row is NOT flagged dead (any-movement lastMovementAt is recent),
     // but the returned lastOutgoingMovementAt correctly reflects the much
     // older customer-facing activity.
+    // Flagged dead: the recent INCOMING restock does NOT reset the clock —
+    // only lastOutgoingMovementAt (151 days old, past the 60-day cutoff)
+    // determines dead-stock status. lastMovementAt is still returned,
+    // correctly reflecting the recent INCOMING, purely as historical info.
     const result = await service.getDeadStock(60, NOW);
-
-    expect(result).toEqual([]);
-
-    // Confirm what the (excluded) row's fields would have been by lowering
-    // inactivityDays so it clears the any-movement cutoff too.
-    const resultWithShortWindow = await service.getDeadStock(3, NOW);
-    expect(resultWithShortWindow).toEqual([
+    expect(result).toEqual([
       {
         productId: 500,
         warehouseId: 10,
@@ -556,7 +621,7 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
     getLedger.mockResolvedValue([
       movement({
         productId: 200,
-        type: 'TRANSFER_OUT',
+        type: 'OUTGOING',
         quantity: 20,
         createdAt: new Date('2026-04-15T00:00:00.000Z'),
       }),
@@ -700,7 +765,7 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
     expect(result).toEqual([]);
   });
 
-  it('ignores non-consumption movement types (INCOMING, TRANSFER_IN, ADJUSTMENT)', async () => {
+  it('ignores non-consumption movement types (INCOMING, TRANSFER_IN, TRANSFER_OUT, ADJUSTMENT) — only OUTGOING is true customer consumption', async () => {
     const { service, getLedger } = buildService();
     getLedger.mockResolvedValue([
       movement({
@@ -713,6 +778,20 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
         productId: 500,
         type: 'ADJUSTMENT',
         quantity: 50,
+        createdAt: new Date('2026-05-20T00:00:00.000Z'),
+      }),
+      movement({
+        productId: 500,
+        type: 'TRANSFER_IN',
+        quantity: 40,
+        createdAt: new Date('2026-05-20T00:00:00.000Z'),
+      }),
+      // An internal transfer between our own warehouses is not a sale — it
+      // must not be able to manufacture a consumption anomaly on its own.
+      movement({
+        productId: 500,
+        type: 'TRANSFER_OUT',
+        quantity: 40,
         createdAt: new Date('2026-05-20T00:00:00.000Z'),
       }),
     ]);
@@ -742,7 +821,7 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
       movement({
         productId: 600,
         warehouseId: 30,
-        type: 'TRANSFER_OUT',
+        type: 'OUTGOING',
         quantity: 10,
         createdAt: new Date('2026-05-21T00:00:00.000Z'),
       }),
@@ -1543,9 +1622,9 @@ describe('StockInsightsService.getTransferRecommendations', () => {
         toWarehouseProjectedAvailableAfterTransfer: 10,
         sourcePendingIncomingQuantity: 0,
         // No StockMovement rows are mocked in this test at all, so both
-        // rows have never had a movement -> both are (trivially) dead stock
-        // under the existing any-movement-type rule; not the focus of this
-        // test, just an accurate reflection of the fixture.
+        // rows have never had an OUTGOING movement -> both are (trivially)
+        // dead stock; not the focus of this test, just an accurate
+        // reflection of the fixture.
         sourceIsDeadStock: true,
         destinationRiskLevel: 'AT_RISK',
         destinationAvgDailyConsumption: 0,
@@ -1703,6 +1782,96 @@ describe('StockInsightsService.getTransferRecommendations', () => {
     const result = await service.getTransferRecommendations(30, NOW);
 
     expect(result).toEqual([]);
+  });
+
+  it('caps the recommended transfer quantity to the destination warehouse remaining capacity (maxCapacity - current total onHand across all products)', async () => {
+    const { service, prisma } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({
+        productId: 100,
+        warehouseId: 10,
+        onHand: 2,
+        reorderThreshold: 10,
+      }), // deficit: would need 8
+      inventoryRow({
+        productId: 100,
+        warehouseId: 20,
+        onHand: 100,
+        reorderThreshold: 10,
+      }), // surplus: 90, more than enough on its own
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+    // Destination warehouse 10 has maxCapacity 5 and already holds 2 units
+    // total (this same product 100's onHand) -> only 3 units of headroom.
+    prisma.warehouse.findMany.mockResolvedValue([{ id: 10, maxCapacity: 5 }]);
+    prisma.warehouseInventory.groupBy.mockResolvedValue([
+      { warehouseId: 10, _sum: { onHand: 2 } },
+    ]);
+
+    const result = await service.getTransferRecommendations(30, NOW);
+
+    expect(result).toHaveLength(1);
+    // Capped to the 3 units of remaining capacity, not the full 8-unit deficit.
+    expect(result[0].transferQuantity).toBe(3);
+    expect(result[0].toWarehouseId).toBe(10);
+  });
+
+  it('does not recommend a transfer into a destination warehouse with zero remaining capacity', async () => {
+    const { service, prisma } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({
+        productId: 100,
+        warehouseId: 10,
+        onHand: 2,
+        reorderThreshold: 10,
+      }),
+      inventoryRow({
+        productId: 100,
+        warehouseId: 20,
+        onHand: 100,
+        reorderThreshold: 10,
+      }),
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+    // Warehouse 10 is already at (or over) its maxCapacity — no headroom.
+    prisma.warehouse.findMany.mockResolvedValue([{ id: 10, maxCapacity: 2 }]);
+    prisma.warehouseInventory.groupBy.mockResolvedValue([
+      { warehouseId: 10, _sum: { onHand: 2 } },
+    ]);
+
+    const result = await service.getTransferRecommendations(30, NOW);
+
+    expect(result).toEqual([]);
+  });
+
+  it('does not cap the transfer when the destination warehouse has no maxCapacity set (unlimited)', async () => {
+    const { service, prisma } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({
+        productId: 100,
+        warehouseId: 10,
+        onHand: 2,
+        reorderThreshold: 10,
+      }), // deficit: need 8
+      inventoryRow({
+        productId: 100,
+        warehouseId: 20,
+        onHand: 100,
+        reorderThreshold: 10,
+      }), // surplus: 90
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+    prisma.warehouse.findMany.mockResolvedValue([
+      { id: 10, maxCapacity: null },
+    ]);
+    prisma.warehouseInventory.groupBy.mockResolvedValue([
+      { warehouseId: 10, _sum: { onHand: 2 } },
+    ]);
+
+    const result = await service.getTransferRecommendations(30, NOW);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].transferQuantity).toBe(8);
   });
 });
 

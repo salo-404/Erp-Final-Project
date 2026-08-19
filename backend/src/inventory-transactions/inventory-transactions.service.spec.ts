@@ -1295,6 +1295,271 @@ describe('InventoryTransactionsService.update', () => {
 
     expect(tx.inventoryTransaction.updateMany).not.toHaveBeenCalled();
   });
+
+  describe('final-item-list duplicate productId rejection', () => {
+    it('rejects changing one item to the same productId as another unchanged item', async () => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type: 'OUTGOING',
+        sourceWarehouseId: 10,
+        destinationWarehouseId: null,
+        items: [
+          { id: 11, productId: 100, quantity: 5 },
+          { id: 12, productId: 200, quantity: 3 },
+        ],
+      });
+      const { service, release, reserve } = buildService(tx);
+
+      await expect(
+        service.update(1, { items: [{ itemId: 12, productId: 100 }] }),
+      ).rejects.toThrow(
+        'Update would result in duplicate productId values across items',
+      );
+
+      // Rejected before any reservation resync or item write happens.
+      expect(release).not.toHaveBeenCalled();
+      expect(reserve).not.toHaveBeenCalled();
+      expect(tx.inventoryTransactionItem.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects changing two items to the same new productId in one call', async () => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type: 'INCOMING',
+        sourceWarehouseId: null,
+        destinationWarehouseId: 10,
+        items: [
+          { id: 11, productId: 100, quantity: 5 },
+          { id: 12, productId: 200, quantity: 3 },
+        ],
+      });
+      const { service } = buildService(tx);
+
+      await expect(
+        service.update(1, {
+          items: [
+            { itemId: 11, productId: 300 },
+            { itemId: 12, productId: 300 },
+          ],
+        }),
+      ).rejects.toThrow(
+        'Update would result in duplicate productId values across items',
+      );
+
+      expect(tx.inventoryTransactionItem.update).not.toHaveBeenCalled();
+    });
+
+    it("allows swapping two items to each other's productId (final list still has no duplicates)", async () => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type: 'INCOMING',
+        sourceWarehouseId: null,
+        destinationWarehouseId: 10,
+        items: [
+          { id: 11, productId: 100, quantity: 5 },
+          { id: 12, productId: 200, quantity: 3 },
+        ],
+      });
+      setupExistenceChecks(tx);
+      tx.product.findUnique.mockImplementation(
+        ({ where }: { where: { id: number } }) =>
+          Promise.resolve({ id: where.id, name: 'P', isActive: true }),
+      );
+      const { service } = buildService(tx);
+
+      await expect(
+        service.update(1, {
+          items: [
+            { itemId: 11, productId: 200 },
+            { itemId: 12, productId: 100 },
+          ],
+        }),
+      ).resolves.toBeDefined();
+    });
+  });
+
+  describe('expanded editable fields (price, supplierId, destinationWarehouseId, expectedDate)', () => {
+    it('updates an item price without touching quantity/productId', async () => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type: 'INCOMING',
+        sourceWarehouseId: null,
+        destinationWarehouseId: 10,
+        items: [{ id: 11, productId: 100, quantity: 5, price: 20 }],
+      });
+      const { service } = buildService(tx);
+
+      await service.update(1, { items: [{ itemId: 11, price: 25 }] });
+
+      expect(tx.inventoryTransactionItem.update).toHaveBeenCalledWith({
+        where: { id: 11 },
+        data: { price: 25 },
+      });
+    });
+
+    it('rejects a negative item price', async () => {
+      const tx = createMockTx();
+      const { service } = buildService(tx);
+
+      await expect(
+        service.update(1, { items: [{ itemId: 11, price: -1 }] }),
+      ).rejects.toThrow(/must be a non-negative number/);
+
+      expect(tx.inventoryTransaction.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('updates supplierId on an INCOMING transaction', async () => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type: 'INCOMING',
+        sourceWarehouseId: null,
+        destinationWarehouseId: 10,
+        items: [{ id: 11, productId: 100, quantity: 5 }],
+      });
+      setupExistenceChecks(tx);
+      const { service } = buildService(tx);
+
+      await service.update(1, { supplierId: SUPPLIER.id });
+
+      expect(tx.inventoryTransaction.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { supplierId: SUPPLIER.id },
+      });
+    });
+
+    it('rejects supplierId on a non-INCOMING transaction', async () => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type: 'OUTGOING',
+        sourceWarehouseId: 10,
+        destinationWarehouseId: null,
+        items: [{ id: 11, productId: 100, quantity: 5 }],
+      });
+      const { service } = buildService(tx);
+
+      await expect(
+        service.update(1, { supplierId: SUPPLIER.id }),
+      ).rejects.toThrow(
+        'supplierId can only be set on an INCOMING transaction',
+      );
+
+      expect(tx.inventoryTransaction.update).not.toHaveBeenCalled();
+    });
+
+    it('updates destinationWarehouseId on an INCOMING transaction without touching any reservation', async () => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type: 'INCOMING',
+        sourceWarehouseId: null,
+        destinationWarehouseId: 10,
+        items: [{ id: 11, productId: 100, quantity: 5 }],
+      });
+      setupExistenceChecks(tx);
+      const { service, release, reserve } = buildService(tx);
+
+      await service.update(1, { destinationWarehouseId: WAREHOUSE_B.id });
+
+      expect(tx.inventoryTransaction.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { destinationWarehouseId: WAREHOUSE_B.id },
+      });
+      expect(release).not.toHaveBeenCalled();
+      expect(reserve).not.toHaveBeenCalled();
+    });
+
+    it('rejects destinationWarehouseId on an OUTGOING transaction', async () => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type: 'OUTGOING',
+        sourceWarehouseId: 10,
+        destinationWarehouseId: null,
+        items: [{ id: 11, productId: 100, quantity: 5 }],
+      });
+      const { service } = buildService(tx);
+
+      await expect(
+        service.update(1, { destinationWarehouseId: WAREHOUSE_B.id }),
+      ).rejects.toThrow(
+        'destinationWarehouseId cannot be set on an OUTGOING transaction',
+      );
+    });
+
+    it('rejects a TRANSFER update that would make source and destination the same warehouse', async () => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type: 'TRANSFER',
+        sourceWarehouseId: 10,
+        destinationWarehouseId: 20,
+        items: [{ id: 11, productId: 100, quantity: 5 }],
+      });
+      setupExistenceChecks(tx);
+      const { service } = buildService(tx);
+
+      await expect(
+        service.update(1, { destinationWarehouseId: WAREHOUSE_A.id }),
+      ).rejects.toThrow(
+        'sourceWarehouseId and destinationWarehouseId must be different',
+      );
+    });
+
+    it('updates expectedDate on any transaction type without touching reservations', async () => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type: 'OUTGOING',
+        sourceWarehouseId: 10,
+        destinationWarehouseId: null,
+        items: [{ id: 11, productId: 100, quantity: 5 }],
+      });
+      const { service, release, reserve } = buildService(tx);
+      const newDate = new Date('2026-08-01T00:00:00.000Z');
+
+      await service.update(1, { expectedDate: newDate });
+
+      expect(tx.inventoryTransaction.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { expectedDate: newDate },
+      });
+      expect(release).not.toHaveBeenCalled();
+      expect(reserve).not.toHaveBeenCalled();
+    });
+
+    it('does not touch the transaction row at all when nothing besides an item change is provided', async () => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type: 'INCOMING',
+        sourceWarehouseId: null,
+        destinationWarehouseId: 10,
+        items: [{ id: 11, productId: 100, quantity: 5 }],
+      });
+      const { service } = buildService(tx);
+
+      await service.update(1, { items: [{ itemId: 11, quantity: 9 }] });
+
+      expect(tx.inventoryTransaction.update).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('InventoryTransactionsService.findOneTransaction', () => {

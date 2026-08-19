@@ -2,9 +2,11 @@ import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
+  IsDate,
   IsInt,
   IsOptional,
   IsPositive,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
@@ -22,6 +24,10 @@ export class UpdateTransactionItemChangeDto {
   @IsInt()
   @IsPositive()
   quantity?: number;
+
+  @IsOptional()
+  @Min(0)
+  price?: number;
 }
 
 export class UpdateTransactionDto {
@@ -30,6 +36,23 @@ export class UpdateTransactionDto {
   @IsInt()
   @IsPositive()
   sourceWarehouseId?: number;
+
+  /** INCOMING/TRANSFER only. */
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  destinationWarehouseId?: number;
+
+  /** INCOMING only. */
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  supplierId?: number;
+
+  @IsOptional()
+  @Type(() => Date)
+  @IsDate()
+  expectedDate?: Date;
 
   @IsOptional()
   @IsArray()
