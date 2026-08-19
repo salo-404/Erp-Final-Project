@@ -45,8 +45,12 @@ function buildApp() {
   const notifier: DocumentReviewNotifier = { notifyNewInvoice };
 
   const prismaCreate = jest.fn();
+  const prismaFindUnique = jest.fn();
   const prisma = {
-    pendingDocumentReview: { create: prismaCreate },
+    pendingDocumentReview: {
+      create: prismaCreate,
+      findUnique: prismaFindUnique,
+    },
   } as unknown as PrismaService;
 
   const inventoryTransactionsService = {} as InventoryTransactionsService;
@@ -66,6 +70,7 @@ function buildApp() {
     extract,
     notifyNewInvoice,
     prismaCreate,
+    prismaFindUnique,
   };
 }
 
@@ -244,5 +249,91 @@ describe('DocumentReviewController.upload', () => {
       });
 
     expect(response.status).toBe(500);
+  });
+});
+
+describe('DocumentReviewController.getDocumentPresignedUrl', () => {
+  let app: INestApplication<any>;
+
+  afterEach(async () => {
+    if (app) {
+      await app.close();
+    }
+  });
+
+  it('returns a fresh presigned URL for an existing document', async () => {
+    const { service, prismaFindUnique, getPresignedUrl } = buildApp();
+    prismaFindUnique.mockResolvedValue({
+      documentKey: 'documents/doc-1.pdf',
+    });
+    getPresignedUrl.mockResolvedValue(
+      'https://s3.example.com/doc-1.pdf?X-Amz-Signature=fresh',
+    );
+    app = await createTestApp(service);
+
+    const response = await request(app.getHttpServer()).get(
+      '/document-review/1/presigned-url',
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      url: 'https://s3.example.com/doc-1.pdf?X-Amz-Signature=fresh',
+    });
+    expect(getPresignedUrl).toHaveBeenCalledWith('documents/doc-1.pdf');
+  });
+
+  it('returns 404 for a nonexistent document', async () => {
+    const { service, prismaFindUnique, getPresignedUrl } = buildApp();
+    prismaFindUnique.mockResolvedValue(null);
+    app = await createTestApp(service);
+
+    const response = await request(app.getHttpServer()).get(
+      '/document-review/999/presigned-url',
+    );
+
+    expect(response.status).toBe(404);
+    expect(getPresignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when the document has no stored S3 key', async () => {
+    const { service, prismaFindUnique, getPresignedUrl } = buildApp();
+    prismaFindUnique.mockResolvedValue({ documentKey: null });
+    app = await createTestApp(service);
+
+    const response = await request(app.getHttpServer()).get(
+      '/document-review/1/presigned-url',
+    );
+
+    expect(response.status).toBe(404);
+    expect(getPresignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('propagates a presigned-URL generation failure as a 500', async () => {
+    const { service, prismaFindUnique, getPresignedUrl } = buildApp();
+    prismaFindUnique.mockResolvedValue({
+      documentKey: 'documents/doc-1.pdf',
+    });
+    getPresignedUrl.mockRejectedValue(
+      new Error(
+        'Failed to generate a presigned URL for S3 object "documents/doc-1.pdf": SignatureError',
+      ),
+    );
+    app = await createTestApp(service);
+
+    const response = await request(app.getHttpServer()).get(
+      '/document-review/1/presigned-url',
+    );
+
+    expect(response.status).toBe(500);
+  });
+
+  it('is guarded by JwtAuthGuard at the class level (authentication required)', () => {
+    const guards: unknown[] =
+      (Reflect.getMetadata(
+        '__guards__',
+        DocumentReviewController,
+      ) as unknown[]) ?? [];
+
+    expect(guards).toContain(JwtAuthGuard);
   });
 });

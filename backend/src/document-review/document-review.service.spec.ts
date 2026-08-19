@@ -209,6 +209,9 @@ describe('DocumentReviewService.upload', () => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- jest matcher, not real data
       data: expect.objectContaining({
         documentUrl: 'https://s3.example.com/doc-1.pdf',
+        // The permanent reference is the S3 object key, not the (expiring)
+        // presigned URL that was generated purely for extraction.
+        documentKey: 'documents/doc-1.pdf',
         transactionType: 'INCOMING',
         extractedSupplierName: 'Acme Supplies',
         status: 'PENDING_REVIEW',
@@ -525,6 +528,71 @@ describe('DocumentReviewService.getReview', () => {
 
     await expect(service.getReview(999)).rejects.toThrow(
       'PendingDocumentReview 999 not found',
+    );
+  });
+});
+
+describe('DocumentReviewService.getDocumentPresignedUrl', () => {
+  it("looks up the review's stored documentKey and asks the storage provider for a fresh presigned URL", async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, getPresignedUrl } = buildService(tx);
+    prismaRoot.pendingDocumentReview.findUnique.mockResolvedValue({
+      documentKey: 'documents/doc-1.pdf',
+    });
+    getPresignedUrl.mockResolvedValue(
+      'https://s3.example.com/doc-1.pdf?X-Amz-Signature=fresh',
+    );
+
+    const result = await service.getDocumentPresignedUrl(1);
+
+    expect(prismaRoot.pendingDocumentReview.findUnique).toHaveBeenCalledWith({
+      where: { id: 1 },
+      select: { documentKey: true },
+    });
+    expect(getPresignedUrl).toHaveBeenCalledWith('documents/doc-1.pdf');
+    expect(result).toEqual({
+      url: 'https://s3.example.com/doc-1.pdf?X-Amz-Signature=fresh',
+    });
+  });
+
+  it('throws NotFoundException when the review does not exist', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, getPresignedUrl } = buildService(tx);
+    prismaRoot.pendingDocumentReview.findUnique.mockResolvedValue(null);
+
+    await expect(service.getDocumentPresignedUrl(999)).rejects.toThrow(
+      'PendingDocumentReview 999 not found',
+    );
+    expect(getPresignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('throws NotFoundException when the review has no stored documentKey (e.g. a pre-existing/seeded row)', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, getPresignedUrl } = buildService(tx);
+    prismaRoot.pendingDocumentReview.findUnique.mockResolvedValue({
+      documentKey: null,
+    });
+
+    await expect(service.getDocumentPresignedUrl(1)).rejects.toThrow(
+      'PendingDocumentReview 1 has no stored S3 object key',
+    );
+    expect(getPresignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('propagates a storage-provider failure (e.g. S3/presigned-URL generation error)', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, getPresignedUrl } = buildService(tx);
+    prismaRoot.pendingDocumentReview.findUnique.mockResolvedValue({
+      documentKey: 'documents/doc-1.pdf',
+    });
+    getPresignedUrl.mockRejectedValue(
+      new Error(
+        'Failed to generate a presigned URL for S3 object "documents/doc-1.pdf": SignatureError',
+      ),
+    );
+
+    await expect(service.getDocumentPresignedUrl(1)).rejects.toThrow(
+      'Failed to generate a presigned URL',
     );
   });
 });

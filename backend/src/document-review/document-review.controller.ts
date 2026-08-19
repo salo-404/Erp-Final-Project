@@ -70,6 +70,17 @@ export class DocumentReviewController {
   }
 
   /**
+   * Regenerates a fresh, short-lived presigned URL for an already-uploaded
+   * document so the frontend/admin can view it — same authentication level
+   * as getReview() above, since this is read access to a review already
+   * visible there, not a decision. Nothing here is persisted.
+   */
+  @Get(':id/presigned-url')
+  getDocumentPresignedUrl(@Param('id', ParseIntPipe) id: number) {
+    return this.documentReviewService.getDocumentPresignedUrl(id);
+  }
+
+  /**
    * ADMIN-only. `reviewedById` comes from the authenticated JWT user, never
    * the request body — a client cannot claim a different reviewer identity.
    */

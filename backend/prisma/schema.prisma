@@ -238,6 +238,12 @@ model PendingDocumentReview {
   // PDF/image is already stored in S3.
   documentUrl String
 
+  // Permanent reference to the S3 object — used to regenerate a fresh
+  // presigned URL on demand (see DocumentReviewService.getDocumentPresignedUrl()).
+  // Nullable so pre-existing rows (e.g. seeded directly, not through the S3
+  // upload flow) don't need a backfill.
+  documentKey String?
+
   // Whether AI believes this will become
   // an INCOMING or OUTGOING transaction.
   transactionType InventoryTransactionType

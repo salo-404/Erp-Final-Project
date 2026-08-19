@@ -249,6 +249,7 @@ export class DocumentReviewService {
     const review = await this.prisma.pendingDocumentReview.create({
       data: {
         documentUrl: uploaded.url,
+        documentKey: uploaded.key,
         transactionType: extracted.transactionType,
         extractedPartyName: extracted.partyName,
         extractedSupplierName: extracted.supplierName,
@@ -332,6 +333,30 @@ export class DocumentReviewService {
       throw new NotFoundException(`PendingDocumentReview ${id} not found`);
     }
     return review;
+  }
+
+  /**
+   * Regenerates a fresh, short-lived presigned URL for an already-uploaded
+   * document — the permanent reference stays documentKey (the S3 object
+   * key); nothing about this call is ever persisted. Existing/Get flow:
+   * review ID -> stored documentKey -> storageProvider.getPresignedUrl(key).
+   */
+  async getDocumentPresignedUrl(id: number): Promise<{ url: string }> {
+    const review = await this.prisma.pendingDocumentReview.findUnique({
+      where: { id },
+      select: { documentKey: true },
+    });
+    if (!review) {
+      throw new NotFoundException(`PendingDocumentReview ${id} not found`);
+    }
+    if (!review.documentKey) {
+      throw new NotFoundException(
+        `PendingDocumentReview ${id} has no stored S3 object key`,
+      );
+    }
+
+    const url = await this.storageProvider.getPresignedUrl(review.documentKey);
+    return { url };
   }
 
   /** Read-only. Every row still awaiting a human decision, oldest first. */
