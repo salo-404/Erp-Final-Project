@@ -1,11 +1,11 @@
 """Manual sanity-check script for the Control Tower narration layer.
 
-NOT an automated test - run it directly to see narrate_all_alerts() work
-against the mock alert set and eyeball the output. Same spirit as
+NOT an automated test - run it directly to fetch and narrate the real
+NestJS alert set and eyeball the output. Same spirit as
 scripts/chat_locally.py for the Supervisor's live chat path, but this is
 the batch narration path instead - Control Tower is not a chat entry point
 and this script doesn't behave like one (no REPL, no back-and-forth): it
-fetches the mock alert set once, narrates all of them, and prints the
+fetches the backend alert set once, narrates all of them, and prints the
 results.
 
 Usage (from the ai-agent/ directory):
@@ -27,20 +27,18 @@ if str(_AI_AGENT_ROOT) not in sys.path:
     sys.path.insert(0, str(_AI_AGENT_ROOT))
 
 from config.settings import settings  # noqa: E402
-from narration.control_tower import narrate_all_alerts  # noqa: E402
-from tools.mocks.control_tower_mock_data import get_mock_control_tower_alerts  # noqa: E402
+from narration.control_tower import fetch_and_narrate_control_tower_alerts  # noqa: E402
 
 
 def main() -> None:
-    alerts = get_mock_control_tower_alerts()
-    print(f"Narrating {len(alerts)} mock alerts (MODEL_PROVIDER={settings.model_provider!r})...\n")
-
     start = time.monotonic()
-    narrated = narrate_all_alerts(alerts)
+    narrated = fetch_and_narrate_control_tower_alerts()
     elapsed = time.monotonic() - start
 
+    print(f"Narrated {len(narrated)} backend alerts (MODEL_PROVIDER={settings.model_provider!r}).\n")
+
     for item in narrated:
-        print(f"[{item.severity.value.upper()}] {item.category.value} (alert {item.id})")
+        print(f"[{item.severity.value}] {item.category.value}")
         print(f"  Narrative:       {item.narrative}")
         print(f"  Proposed action: {item.proposed_action}")
         print()

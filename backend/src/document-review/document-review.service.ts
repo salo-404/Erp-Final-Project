@@ -198,8 +198,20 @@ export interface RejectDocumentReviewInput {
   rejectionReason: string;
 }
 
+const DOCUMENT_REVIEW_DETAILS_INCLUDE = {
+  transaction: { include: { items: true } },
+  reviewedBy: {
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+    },
+  },
+} satisfies Prisma.PendingDocumentReviewInclude;
+
 type PendingDocumentReviewWithDetails = Prisma.PendingDocumentReviewGetPayload<{
-  include: { transaction: { include: { items: true } }; reviewedBy: true };
+  include: typeof DOCUMENT_REVIEW_DETAILS_INCLUDE;
 }>;
 
 @Injectable()
@@ -327,7 +339,7 @@ export class DocumentReviewService {
     const client = tx ?? this.prisma;
     const review = await client.pendingDocumentReview.findUnique({
       where: { id },
-      include: { transaction: { include: { items: true } }, reviewedBy: true },
+      include: DOCUMENT_REVIEW_DETAILS_INCLUDE,
     });
     if (!review) {
       throw new NotFoundException(`PendingDocumentReview ${id} not found`);
@@ -516,7 +528,7 @@ export class DocumentReviewService {
 
     return tx.pendingDocumentReview.findUniqueOrThrow({
       where: { id },
-      include: { transaction: { include: { items: true } }, reviewedBy: true },
+      include: DOCUMENT_REVIEW_DETAILS_INCLUDE,
     });
   }
 
@@ -540,7 +552,7 @@ export class DocumentReviewService {
 
     return tx.pendingDocumentReview.findUniqueOrThrow({
       where: { id },
-      include: { transaction: { include: { items: true } }, reviewedBy: true },
+      include: DOCUMENT_REVIEW_DETAILS_INCLUDE,
     });
   }
 

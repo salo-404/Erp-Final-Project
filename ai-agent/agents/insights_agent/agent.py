@@ -17,12 +17,9 @@ from strands import Agent, tool
 from agents.insights_agent.prompts import INSIGHTS_SYSTEM_PROMPT
 from agents.insights_agent.tools import (
     analyze_dead_stock,
-    calculate_reorder_quantity,
     compare_suppliers,
-    draft_purchase_order,
     get_available_stock,
     get_consumption_anomalies,
-    get_expiry_risk,
     get_low_stock_products,
     get_open_purchase_orders,
     get_restock_recommendations,
@@ -38,13 +35,10 @@ INSIGHTS_TOOLS = [
     get_stockout_risk,
     get_restock_recommendations,
     get_transfer_recommendations,
-    get_expiry_risk,
     analyze_dead_stock,
     get_consumption_anomalies,
-    calculate_reorder_quantity,
     compare_suppliers,
     get_open_purchase_orders,
-    draft_purchase_order,
     query_database,
 ]
 
@@ -64,13 +58,13 @@ def build_insights_agent() -> Agent:
         system_prompt=INSIGHTS_SYSTEM_PROMPT,
         tools=INSIGHTS_TOOLS,
         name="insights_agent",
-        description="Inventory analytics and procurement specialist (stock, risk, suppliers, purchase orders).",
+        description="Inventory analytics and procurement specialist (stock, risk, suppliers, and incoming purchases).",
     )
 
 
 @tool
 def insights_agent_tool(query: str) -> str:
-    """Delegate a question about inventory, stock levels, stockout risk, restocking, transfers, expiry, dead stock, consumption anomalies, suppliers, or purchase orders to the Insights specialist agent.
+    """Delegate a question about inventory, stock levels, stockout risk, restocking, transfers, dead stock, consumption anomalies, suppliers, or incoming purchases to the Insights specialist agent.
 
     Args:
         query: The user's inventory/procurement-related question, in natural language.

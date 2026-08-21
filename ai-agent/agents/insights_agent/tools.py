@@ -1,9 +1,8 @@
 """Insights (and Procurement) tools for the Strands Agent.
 
 Every function is decorated with @tool so it can be attached directly to a
-Strands Agent. Stock insight tools call the real NestJS backend through the
-shared BackendHttpClient. Tools not yet converted continue to use mock data.
-All responses are validated against tools/schemas/insights_schema.py.
+Strands Agent. The active tools call the real NestJS backend through the
+shared BackendHttpClient and validate responses against the Pydantic schemas.
 
 The agent that uses these tools must never compute the numbers itself - see
 agents/insights_agent/prompts.py. These tools are the single source of truth
@@ -17,16 +16,12 @@ from typing import Optional
 from strands import tool
 
 from clients import BackendHttpClient
-from tools.mocks import insights_mock_data as mocks
 from tools.schemas.insights_schema import (
     AvailableStockResponse,
     ConsumptionAnomaliesResponse,
     DeadStockResponse,
-    DraftPurchaseOrderResponse,
-    ExpiryRiskResponse,
     LowStockResponse,
     OpenPurchaseOrdersResponse,
-    ReorderQuantityResult,
     RestockRecommendationsResponse,
     StockoutRiskResponse,
     SupplierComparisonResponse,
@@ -171,17 +166,6 @@ def get_transfer_recommendations(
 
 
 @tool
-def get_expiry_risk() -> dict:
-    """Get products/batches approaching their expiry date, with a backend-calculated risk level.
-
-    Returns:
-        A dict with an `items` list carrying batchId, expiryDate,
-        daysUntilExpiry, and riskLevel (LOW/MEDIUM/HIGH).
-    """
-    return ExpiryRiskResponse.model_validate(mocks.get_expiry_risk_mock()).model_dump(mode="json")
-
-
-@tool
 def analyze_dead_stock(
     inactivity_days: Optional[int] = None,
     reference_date: Optional[str] = None,
@@ -241,74 +225,86 @@ def get_consumption_anomalies(
 
 
 @tool
-def calculate_reorder_quantity(product_id: int, warehouse_id: int) -> dict:
-    """Get the backend-calculated recommended reorder quantity for one product at one warehouse.
-
-    Args:
-        product_id: The product's database ID.
-        warehouse_id: The warehouse's database ID.
-
-    Returns:
-        A dict with the recommendedQuantity and the calculation `method`
-        used by the backend (e.g. economic_order_quantity).
-    """
-    return ReorderQuantityResult.model_validate(
-        mocks.calculate_reorder_quantity_mock(product_id, warehouse_id)
-    ).model_dump(mode="json")
-
-
-@tool
 def compare_suppliers(product_id: int) -> dict:
-    """Compare available suppliers for a product on cost, lead time, and reliability.
+    """Get the backend-ranked suppliers for a product with scoring evidence.
 
-    Returns a backend-scored list plus a single recommendedSupplier. The
-    recommended supplier is NOT necessarily the cheapest - it weighs lead
-    time and reliability alongside cost. Always mention this trade-off when
-    presenting the recommendation.
+    NestJS calculates every metric, normalized component score, composite
+    score, insufficient-data decision, and rank. Suppliers without enough
+    evidence remain present with null score/rank and explanatory reasons.
 
     Args:
         product_id: The product's database ID.
 
     Returns:
-        A dict with a `scores` list (per-supplier unitCost, leadTimeDays,
-        reliabilityScore, overallScore) and a `recommendedSupplier`.
+        A dict containing `productId` and the backend's ranked `suppliers`.
     """
+    suppliers = BackendHttpClient().get(
+        "/supplier-intelligence/rank",
+        query={"productId": product_id},
+    )
     return SupplierComparisonResponse.model_validate(
-        mocks.compare_suppliers_mock(product_id)
+        {"productId": product_id, "suppliers": suppliers}
     ).model_dump(mode="json")
 
 
 @tool
-def get_open_purchase_orders() -> dict:
-    """Get all currently open (not fully received) purchase orders across all warehouses.
-
-    Returns:
-        A dict with an `orders` list carrying status
-        (PENDING/APPROVED/IN_TRANSIT/PARTIALLY_RECEIVED), expectedDate,
-        lineItemCount, and totalValue.
-    """
-    return OpenPurchaseOrdersResponse.model_validate(
-        mocks.get_open_purchase_orders_mock()
-    ).model_dump(mode="json")
-
-
-@tool
-def draft_purchase_order(product_id: int, warehouse_id: int, quantity: int) -> dict:
-    """Draft a purchase order PROPOSAL for a product at a warehouse. Does NOT submit or execute anything.
-
-    This only produces a proposal for a human to review and approve. It
-    never creates a real purchase order, contacts a supplier, or commits
-    spend.
+def get_open_purchase_orders(
+    destination_warehouse_id: Optional[int] = None,
+    supplier_id: Optional[int] = None,
+    expected_date_from: Optional[str] = None,
+    expected_date_to: Optional[str] = None,
+) -> dict:
+    """Get PENDING INCOMING inventory transactions representing open purchases.
 
     Args:
-        product_id: The product's database ID to reorder.
-        warehouse_id: The warehouse's database ID the stock should arrive at.
-        quantity: The quantity to include on the draft order.
+        destination_warehouse_id: Optional destination warehouse filter.
+        supplier_id: Optional supplier filter.
+        expected_date_from: Optional inclusive expected-date lower bound.
+        expected_date_to: Optional inclusive expected-date upper bound.
 
     Returns:
-        A dict describing the draft order (supplier, line items, estimated
-        total, estimated lead time). `isDraft` is always True.
+        A dict with real `transactions`, including supplier/destination IDs,
+        expected dates, document URLs, and priced line items where returned.
     """
-    return DraftPurchaseOrderResponse.model_validate(
-        mocks.draft_purchase_order_mock(product_id, warehouse_id, quantity)
+    rows = BackendHttpClient().get(
+        "/inventory-transactions",
+        query={
+            "type": "INCOMING",
+            "status": "PENDING",
+            "destinationWarehouseId": destination_warehouse_id,
+            "supplierId": supplier_id,
+            "expectedDateFrom": expected_date_from,
+            "expectedDateTo": expected_date_to,
+        },
+    )
+    transactions = [
+        {
+            "transactionId": row["id"],
+            "type": row["type"],
+            "status": row["status"],
+            "supplierId": row.get("supplierId"),
+            "destinationWarehouseId": row.get("destinationWarehouseId"),
+            "expectedDate": row.get("expectedDate"),
+            "actualDate": row.get("actualDate"),
+            "deliveryCountry": row.get("deliveryCountry"),
+            "deliveryRegion": row.get("deliveryRegion"),
+            "deliveryAddress": row.get("deliveryAddress"),
+            "documentUrl": row.get("documentUrl"),
+            "createdAt": row["createdAt"],
+            "updatedAt": row["updatedAt"],
+            "items": [
+                {
+                    "itemId": item["id"],
+                    "productId": item["productId"],
+                    "quantity": item["quantity"],
+                    "price": item.get("price"),
+                }
+                for item in row["items"]
+            ],
+        }
+        for row in rows
+    ]
+    return OpenPurchaseOrdersResponse.model_validate(
+        {"transactions": transactions}
     ).model_dump(mode="json")
+

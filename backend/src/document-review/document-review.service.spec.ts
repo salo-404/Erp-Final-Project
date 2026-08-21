@@ -34,6 +34,18 @@ function createMockTx() {
 
 type MockTx = ReturnType<typeof createMockTx>;
 
+const SAFE_DOCUMENT_REVIEW_INCLUDE = {
+  transaction: { include: { items: true } },
+  reviewedBy: {
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+    },
+  },
+};
+
 function createMockPrismaRoot() {
   return {
     pendingDocumentReview: {
@@ -340,6 +352,12 @@ describe('DocumentReviewService.approve', () => {
       where: { id: 1 },
       data: { transactionId: 501 },
     });
+    expect(
+      tx.pendingDocumentReview.findUniqueOrThrow,
+    ).toHaveBeenLastCalledWith({
+      where: { id: 1 },
+      include: SAFE_DOCUMENT_REVIEW_INCLUDE,
+    });
     expect(result.transactionId).toBe(501);
   });
 
@@ -474,6 +492,12 @@ describe('DocumentReviewService.reject', () => {
         reviewedAt: expect.any(Date) as Date,
       },
     });
+    expect(
+      tx.pendingDocumentReview.findUniqueOrThrow,
+    ).toHaveBeenLastCalledWith({
+      where: { id: 1 },
+      include: SAFE_DOCUMENT_REVIEW_INCLUDE,
+    });
     expect(result.status).toBe('REJECTED');
   });
 
@@ -516,8 +540,12 @@ describe('DocumentReviewService.getReview', () => {
 
     expect(prismaRoot.pendingDocumentReview.findUnique).toHaveBeenCalledWith({
       where: { id: 1 },
-      include: { transaction: { include: { items: true } }, reviewedBy: true },
+      include: SAFE_DOCUMENT_REVIEW_INCLUDE,
     });
+    expect(
+      prismaRoot.pendingDocumentReview.findUnique.mock.calls[0][0].include
+        .reviewedBy.select,
+    ).not.toHaveProperty('passwordHash');
     expect(result).toEqual(review);
   });
 

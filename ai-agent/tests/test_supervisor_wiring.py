@@ -26,6 +26,7 @@ import pytest
 from agents.document_agent.agent import document_agent_tool
 from agents.insights_agent.agent import insights_agent_tool
 from agents.supervisor.agent import SUPERVISOR_TOOLS, build_supervisor_agent
+from agents.supervisor.prompts import SUPERVISOR_SYSTEM_PROMPT
 from config.settings import settings
 from tests._helpers import live_model_configured
 from tools.mocks import insights_mock_data
@@ -44,6 +45,15 @@ def test_supervisor_tools_list_has_exactly_two_specialists() -> None:
     assert len(SUPERVISOR_TOOLS) == 2
     assert insights_agent_tool in SUPERVISOR_TOOLS
     assert document_agent_tool in SUPERVISOR_TOOLS
+
+
+def test_supervisor_truthfully_distinguishes_real_and_unimplemented_writes() -> None:
+    assert "Document approval and rejection" in SUPERVISOR_SYSTEM_PROMPT
+    assert "action tool actually executed successfully" in SUPERVISOR_SYSTEM_PROMPT
+    assert "user explicitly requests" in SUPERVISOR_SYSTEM_PROMPT
+    assert "returns a successful result" in SUPERVISOR_SYSTEM_PROMPT
+    assert "unimplemented" in SUPERVISOR_SYSTEM_PROMPT
+    assert "Nothing you or a specialist does executes a real change" not in SUPERVISOR_SYSTEM_PROMPT
 
 
 def test_supervisor_agent_builds_and_registers_both_specialist_tools() -> None:

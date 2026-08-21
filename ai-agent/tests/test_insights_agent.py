@@ -18,9 +18,6 @@ from __future__ import annotations
 import pytest
 
 from agents.insights_agent.agent import INSIGHTS_TOOLS, build_insights_agent
-from agents.insights_agent.tools import (
-    compare_suppliers,
-)
 from config.settings import settings
 from tests._helpers import live_model_configured
 from tools.mocks import insights_mock_data
@@ -31,23 +28,8 @@ def test_insights_agent_builds_standalone() -> None:
     """The Insights agent must construct without any Supervisor dependency."""
     agent = build_insights_agent()
     assert agent.name == "insights_agent"
-    assert len(INSIGHTS_TOOLS) == 13
+    assert len(INSIGHTS_TOOLS) == 10
     assert query_database in INSIGHTS_TOOLS
-
-
-def test_compare_suppliers_recommends_by_overall_score_not_just_cost() -> None:
-    result = compare_suppliers(product_id=102)
-    assert result
-    assert len(result["scores"]) > 1
-    recommended = result["recommendedSupplier"]
-    assert "overallScore" in recommended
-
-    cheapest = min(result["scores"], key=lambda s: s["unitCost"])
-    # The mock data is deliberately set up so the recommended supplier is
-    # NOT the cheapest one, proving the agent has something other than raw
-    # cost to reason about (lead time / reliability).
-    assert recommended["supplierId"] != cheapest["supplierId"]
-    assert recommended["overallScore"] > cheapest["overallScore"]
 
 
 @pytest.mark.skipif(

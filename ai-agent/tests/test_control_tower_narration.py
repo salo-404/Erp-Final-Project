@@ -1,125 +1,127 @@
-"""Tests for the Control Tower narration layer (narration/control_tower.py).
-
-NOT an agents/ test - Control Tower is explicitly not a fourth agent. The
-offline test mocks the model call entirely (no credentials, no network) and
-checks narrate_alert() maps an Alert into a NarratedAlert correctly. The
-live test actually narrates the full mock alert set through a real model
-and is skipped without one configured, same pattern as every other live
-test in this suite (see tests/_helpers.py).
-"""
+"""Offline tests for real Control Tower fetching and narration."""
 
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from narration import control_tower
-from tests._helpers import live_model_configured
-from tools.mocks.control_tower_mock_data import get_mock_control_tower_alerts
-from tools.schemas.control_tower_schema import Alert, AlertCategory, AlertSeverity, NarratedAlert
+from tools.schemas.control_tower_schema import (
+    Alert,
+    AlertCategory,
+    AlertSeverity,
+    NarratedAlert,
+)
+
+REAL_CATEGORIES = {
+    "DEAD_STOCK", "CONSUMPTION_ANOMALY", "STOCKOUT_RISK",
+    "OVERDUE_TRANSACTION", "PENDING_DOCUMENT_REVIEW",
+    "RESTOCK_RECOMMENDATION", "TRANSFER_RECOMMENDATION",
+}
+REAL_SEVERITIES = {"CRITICAL", "WARNING", "INFO"}
 
 
-class _FakeModel:
-    """Stands in for a real strands Model - no network, no credentials.
+def raw_alert(category="DEAD_STOCK", severity="INFO"):
+    return {
+        "category": category,
+        "severity": severity,
+        "message": "Backend-generated alert message",
+        "data": {
+            "productId": 42,
+            "warehouseId": 2,
+            "onHand": 10,
+            "lastMovementAt": "2026-08-20T00:00:00.000Z",
+            "lastOutgoingMovementAt": "2026-05-01T00:00:00.000Z",
+            "daysSinceLastOutgoingMovement": 112,
+        },
+        "referenceDate": "2026-08-21T00:00:00.000Z",
+    }
 
-    Mimics only the one method narrate_alert() actually calls:
-    .structured_output(), an async generator whose last yielded event is
-    {"output": <object with .narrative and .proposed_action>}. A plain
-    SimpleNamespace is enough - narrate_alert() only reads those two
-    attributes off whatever comes back, so there's no need to construct a
-    real _NarrationFields instance here.
-    """
+
+class _RecordingModel:
+    def __init__(self):
+        self.messages = None
 
     async def structured_output(self, output_model, messages, system_prompt=None, **kwargs):
-        yield {
-            "output": SimpleNamespace(
-                narrative="Test narrative describing the alert.",
-                proposed_action="Test proposed action to take.",
-            )
-        }
+        self.messages = messages
+        yield {"output": SimpleNamespace(
+            narrative="Backend evidence explained.",
+            proposed_action="Review the alert evidence.",
+        )}
 
 
 class _FakeSettings:
-    """Stands in for config.settings.settings - returns _FakeModel regardless of agent_name."""
+    def __init__(self, model):
+        self.model = model
 
-    def build_model(self, agent_name: str) -> _FakeModel:
-        return _FakeModel()
+    def build_model(self, agent_name):
+        assert agent_name == "narration"
+        return self.model
 
 
-def test_narrate_alert_maps_alert_into_narrated_alert_with_mocked_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Offline - no credentials, no network. Mocks settings.build_model() at
-    the point narration/control_tower.py uses it, so the real model classes
-    (and their optional SDK dependencies) are never touched.
-    """
-    monkeypatch.setattr(control_tower, "settings", _FakeSettings())
-
-    alert = Alert(
-        id="alert-test-001",
-        category=AlertCategory.LOW_STOCK,
-        severity=AlertSeverity.HIGH,
-        evidence={"productId": 102, "onHand": 12, "reorderThreshold": 25, "deficit": 13},
-        product_id=102,
-        warehouse_id=1,
+def test_get_control_tower_alerts_calls_exact_backend_endpoint_and_query():
+    client = Mock()
+    client.get.return_value = [raw_alert()]
+    with patch("narration.control_tower.BackendHttpClient", return_value=client):
+        result = control_tower.get_control_tower_alerts(60, 30, 50, "2026-08-21T00:00:00Z")
+    client.get.assert_called_once_with(
+        "/control-tower/alerts",
+        query={
+            "deadStockInactivityDays": 60,
+            "consumptionWindowDays": 30,
+            "consumptionThresholdPercent": 50,
+            "referenceDate": "2026-08-21T00:00:00Z",
+        },
     )
-
-    narrated = control_tower.narrate_alert(alert)
-
-    assert isinstance(narrated, NarratedAlert)
-    # Every original field passed through completely unchanged - the model
-    # never regenerates these, only narrative/proposed_action.
-    assert narrated.id == alert.id
-    assert narrated.category == alert.category
-    assert narrated.severity == alert.severity
-    assert narrated.evidence == alert.evidence
-    assert narrated.product_id == alert.product_id
-    assert narrated.warehouse_id == alert.warehouse_id
-    # Generated fields present and exactly what the fake model returned.
-    assert narrated.narrative == "Test narrative describing the alert."
-    assert narrated.proposed_action == "Test proposed action to take."
+    assert result[0].data == raw_alert()["data"]
 
 
-def test_narrate_all_alerts_calls_narrate_alert_per_item(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Offline - confirms the batch entry point narrates every alert, in order."""
-    monkeypatch.setattr(control_tower, "settings", _FakeSettings())
-
-    alerts = [
-        Alert(id="a", category=AlertCategory.LOW_STOCK, severity=AlertSeverity.LOW, evidence={}),
-        Alert(id="b", category=AlertCategory.STOCKOUT_RISK, severity=AlertSeverity.CRITICAL, evidence={}),
-    ]
-
-    narrated = control_tower.narrate_all_alerts(alerts)
-
-    assert [n.id for n in narrated] == ["a", "b"]
-    assert all(isinstance(n, NarratedAlert) for n in narrated)
-    assert all(n.narrative and n.proposed_action for n in narrated)
+@pytest.mark.parametrize("category", sorted(REAL_CATEGORIES))
+def test_every_real_category_validates(category):
+    assert Alert.model_validate(raw_alert(category=category)).category.value == category
 
 
-def test_mock_alert_set_covers_every_category() -> None:
-    """Offline sanity check on the mock data itself, independent of narration."""
-    alerts = get_mock_control_tower_alerts()
-    assert len(alerts) >= 6
-    assert {alert.category for alert in alerts} == set(AlertCategory)
-    assert all(isinstance(alert, Alert) for alert in alerts)
+@pytest.mark.parametrize("severity", sorted(REAL_SEVERITIES))
+def test_every_real_severity_validates(severity):
+    assert Alert.model_validate(raw_alert(severity=severity)).severity.value == severity
 
 
-@pytest.mark.skipif(
-    not live_model_configured(),
-    reason="No live model configured for MODEL_PROVIDER - skipping live narration test",
+@pytest.mark.parametrize(
+    "category", ["low_stock", "expiring_inventory", "invoice_discrepancy", "order_discrepancy"]
 )
-def test_narrate_all_alerts_produces_narratives_for_every_mock_alert() -> None:
-    """Live - runs the real batch entry point against the real mock alert set."""
-    alerts = get_mock_control_tower_alerts()
+def test_old_mock_categories_are_rejected(category):
+    with pytest.raises(ValidationError):
+        Alert.model_validate(raw_alert(category=category))
 
-    narrated = control_tower.narrate_all_alerts(alerts)
 
-    assert len(narrated) == len(alerts)
-    for original, result in zip(alerts, narrated):
-        assert result.id == original.id
-        assert result.category == original.category
-        assert result.severity == original.severity
-        assert result.evidence == original.evidence
-        assert result.narrative.strip(), f"Empty narrative for alert {result.id!r}"
-        assert result.proposed_action.strip(), f"Empty proposed_action for alert {result.id!r}"
+def test_narration_preserves_backend_fields_and_does_not_recalculate_severity(monkeypatch):
+    model = _RecordingModel()
+    monkeypatch.setattr(control_tower, "settings", _FakeSettings(model))
+    alert = Alert.model_validate(raw_alert(category="STOCKOUT_RISK", severity="INFO"))
+    result = control_tower.narrate_alert(alert)
+    assert isinstance(result, NarratedAlert)
+    assert result.category == alert.category
+    assert result.severity == AlertSeverity.INFO
+    assert result.message == alert.message
+    assert result.data == alert.data
+    assert result.referenceDate == alert.referenceDate
+
+
+def test_dead_stock_prompt_uses_outgoing_customer_consumption_semantics():
+    prompt = control_tower._build_narration_prompt(Alert.model_validate(raw_alert()))
+    assert "lastOutgoingMovementAt/daysSinceLastOutgoingMovement" in prompt
+    assert "Do not treat generic lastMovementAt" in prompt
+    assert "customer consumption" in prompt
+
+
+def test_active_control_tower_path_has_no_mock_import_or_severity_mapping():
+    source = inspect.getsource(control_tower)
+    assert "tools.mocks" not in source
+    assert "get_mock_control_tower_alerts" not in source
+    assert "SEVERITY_ORDER" not in source
+    assert set(AlertCategory(item).value for item in REAL_CATEGORIES) == REAL_CATEGORIES
+    assert set(AlertSeverity(item).value for item in REAL_SEVERITIES) == REAL_SEVERITIES

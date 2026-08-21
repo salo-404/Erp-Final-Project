@@ -15,8 +15,9 @@ narrates these values - see agents/insights_agent/prompts.py.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -48,13 +49,6 @@ class ExpiryRiskLevel(str, Enum):
 class ConsumptionAnomalyDirection(str, Enum):
     INCREASE = "INCREASE"
     DECREASE = "DECREASE"
-
-
-class PurchaseOrderStatus(str, Enum):
-    PENDING = "PENDING"
-    APPROVED = "APPROVED"
-    IN_TRANSIT = "IN_TRANSIT"
-    PARTIALLY_RECEIVED = "PARTIALLY_RECEIVED"
 
 
 # ---------------------------------------------------------------------------
@@ -242,23 +236,38 @@ class ReorderQuantityResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SupplierScore(BaseModel):
+class SupplierRankingComponentScores(BaseModel):
+    price: Optional[float] = None
+    onTimeDelivery: Optional[float] = None
+    cancellationPerformance: float
+    productSupplyHistory: Optional[float] = None
+
+
+class RankedSupplier(BaseModel):
     supplierId: int
     supplierName: str
-    unitCost: float
-    leadTimeDays: int
-    reliabilityScore: float = Field(..., ge=0, le=1, description="Backend-calculated on-time-delivery rate.")
-    overallScore: float = Field(
-        ..., ge=0, le=1, description="Backend-calculated composite score weighing cost, lead time, reliability."
-    )
+    productId: int
+    totalTransactions: int
+    completedTransactions: int
+    cancelledTransactions: int
+    cancellationRate: float
+    averagePrice: Optional[float] = None
+    pricedItemCount: int
+    onTimeDeliveryRate: Optional[float] = None
+    evaluatedForOnTimeCount: int
+    purchaseFrequency: float
+    firstPurchaseDate: Optional[datetime] = None
+    lastPurchaseDate: Optional[datetime] = None
+    rank: Optional[int] = None
+    score: Optional[float] = None
+    insufficientData: bool
+    insufficientDataReasons: list[str]
+    componentScores: SupplierRankingComponentScores
 
 
 class SupplierComparisonResponse(BaseModel):
     productId: int
-    scores: list[SupplierScore]
-    recommendedSupplier: SupplierScore = Field(
-        ..., description="Backend-selected best overall candidate, not just cheapest."
-    )
+    suppliers: list[RankedSupplier]
 
 
 # ---------------------------------------------------------------------------
@@ -266,21 +275,32 @@ class SupplierComparisonResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class OpenPurchaseOrder(BaseModel):
-    purchaseOrderId: int
-    supplierId: int
-    supplierName: str
-    warehouseId: int
-    warehouseName: str
-    status: PurchaseOrderStatus
+class OpenIncomingTransactionItem(BaseModel):
+    itemId: int
+    productId: int
+    quantity: int
+    price: Optional[Decimal] = None
+
+
+class OpenIncomingTransaction(BaseModel):
+    transactionId: int
+    type: Literal["INCOMING"]
+    status: Literal["PENDING"]
+    supplierId: Optional[int] = None
+    destinationWarehouseId: Optional[int] = None
     expectedDate: Optional[datetime] = None
-    lineItemCount: int
-    totalValue: float
+    actualDate: Optional[datetime] = None
+    deliveryCountry: Optional[str] = None
+    deliveryRegion: Optional[str] = None
+    deliveryAddress: Optional[str] = None
+    documentUrl: Optional[str] = None
+    createdAt: datetime
+    updatedAt: datetime
+    items: list[OpenIncomingTransactionItem]
 
 
 class OpenPurchaseOrdersResponse(BaseModel):
-    orders: list[OpenPurchaseOrder]
-    asOf: datetime
+    transactions: list[OpenIncomingTransaction]
 
 
 # ---------------------------------------------------------------------------
