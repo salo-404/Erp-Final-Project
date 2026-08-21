@@ -222,4 +222,202 @@ describe('Inventory integrity (e2e)', () => {
       },
     });
   });
+
+  it('rejects completing an INCOMING transaction that would exceed warehouse capacity', async () => {
+    const warehouse = await prisma.warehouse.create({
+      data: {
+        name: `Capacity Test Incoming ${Date.now()}`,
+        maxCapacity: 10,
+      },
+    });
+
+    await prisma.warehouseInventory.create({
+      data: {
+        warehouseId: warehouse.id,
+        productId: mouseId,
+        onHand: 8,
+        reorderThreshold: 0,
+      },
+    });
+
+    // Matching ledger entry so reconciliation remains consistent.
+    await prisma.stockMovement.create({
+      data: {
+        productId: mouseId,
+        warehouseId: warehouse.id,
+        type: 'ADJUSTMENT',
+        quantity: 8,
+      },
+    });
+
+    const transaction = await prisma.inventoryTransaction.create({
+      data: {
+        type: 'INCOMING',
+        status: 'PENDING',
+        destinationWarehouseId: warehouse.id,
+        items: {
+          create: {
+            productId: mouseId,
+            quantity: 5,
+          },
+        },
+      },
+      include: { items: true },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/inventory-transactions/${transaction.id}/complete`)
+      .set('Authorization', adminAuthHeader)
+      .expect(409);
+
+    const afterTransaction =
+      await prisma.inventoryTransaction.findUniqueOrThrow({
+        where: { id: transaction.id },
+      });
+
+    expect(afterTransaction.status).toBe('PENDING');
+
+    const inventory = await prisma.warehouseInventory.findUniqueOrThrow({
+      where: {
+        productId_warehouseId: {
+          productId: mouseId,
+          warehouseId: warehouse.id,
+        },
+      },
+    });
+
+    expect(inventory.onHand).toBe(8);
+
+    const movements = await prisma.stockMovement.findMany({
+      where: { transactionId: transaction.id },
+    });
+
+    expect(movements).toHaveLength(0);
+  });
+
+  it('rejects completing a TRANSFER that would exceed destination warehouse capacity', async () => {
+    const source = await prisma.warehouse.create({
+      data: {
+        name: `Capacity Test Source ${Date.now()}`,
+      },
+    });
+
+    const destination = await prisma.warehouse.create({
+      data: {
+        name: `Capacity Test Destination ${Date.now()}`,
+        maxCapacity: 10,
+      },
+    });
+
+    await prisma.warehouseInventory.create({
+      data: {
+        warehouseId: source.id,
+        productId: mouseId,
+        onHand: 20,
+        reorderThreshold: 0,
+      },
+    });
+
+    // Matching source ledger entry.
+    await prisma.stockMovement.create({
+      data: {
+        productId: mouseId,
+        warehouseId: source.id,
+        type: 'ADJUSTMENT',
+        quantity: 20,
+      },
+    });
+
+    await prisma.warehouseInventory.create({
+      data: {
+        warehouseId: destination.id,
+        productId: mouseId,
+        onHand: 8,
+        reorderThreshold: 0,
+      },
+    });
+
+    // Matching destination ledger entry.
+    await prisma.stockMovement.create({
+      data: {
+        productId: mouseId,
+        warehouseId: destination.id,
+        type: 'ADJUSTMENT',
+        quantity: 8,
+      },
+    });
+
+    const transaction = await prisma.inventoryTransaction.create({
+      data: {
+        type: 'TRANSFER',
+        status: 'PENDING',
+        sourceWarehouseId: source.id,
+        destinationWarehouseId: destination.id,
+        items: {
+          create: {
+            productId: mouseId,
+            quantity: 5,
+          },
+        },
+      },
+      include: { items: true },
+    });
+
+    await prisma.reservation.create({
+      data: {
+        transactionId: transaction.id,
+        productId: mouseId,
+        warehouseId: source.id,
+        quantity: 5,
+        status: 'ACTIVE',
+      },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/inventory-transactions/${transaction.id}/complete`)
+      .set('Authorization', adminAuthHeader)
+      .expect(409);
+
+    const afterTransaction =
+      await prisma.inventoryTransaction.findUniqueOrThrow({
+        where: { id: transaction.id },
+      });
+
+    expect(afterTransaction.status).toBe('PENDING');
+
+    const sourceInventory = await prisma.warehouseInventory.findUniqueOrThrow({
+      where: {
+        productId_warehouseId: {
+          productId: mouseId,
+          warehouseId: source.id,
+        },
+      },
+    });
+
+    expect(sourceInventory.onHand).toBe(20);
+
+    const destinationInventory =
+      await prisma.warehouseInventory.findUniqueOrThrow({
+        where: {
+          productId_warehouseId: {
+            productId: mouseId,
+            warehouseId: destination.id,
+          },
+        },
+      });
+
+    expect(destinationInventory.onHand).toBe(8);
+
+    const reservation = await prisma.reservation.findFirstOrThrow({
+      where: { transactionId: transaction.id },
+    });
+
+    expect(reservation.status).toBe('ACTIVE');
+
+    const movements = await prisma.stockMovement.findMany({
+      where: { transactionId: transaction.id },
+    });
+
+    expect(movements).toHaveLength(0);
+  });
 });

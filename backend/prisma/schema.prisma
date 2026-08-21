@@ -2,7 +2,7 @@ generator client {
   provider            = "prisma-client"
   output              = "../generated/prisma"
   moduleFormat        = "cjs"
-  importFileExtension = ""
+  importFileExtension = "ts"
 }
 
 datasource db {
@@ -280,4 +280,15 @@ model PendingDocumentReview {
 
   reviewedBy  User?                 @relation("DocumentReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
   transaction InventoryTransaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+}
+
+model QueryExample {
+  id          Int      @id @default(autoincrement())
+  question    String
+  sqlQuery    String
+  category    String?
+  description String?
+  createdAt   DateTime @default(now())
+
+  embedding   Unsupported("vector(512)")?
 }

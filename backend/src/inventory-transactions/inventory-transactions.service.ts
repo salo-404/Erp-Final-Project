@@ -525,6 +525,17 @@ export class InventoryTransactionsService {
     tx: Prisma.TransactionClient,
     transaction: InventoryTransactionWithItems,
   ): Promise<void> {
+    const incomingQuantity = transaction.items.reduce(
+      (sum, item) => sum + item.quantity,
+      0,
+    );
+
+    await this.assertDestinationCapacity(
+      tx,
+      transaction.destinationWarehouseId!,
+      incomingQuantity,
+    );
+
     for (const item of this.sortedByProductId(transaction.items)) {
       await this.stockMovementsService.recordMovement(
         {
@@ -553,15 +564,71 @@ export class InventoryTransactionsService {
     }
   }
 
+  private async assertDestinationCapacity(
+    tx: Prisma.TransactionClient,
+    warehouseId: number,
+    incomingQuantity: number,
+  ): Promise<void> {
+    // Lock the warehouse row so two concurrent INCOMING/TRANSFER completions
+    // cannot both pass the capacity check using the same stale capacity.
+    const warehouses = await tx.$queryRaw<
+      { id: number; maxCapacity: number | null }[]
+    >`
+    SELECT "id", "maxCapacity"
+    FROM "Warehouse"
+    WHERE "id" = ${warehouseId}
+    FOR UPDATE
+  `;
+
+    const warehouse = warehouses[0];
+
+    if (!warehouse) {
+      throw new NotFoundException(`Warehouse ${warehouseId} not found`);
+    }
+
+    // null means unlimited capacity.
+    if (warehouse.maxCapacity === null) {
+      return;
+    }
+
+    const stockResult = await tx.warehouseInventory.aggregate({
+      where: { warehouseId },
+      _sum: { onHand: true },
+    });
+
+    const currentStock = stockResult._sum.onHand ?? 0;
+    const projectedStock = currentStock + incomingQuantity;
+
+    if (projectedStock > warehouse.maxCapacity) {
+      throw new ConflictException(
+        `Warehouse ${warehouseId} does not have enough capacity ` +
+          `(current: ${currentStock}, incoming: ${incomingQuantity}, ` +
+          `capacity: ${warehouse.maxCapacity})`,
+      );
+    }
+  }
+
   private async completeTransfer(
     tx: Prisma.TransactionClient,
     transaction: InventoryTransactionWithItems,
   ): Promise<void> {
+    const incomingQuantity = transaction.items.reduce(
+      (sum, item) => sum + item.quantity,
+      0,
+    );
+
+    await this.assertDestinationCapacity(
+      tx,
+      transaction.destinationWarehouseId!,
+      incomingQuantity,
+    );
+
     interface Op {
       warehouseId: number;
       productId: number;
       run: () => Promise<unknown>;
     }
+
     const ops: Op[] = [];
 
     for (const item of transaction.items) {
@@ -576,6 +643,7 @@ export class InventoryTransactionsService {
         productId: item.productId,
         run: () => this.reservationsService.fulfill(reservation.id, tx),
       });
+
       ops.push({
         warehouseId: transaction.destinationWarehouseId!,
         productId: item.productId,

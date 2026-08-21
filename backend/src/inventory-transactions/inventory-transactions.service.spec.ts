@@ -18,9 +18,16 @@ import type {
 
 function createMockTx() {
   return {
+    $queryRaw: jest.fn(),
+
     supplier: { findUnique: jest.fn() },
     warehouse: { findUnique: jest.fn() },
     product: { findUnique: jest.fn() },
+
+    warehouseInventory: {
+      aggregate: jest.fn(),
+    },
+
     inventoryTransaction: {
       create: jest.fn(),
       updateMany: jest.fn(),
@@ -29,8 +36,13 @@ function createMockTx() {
       findMany: jest.fn(),
       update: jest.fn(),
     },
+
     inventoryTransactionItem: { update: jest.fn() },
-    reservation: { findFirst: jest.fn(), findMany: jest.fn() },
+
+    reservation: {
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+    },
   };
 }
 
@@ -742,6 +754,11 @@ describe('InventoryTransactionsService.createTransfer', () => {
 describe('InventoryTransactionsService.complete', () => {
   it('completes a PENDING INCOMING transaction via recordMovement(INCOMING) per item', async () => {
     const tx = createMockTx();
+    tx.$queryRaw.mockResolvedValue([{ id: 10, maxCapacity: 1000 }]);
+
+    tx.warehouseInventory.aggregate.mockResolvedValue({
+      _sum: { onHand: 100 },
+    });
     tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
     const txnRow = {
       id: 1,
@@ -806,6 +823,11 @@ describe('InventoryTransactionsService.complete', () => {
 
   it('completes a PENDING TRANSFER by fulfilling the source reservation and recording TRANSFER_IN at the destination, in deterministic (warehouseId, productId) order', async () => {
     const tx = createMockTx();
+    tx.$queryRaw.mockResolvedValue([{ id: 20, maxCapacity: 1000 }]);
+
+    tx.warehouseInventory.aggregate.mockResolvedValue({
+      _sum: { onHand: 100 },
+    });
     tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
     const txnRow = {
       id: 3,
