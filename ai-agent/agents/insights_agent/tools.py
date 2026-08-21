@@ -1,9 +1,9 @@
 """Insights (and Procurement) tools for the Strands Agent.
 
 Every function is decorated with @tool so it can be attached directly to a
-Strands Agent. Bodies are MOCKED - they call into tools/mocks/insights_mock_data.py
-and validate the result against tools/schemas/insights_schema.py before
-returning it as a plain dict. No real backend/database call happens here.
+Strands Agent. Stock insight tools call the real NestJS backend through the
+shared BackendHttpClient. Tools not yet converted continue to use mock data.
+All responses are validated against tools/schemas/insights_schema.py.
 
 The agent that uses these tools must never compute the numbers itself - see
 agents/insights_agent/prompts.py. These tools are the single source of truth
@@ -16,6 +16,7 @@ from typing import Optional
 
 from strands import tool
 
+from clients import BackendHttpClient
 from tools.mocks import insights_mock_data as mocks
 from tools.schemas.insights_schema import (
     AvailableStockResponse,
@@ -34,81 +35,138 @@ from tools.schemas.insights_schema import (
 
 
 @tool
-def get_available_stock(product_ids: Optional[list[int]] = None) -> dict:
-    """Get current available stock (on hand minus reserved), optionally filtered to specific products.
+def get_available_stock(warehouse_id: int, product_id: int) -> dict:
+    """Get current available stock for one product in one warehouse.
 
-    Pass product_ids to check availability for exact products you already
-    know about - e.g. the matched productIds for a specific order's line
-    items (from the Document agent's extraction) - rather than pulling
-    every product's stock. Prefer this targeted form over
-    get_restock_recommendations() when the question is "can we fulfill
-    THIS order" rather than "what should we reorder in general" - it
-    directly answers whether on-hand stock covers what was actually
-    requested, for exactly those items.
+    Prefer this tool over restock recommendations when the question is
+    whether a specific warehouse can fulfill demand for a specific product.
+    The backend calculates available stock from on-hand stock minus ACTIVE
+    reservations.
 
     Args:
-        product_ids: Optional list of specific product database IDs to
-            check. Omit to get stock for every product across every
-            warehouse.
+        warehouse_id: Warehouse database ID.
+        product_id: Product database ID.
 
     Returns:
-        A dict with an `items` list of per-product/per-warehouse stock levels
-        (onHand, reserved, available) and an `asOf` timestamp.
+        A dict with one `items` entry containing warehouse/product IDs plus
+        backend-calculated onHand, reserved, and available quantities.
     """
+    row = BackendHttpClient().get(
+        f"/warehouse-inventory/available/{warehouse_id}/{product_id}"
+    )
     return AvailableStockResponse.model_validate(
-        mocks.get_available_stock_mock(product_ids=product_ids)
+        {"items": [row]}
     ).model_dump(mode="json")
 
 
 @tool
-def get_low_stock_products() -> dict:
-    """Get products whose on-hand quantity has fallen below their reorder threshold.
+def get_low_stock_products(warehouse_id: int) -> dict:
+    """Get products at or below their reorder threshold in one warehouse.
+
+    Args:
+        warehouse_id: Warehouse database ID.
 
     Returns:
-        A dict with an `items` list of low-stock products (onHand,
-        reorderThreshold, deficit) and an `asOf` timestamp.
+        A dict with an `items` list preserving the backend's on-hand,
+        reserved, available, and reorder-threshold evidence.
     """
-    return LowStockResponse.model_validate(mocks.get_low_stock_products_mock()).model_dump(mode="json")
+    rows = BackendHttpClient().get(
+        f"/warehouse-inventory/low-stock/{warehouse_id}"
+    )
+    items = [
+        {
+            "inventoryId": row["id"],
+            "productId": row["productId"],
+            "productName": row["product"]["name"],
+            "warehouseId": row["warehouseId"],
+            "onHand": row["onHand"],
+            "reserved": row["reserved"],
+            "available": row["available"],
+            "reorderThreshold": row["reorderThreshold"],
+        }
+        for row in rows
+    ]
+    return LowStockResponse.model_validate({"items": items}).model_dump(mode="json")
 
 
 @tool
-def get_stockout_risk() -> dict:
-    """Get backend-calculated stockout risk levels and projected stockout dates for at-risk products.
+def get_stockout_risk(
+    consumption_window_days: Optional[int] = None,
+    reference_date: Optional[str] = None,
+) -> dict:
+    """Get backend-calculated stockout risk and supporting inventory evidence.
+
+    Args:
+        consumption_window_days: Optional consumption lookback window.
+        reference_date: Optional ISO date/time used as the calculation reference.
 
     Returns:
-        A dict with an `items` list, each carrying a `riskLevel`
-        (LOW/MEDIUM/HIGH/CRITICAL), a `riskScore` (0-1), and a
-        `projectedStockoutDate` when available.
+        A dict with an `items` list carrying availability, pending incoming,
+        projected availability, risk levels, consumption, and days of supply.
     """
-    return StockoutRiskResponse.model_validate(mocks.get_stockout_risk_mock()).model_dump(mode="json")
+    rows = BackendHttpClient().get(
+        "/stock-insights/stockout-risk",
+        query={
+            "consumptionWindowDays": consumption_window_days,
+            "referenceDate": reference_date,
+        },
+    )
+    return StockoutRiskResponse.model_validate({"items": rows}).model_dump(mode="json")
 
 
 @tool
-def get_restock_recommendations() -> dict:
-    """Get backend-generated restock recommendations, including whether a reorder is needed and why.
+def get_restock_recommendations(
+    consumption_window_days: Optional[int] = None,
+    reference_date: Optional[str] = None,
+) -> dict:
+    """Get actionable backend-generated restock recommendations and evidence.
+
+    Args:
+        consumption_window_days: Optional consumption lookback window.
+        reference_date: Optional ISO date/time used as the calculation reference.
 
     Returns:
-        A dict with a `recommendations` list. Each item has `needsReorder`
-        (bool), a `reason` enum (BELOW_THRESHOLD, STOCKOUT_PREDICTED,
-        SEASONAL_DEMAND, SUPPLIER_LEAD_TIME_RISK), a recommended `quantity`,
-        and a `candidate` supplier for the reorder.
+        A dict with a `recommendations` list. The backend returns only rows
+        that still need action, with `recommendedQuantity`, risk evidence,
+        and a reason of `transfer_available` or `purchase_required`.
     """
+    rows = BackendHttpClient().get(
+        "/stock-insights/restock-recommendations",
+        query={
+            "consumptionWindowDays": consumption_window_days,
+            "referenceDate": reference_date,
+        },
+    )
     return RestockRecommendationsResponse.model_validate(
-        mocks.get_restock_recommendations_mock()
+        {"recommendations": rows}
     ).model_dump(mode="json")
 
 
 @tool
-def get_transfer_recommendations() -> dict:
-    """Get backend-recommended stock transfers between warehouses to balance surplus and shortage.
+def get_transfer_recommendations(
+    consumption_window_days: Optional[int] = None,
+    reference_date: Optional[str] = None,
+) -> dict:
+    """Get backend-recommended stock transfers and supporting evidence.
+
+    Args:
+        consumption_window_days: Optional consumption lookback window.
+        reference_date: Optional ISO date/time used as the calculation reference.
 
     Returns:
-        A dict with a `recommendations` list of source/destination
-        warehouse pairs, the product, quantity, and reason for the
-        suggested transfer.
+        A dict with a `recommendations` list containing source/destination
+        IDs, transfer quantity, post-transfer availability, destination
+        risk, consumption, and donor dead-stock context.
     """
+    rows = BackendHttpClient().get(
+        "/stock-insights/transfer-recommendations",
+        query={
+            "consumptionWindowDays": consumption_window_days,
+            "referenceDate": reference_date,
+        },
+    )
     return TransferRecommendationsResponse.model_validate(
-        mocks.get_transfer_recommendations_mock()
+        {"recommendations": rows}
     ).model_dump(mode="json")
 
 
@@ -124,28 +182,61 @@ def get_expiry_risk() -> dict:
 
 
 @tool
-def analyze_dead_stock() -> dict:
-    """Identify dead stock - products with no recent movement that are tying up capital.
+def analyze_dead_stock(
+    inactivity_days: Optional[int] = None,
+    reference_date: Optional[str] = None,
+) -> dict:
+    """Identify stock with no recent outgoing customer movement.
+
+    Args:
+        inactivity_days: Optional outgoing-movement inactivity threshold.
+        reference_date: Optional ISO date/time used as the calculation reference.
 
     Returns:
-        A dict with an `items` list carrying daysSinceLastMovement, a
-        `reason` enum (NO_MOVEMENT, OVERSTOCKED, DISCONTINUED_CANDIDATE),
-        and the backend-calculated tiedUpCapital value.
+        A dict with an `items` list carrying on-hand stock plus the most
+        recent general and outgoing movement dates/day counts.
     """
-    return DeadStockResponse.model_validate(mocks.analyze_dead_stock_mock()).model_dump(mode="json")
+    rows = BackendHttpClient().get(
+        "/stock-insights/dead-stock",
+        query={
+            "inactivityDays": inactivity_days,
+            "referenceDate": reference_date,
+        },
+    )
+    return DeadStockResponse.model_validate({"items": rows}).model_dump(mode="json")
 
 
 @tool
-def get_consumption_anomalies() -> dict:
-    """Get products whose recent consumption pattern deviates from the backend-calculated expected baseline.
+def get_consumption_anomalies(
+    window_days: Optional[int] = None,
+    threshold_percent: Optional[int] = None,
+    reference_date: Optional[str] = None,
+    minimum_quantity_change: Optional[int] = None,
+) -> dict:
+    """Get product-level changes between recent and baseline consumption.
+
+    Args:
+        window_days: Optional length of each comparison window.
+        threshold_percent: Optional minimum percentage change to report.
+        reference_date: Optional ISO date/time used as the calculation reference.
+        minimum_quantity_change: Optional absolute quantity-change floor.
 
     Returns:
-        A dict with an `anomalies` list, each carrying an `anomalyType`
-        (SPIKE, DROP, IRREGULAR_PATTERN), the observed vs. expected
-        quantity, and the deviation percentage.
+        A dict with an `anomalies` list carrying recent quantity, baseline
+        quantity, percentage change, and INCREASE/DECREASE direction. The
+        backend aggregates this analysis by product across warehouses.
     """
+    rows = BackendHttpClient().get(
+        "/stock-insights/consumption-anomalies",
+        query={
+            "windowDays": window_days,
+            "thresholdPercent": threshold_percent,
+            "referenceDate": reference_date,
+            "minimumQuantityChange": minimum_quantity_change,
+        },
+    )
     return ConsumptionAnomaliesResponse.model_validate(
-        mocks.get_consumption_anomalies_mock()
+        {"anomalies": rows}
     ).model_dump(mode="json")
 
 

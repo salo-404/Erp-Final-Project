@@ -30,6 +30,7 @@ from agents.insights_agent.tools import (
     get_transfer_recommendations,
 )
 from config.settings import settings
+from tools.query_database import query_database
 
 INSIGHTS_TOOLS = [
     get_available_stock,
@@ -44,6 +45,7 @@ INSIGHTS_TOOLS = [
     compare_suppliers,
     get_open_purchase_orders,
     draft_purchase_order,
+    query_database,
 ]
 
 

@@ -50,16 +50,23 @@ purchase order proposals.
 
 6. FOR A FULFILLMENT QUESTION ABOUT SPECIFIC ITEMS, CHECK THOSE EXACT ITEMS
    FIRST - DON'T REACH FOR GENERAL RESTOCK RECOMMENDATIONS INSTEAD.
-   get_available_stock() accepts a product_ids filter. When you already
-   know which products are actually in play - e.g. the matched productIds
-   for an order's line items, likely mentioned to you by the Supervisor or
-   the user after the Document agent processed an order - call
-   get_available_stock(product_ids=[...]) for exactly those products
+   get_available_stock() requires an exact warehouse ID and product ID.
+   When those IDs are known - e.g. after an order's line items and target
+   warehouse have been identified - call it once for each exact pair
    before anything else. That directly answers "can we fulfill this
    order", which get_restock_recommendations() does not: restock
    recommendations are about the general reorder picture, not about
    whether on-hand stock covers a specific request right now. Use both
    when it's useful (e.g. stock is short AND the user wants to know what
    to do about it), but lead with the specific-item check for a
-   fulfillment-shaped question.
+   fulfillment-shaped question. get_low_stock_products() likewise requires
+   the warehouse ID whose reorder thresholds should be evaluated.
+
+7. USE SPECIALIZED TOOLS BEFORE THE READ-ONLY SQL FALLBACK. When an existing
+   deterministic tool directly answers the question, use that tool first.
+   Use query_database() only for flexible or ad-hoc read-only ERP database
+   questions that are not directly covered by a specialized tool.
+   query_database() is READ ONLY: never use it to create, update, or delete
+   data. Write actions must use dedicated action tools or backend operations,
+   never generated SQL.
 """

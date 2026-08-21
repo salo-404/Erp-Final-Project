@@ -29,17 +29,14 @@ from pydantic import BaseModel, Field
 class RestockReason(str, Enum):
     """Why the backend flagged a product for restocking."""
 
-    BELOW_THRESHOLD = "BELOW_THRESHOLD"
-    STOCKOUT_PREDICTED = "STOCKOUT_PREDICTED"
-    SEASONAL_DEMAND = "SEASONAL_DEMAND"
-    SUPPLIER_LEAD_TIME_RISK = "SUPPLIER_LEAD_TIME_RISK"
+    TRANSFER_AVAILABLE = "transfer_available"
+    PURCHASE_REQUIRED = "purchase_required"
 
 
 class StockoutRiskLevel(str, Enum):
-    LOW = "LOW"
-    MEDIUM = "MEDIUM"
-    HIGH = "HIGH"
-    CRITICAL = "CRITICAL"
+    OUT_OF_STOCK = "OUT_OF_STOCK"
+    AT_RISK = "AT_RISK"
+    OK = "OK"
 
 
 class ExpiryRiskLevel(str, Enum):
@@ -48,16 +45,9 @@ class ExpiryRiskLevel(str, Enum):
     HIGH = "HIGH"
 
 
-class DeadStockReason(str, Enum):
-    NO_MOVEMENT = "NO_MOVEMENT"
-    OVERSTOCKED = "OVERSTOCKED"
-    DISCONTINUED_CANDIDATE = "DISCONTINUED_CANDIDATE"
-
-
-class AnomalyType(str, Enum):
-    SPIKE = "SPIKE"
-    DROP = "DROP"
-    IRREGULAR_PATTERN = "IRREGULAR_PATTERN"
+class ConsumptionAnomalyDirection(str, Enum):
+    INCREASE = "INCREASE"
+    DECREASE = "DECREASE"
 
 
 class PurchaseOrderStatus(str, Enum):
@@ -74,17 +64,14 @@ class PurchaseOrderStatus(str, Enum):
 
 class AvailableStockItem(BaseModel):
     productId: int
-    productName: str
     warehouseId: int
-    warehouseName: str
     onHand: int = Field(..., description="Units physically on hand.")
-    reserved: int = Field(0, description="Units already reserved against open orders.")
+    reserved: int = Field(0, description="Units held by ACTIVE reservations.")
     available: int = Field(..., description="onHand - reserved. Backend-calculated.")
 
 
 class AvailableStockResponse(BaseModel):
     items: list[AvailableStockItem]
-    asOf: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -93,18 +80,18 @@ class AvailableStockResponse(BaseModel):
 
 
 class LowStockItem(BaseModel):
+    inventoryId: int
     productId: int
     productName: str
     warehouseId: int
-    warehouseName: str
     onHand: int
+    reserved: int
+    available: int
     reorderThreshold: int
-    deficit: int = Field(..., description="reorderThreshold - onHand. Backend-calculated.")
 
 
 class LowStockResponse(BaseModel):
     items: list[LowStockItem]
-    asOf: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -114,18 +101,22 @@ class LowStockResponse(BaseModel):
 
 class StockoutRiskItem(BaseModel):
     productId: int
-    productName: str
     warehouseId: int
-    warehouseName: str
+    onHand: int
+    activeReserved: int
+    available: int
+    reorderThreshold: int
     riskLevel: StockoutRiskLevel
-    riskScore: float = Field(..., ge=0, le=1, description="Backend-calculated probability, 0-1.")
-    projectedStockoutDate: Optional[datetime] = None
-    averageDailyConsumption: float
+    pendingIncomingQuantity: int
+    projectedAvailable: int
+    projectedRiskLevel: StockoutRiskLevel
+    avgDailyConsumption: float
+    daysOfSupply: Optional[float] = None
+    predictedStockoutDate: Optional[datetime] = None
 
 
 class StockoutRiskResponse(BaseModel):
     items: list[StockoutRiskItem]
-    asOf: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -133,31 +124,24 @@ class StockoutRiskResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class RestockCandidate(BaseModel):
-    """A candidate supplier/source for the recommended restock."""
-
-    supplierId: int
-    supplierName: str
-    unitCost: float
-    leadTimeDays: int
-
-
 class RestockRecommendation(BaseModel):
     productId: int
-    productName: str
     warehouseId: int
-    warehouseName: str
-    needsReorder: bool
+    available: int
+    pendingIncomingQuantity: int
+    projectedAvailable: int
+    reorderThreshold: int
+    riskLevel: StockoutRiskLevel
+    projectedRiskLevel: StockoutRiskLevel
+    recommendedQuantity: int
+    avgDailyConsumption: float
+    daysOfSupply: Optional[float] = None
     reason: RestockReason
-    quantity: int = Field(..., description="Backend-calculated recommended reorder quantity.")
-    candidate: RestockCandidate = Field(
-        ..., description="Backend-recommended supplier candidate for this reorder."
-    )
+    explanation: str
 
 
 class RestockRecommendationsResponse(BaseModel):
     recommendations: list[RestockRecommendation]
-    asOf: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -167,18 +151,20 @@ class RestockRecommendationsResponse(BaseModel):
 
 class TransferRecommendation(BaseModel):
     productId: int
-    productName: str
-    sourceWarehouseId: int
-    sourceWarehouseName: str
-    destinationWarehouseId: int
-    destinationWarehouseName: str
-    quantity: int
-    reason: str = Field(..., description="e.g. 'Destination below threshold, source has surplus'.")
+    fromWarehouseId: int
+    toWarehouseId: int
+    transferQuantity: int
+    fromWarehouseAvailableAfterTransfer: int
+    toWarehouseProjectedAvailableAfterTransfer: int
+    sourcePendingIncomingQuantity: int
+    sourceIsDeadStock: bool
+    destinationRiskLevel: StockoutRiskLevel
+    destinationAvgDailyConsumption: float
+    destinationDaysOfSupply: Optional[float] = None
 
 
 class TransferRecommendationsResponse(BaseModel):
     recommendations: list[TransferRecommendation]
-    asOf: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -210,18 +196,16 @@ class ExpiryRiskResponse(BaseModel):
 
 class DeadStockItem(BaseModel):
     productId: int
-    productName: str
     warehouseId: int
-    warehouseName: str
     onHand: int
-    daysSinceLastMovement: int
-    reason: DeadStockReason
-    tiedUpCapital: float = Field(..., description="onHand * unitCost, backend-calculated.")
+    lastMovementAt: Optional[datetime] = None
+    daysSinceLastMovement: Optional[int] = None
+    lastOutgoingMovementAt: Optional[datetime] = None
+    daysSinceLastOutgoingMovement: Optional[int] = None
 
 
 class DeadStockResponse(BaseModel):
     items: list[DeadStockItem]
-    asOf: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -231,19 +215,14 @@ class DeadStockResponse(BaseModel):
 
 class ConsumptionAnomaly(BaseModel):
     productId: int
-    productName: str
-    warehouseId: int
-    warehouseName: str
-    anomalyType: AnomalyType
-    observedQuantity: float
-    expectedQuantity: float = Field(..., description="Backend-calculated baseline.")
-    deviationPercent: float
-    detectedAt: datetime
+    recentQuantity: int
+    baselineQuantity: int
+    percentChange: Optional[float] = None
+    direction: ConsumptionAnomalyDirection
 
 
 class ConsumptionAnomaliesResponse(BaseModel):
     anomalies: list[ConsumptionAnomaly]
-    asOf: datetime
 
 
 # ---------------------------------------------------------------------------

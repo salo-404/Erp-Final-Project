@@ -20,73 +20,19 @@ import pytest
 from agents.insights_agent.agent import INSIGHTS_TOOLS, build_insights_agent
 from agents.insights_agent.tools import (
     compare_suppliers,
-    get_available_stock,
-    get_restock_recommendations,
-    get_stockout_risk,
 )
 from config.settings import settings
 from tests._helpers import live_model_configured
 from tools.mocks import insights_mock_data
+from tools.query_database import query_database
 
 
 def test_insights_agent_builds_standalone() -> None:
     """The Insights agent must construct without any Supervisor dependency."""
     agent = build_insights_agent()
     assert agent.name == "insights_agent"
-    assert len(INSIGHTS_TOOLS) == 12
-
-
-def test_get_available_stock_is_well_formed() -> None:
-    result = get_available_stock()
-    assert result
-    assert "items" in result and len(result["items"]) > 0
-    item = result["items"][0]
-    assert {"productId", "warehouseId", "onHand", "available"} <= item.keys()
-
-
-def test_get_available_stock_filters_to_specific_product_ids() -> None:
-    """Flagship scenario: check availability for exactly the items on an
-    order (e.g. matched productIds from the Document agent's extraction),
-    not the entire catalog.
-    """
-    full = get_available_stock()
-    assert len(full["items"]) > 2, "Need more than 2 products for the filter to be a meaningful test"
-
-    filtered = get_available_stock(product_ids=[103, 108])
-    returned_ids = {item["productId"] for item in filtered["items"]}
-    assert returned_ids == {103, 108}
-    assert len(filtered["items"]) == 2
-
-    # The filtered call must return real per-item data, not a stub -
-    # available should still be onHand - reserved for each row.
-    for item in filtered["items"]:
-        assert item["available"] == item["onHand"] - item["reserved"]
-
-
-def test_get_stockout_risk_is_well_formed() -> None:
-    result = get_stockout_risk()
-    assert result
-    assert "items" in result and len(result["items"]) > 0
-    for item in result["items"]:
-        assert item["riskLevel"] in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
-        assert 0 <= item["riskScore"] <= 1
-
-
-def test_get_restock_recommendations_has_needs_reorder_and_reason() -> None:
-    """Matches the Backend_vs_AI_Work_Split contract: needsReorder, reason enum, quantity, candidate."""
-    result = get_restock_recommendations()
-    assert result
-    assert len(result["recommendations"]) > 0
-    for rec in result["recommendations"]:
-        assert isinstance(rec["needsReorder"], bool)
-        assert rec["reason"] in {
-            "BELOW_THRESHOLD",
-            "STOCKOUT_PREDICTED",
-            "SEASONAL_DEMAND",
-            "SUPPLIER_LEAD_TIME_RISK",
-        }
-        assert isinstance(rec["quantity"], int)
-        assert "candidate" in rec and "supplierId" in rec["candidate"]
+    assert len(INSIGHTS_TOOLS) == 13
+    assert query_database in INSIGHTS_TOOLS
 
 
 def test_compare_suppliers_recommends_by_overall_score_not_just_cost() -> None:

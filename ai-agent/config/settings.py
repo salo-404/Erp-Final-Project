@@ -174,6 +174,17 @@ class Settings:
         model_provider, bedrock_model_id
     )
 
+    # ------------------------------------------------------------------
+    # NestJS backend HTTP API
+    # ------------------------------------------------------------------
+    # Intentionally blank by default: each environment must explicitly
+    # provide the backend location rather than silently targeting localhost.
+    backend_base_url: str = os.getenv("BACKEND_BASE_URL", "").strip()
+    backend_auth_token: str = os.getenv("BACKEND_AUTH_TOKEN", "").strip()
+    backend_request_timeout_seconds: float = float(
+        os.getenv("BACKEND_REQUEST_TIMEOUT_SECONDS", "10")
+    )
+
     # AWS Bedrock AgentCore deployment identifiers.
     # TODO: populate once the AgentCore Runtime resource is provisioned.
     agentcore_runtime_id: str = os.getenv("AGENTCORE_RUNTIME_ID", "")
