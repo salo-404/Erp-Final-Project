@@ -55,13 +55,14 @@ enum DocumentReviewStatus {
 // ====================
 
 model User {
-  id           Int      @id @default(autoincrement())
-  name         String
-  email        String   @unique
-  passwordHash String
-  role         UserRole
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id              Int      @id @default(autoincrement())
+  cognitoSub      String   @unique
+  cognitoUsername String   @unique
+  name            String
+  email           String   @unique
+  role            UserRole
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   reviewedDocuments PendingDocumentReview[] @relation("DocumentReviewer")
 }

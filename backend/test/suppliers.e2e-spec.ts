@@ -3,6 +3,9 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 
 import { AppModule } from '../src/app.module';
+import { CognitoTokenVerifier } from '../src/auth/cognito-token-verifier.service';
+import { PrismaService } from '../src/prisma/prisma.service';
+import { cognitoAuthHeaderFor, mockCognitoVerifier } from './cognito-auth-test-helper';
 
 describe('Suppliers (e2e)', () => {
   let app: INestApplication;
@@ -12,7 +15,10 @@ describe('Suppliers (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(CognitoTokenVerifier)
+      .useValue(mockCognitoVerifier)
+      .compile();
 
     app = moduleFixture.createNestApplication();
 
@@ -27,11 +33,10 @@ describe('Suppliers (e2e)', () => {
     await app.init();
 
     // Create/update are ADMIN-only (see SuppliersController).
-    const loginResponse = await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({ email: 'admin@minierp.com', password: 'Password123!' })
-      .expect(200);
-    authHeader = `Bearer ${loginResponse.body.access_token}`;
+    authHeader = await cognitoAuthHeaderFor(
+      app.get(PrismaService),
+      'admin@minierp.com',
+    );
   });
 
   afterAll(async () => {

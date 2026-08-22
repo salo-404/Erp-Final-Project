@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import bcrypt from 'bcrypt';
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
   PrismaClient,
@@ -53,47 +52,60 @@ async function main() {
   // 2. USERS
   // ---------------------------------------------------
 
-  const passwordHash = await bcrypt.hash('Password123!', 10);
+  const cognitoIdentity = (key: string, fallback: string) => {
+    const value = process.env[key];
+    if (value) return value;
+    if (
+      process.env.NODE_ENV?.toLowerCase() === 'production' ||
+      process.env.APP_ENV?.toLowerCase() === 'production'
+    ) {
+      throw new Error(`${key} is required when seeding production`);
+    }
+    console.warn(`${key} is unset; using an explicit non-authenticating development mapping`);
+    return fallback;
+  };
 
   const admin = await prisma.user.create({
     data: {
+      cognitoSub: cognitoIdentity('SEED_ADMIN_COGNITO_SUB', 'UNMAPPED_DEV_ADMIN_SUB'),
+      cognitoUsername: cognitoIdentity(
+        'SEED_ADMIN_COGNITO_USERNAME',
+        'UNMAPPED_DEV_ADMIN_USERNAME',
+      ),
       name: 'Admin User',
       email: 'admin@minierp.com',
-      passwordHash,
       role: UserRole.ADMIN,
     },
   });
 
   const employee = await prisma.user.create({
     data: {
+      cognitoSub: cognitoIdentity('SEED_EMPLOYEE_COGNITO_SUB', 'UNMAPPED_DEV_EMPLOYEE_SUB'),
+      cognitoUsername: cognitoIdentity(
+        'SEED_EMPLOYEE_COGNITO_USERNAME',
+        'UNMAPPED_DEV_EMPLOYEE_USERNAME',
+      ),
       name: 'Employee User',
       email: 'employee@minierp.com',
-      passwordHash,
       role: UserRole.EMPLOYEE,
     },
   });
 
-  // AI layer's own backend service account (see ai-agent/backend_client.py
-  // and ai-agent/config/settings.py - BACKEND_SERVICE_EMAIL/PASSWORD).
+  // AI layer's own Cognito service account (see ai-agent/backend_client.py).
   // EMPLOYEE role, deliberately least-privilege: every AI tool call is a
   // read (or a proposal a human still confirms), so this account has no
-  // business holding ADMIN. Password is read from
-  // AI_SERVICE_ACCOUNT_PASSWORD at seed time - NEVER hardcode a real
-  // credential here. The 'dev-only-change-me' fallback exists only so a
-  // fresh local checkout can seed and log in without extra setup; it must
-  // never be relied on outside local development.
-  const aiServiceAccountPassword =
-    process.env.AI_SERVICE_ACCOUNT_PASSWORD ?? 'dev-only-change-me';
-  const aiServiceAccountPasswordHash = await bcrypt.hash(
-    aiServiceAccountPassword,
-    10,
-  );
-
   const aiServiceAccount = await prisma.user.create({
     data: {
+      cognitoSub: cognitoIdentity(
+        'AI_SERVICE_COGNITO_SUB',
+        'UNMAPPED_DEV_AI_SERVICE_SUB',
+      ),
+      cognitoUsername: cognitoIdentity(
+        'AI_SERVICE_COGNITO_USERNAME',
+        'UNMAPPED_DEV_AI_SERVICE_USERNAME',
+      ),
       name: 'AI Agent Service Account',
       email: 'ai-agent@internal.local',
-      passwordHash: aiServiceAccountPasswordHash,
       role: UserRole.EMPLOYEE,
     },
   });
@@ -884,13 +896,9 @@ async function main() {
   console.log('✅ Seed completed successfully');
   console.log('');
   console.log('Test users:');
-  console.log('ADMIN:    admin@minierp.com / Password123!');
-  console.log('EMPLOYEE: employee@minierp.com / Password123!');
-  console.log(
-    process.env.AI_SERVICE_ACCOUNT_PASSWORD
-      ? 'AI_AGENT: ai-agent@internal.local / (password from AI_SERVICE_ACCOUNT_PASSWORD env var - not printed)'
-      : 'AI_AGENT: ai-agent@internal.local / dev-only-change-me (dev-only default - set AI_SERVICE_ACCOUNT_PASSWORD to override)',
-  );
+  console.log('ADMIN:    admin@minierp.com (credentials are managed in Cognito)');
+  console.log('EMPLOYEE: employee@minierp.com (credentials are managed in Cognito)');
+  console.log('AI_AGENT: ai-agent@internal.local (credentials are managed in Cognito)');
   console.log('');
   console.log('Seed includes:');
   console.log('- normal inventory');

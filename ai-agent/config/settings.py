@@ -190,6 +190,15 @@ class Settings:
     # TODO: populate once the AgentCore Runtime resource is provisioned.
     agentcore_runtime_id: str = os.getenv("AGENTCORE_RUNTIME_ID", "")
     agentcore_endpoint_name: str = os.getenv("AGENTCORE_ENDPOINT_NAME", "DEFAULT")
+    agentcore_cognito_discovery_url: str = os.getenv(
+        "AGENTCORE_COGNITO_DISCOVERY_URL", ""
+    )
+    agentcore_allowed_cognito_client_id: str = os.getenv(
+        "AGENTCORE_ALLOWED_COGNITO_CLIENT_ID", ""
+    )
+    agentcore_request_header_allowlist: str = os.getenv(
+        "AGENTCORE_REQUEST_HEADER_ALLOWLIST", "Authorization"
+    )
 
     # Bedrock Guardrails (see agents/supervisor/guardrails.py). Empty by
     # default - real guardrail wiring is a TODO. Only meaningful when
@@ -208,8 +217,17 @@ class Settings:
     # backend/prisma/seed.ts), never as the human asking the question.
     # ------------------------------------------------------------------
     backend_url: str = os.getenv("BACKEND_URL", "http://localhost:3000")
-    backend_service_email: str = os.getenv("BACKEND_SERVICE_EMAIL", "")
-    backend_service_password: str = os.getenv("BACKEND_SERVICE_PASSWORD", "")
+    cognito_user_pool_id: str = os.getenv("COGNITO_USER_POOL_ID", "")
+    cognito_app_client_id: str = os.getenv("COGNITO_APP_CLIENT_ID", "")
+    cognito_service_app_client_id: str = os.getenv(
+        "COGNITO_SERVICE_APP_CLIENT_ID", ""
+    )
+    backend_service_cognito_username: str = os.getenv(
+        "BACKEND_SERVICE_COGNITO_USERNAME", ""
+    )
+    backend_service_cognito_password: str = os.getenv(
+        "BACKEND_SERVICE_COGNITO_PASSWORD", ""
+    )
     backend_request_timeout_seconds: float = float(os.getenv("BACKEND_REQUEST_TIMEOUT_SECONDS", "10"))
 
     # Direct read-only PostgreSQL connection used by the SQL-RAG pipeline.

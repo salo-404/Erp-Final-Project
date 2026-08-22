@@ -4,6 +4,8 @@ import request from 'supertest';
 
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { CognitoTokenVerifier } from '../src/auth/cognito-token-verifier.service';
+import { cognitoAuthHeaderFor, mockCognitoVerifier } from './cognito-auth-test-helper';
 
 describe('Inventory transaction flows (e2e)', () => {
   let app: INestApplication;
@@ -22,7 +24,10 @@ describe('Inventory transaction flows (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(CognitoTokenVerifier)
+      .useValue(mockCognitoVerifier)
+      .compile();
 
     app = moduleFixture.createNestApplication();
 
@@ -38,11 +43,7 @@ describe('Inventory transaction flows (e2e)', () => {
 
     prisma = app.get(PrismaService);
 
-    const loginResponse = await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({ email: 'employee@minierp.com', password: 'Password123!' })
-      .expect(200);
-    authHeader = `Bearer ${loginResponse.body.access_token}`;
+    authHeader = await cognitoAuthHeaderFor(prisma, 'employee@minierp.com');
 
     const beirut = await prisma.warehouse.findFirstOrThrow({
       where: { name: 'Beirut Warehouse' },

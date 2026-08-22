@@ -50,6 +50,10 @@ def _fake_jwt() -> str:
     return f"{header}.{payload}.fake-signature"
 
 
+async def _service_token_provider() -> str:
+    return _fake_jwt()
+
+
 def test_specialist_tools_import_cleanly() -> None:
     assert callable(insights_agent_tool)
     assert callable(document_agent_tool)
@@ -190,8 +194,6 @@ def test_flagship_scenario_threads_matched_product_ids_from_document_to_insights
     eligibility_payloads: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/801":
             return httpx.Response(
                 200,
@@ -231,8 +233,7 @@ def test_flagship_scenario_threads_matched_product_ids_from_document_to_insights
 
     test_client = BackendClient(
         base_url="http://backend.test",
-        email="ai-agent@internal.local",
-        password="irrelevant-mocked",
+        service_token_provider=_service_token_provider,
         transport=httpx.MockTransport(handler),
     )
     monkeypatch.setattr(insights_tools_module, "get_backend_client", lambda: test_client)

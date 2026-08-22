@@ -1,24 +1,13 @@
-import { Module } from '@nestjs/common';
-import { JwtModule, JwtSignOptions } from '@nestjs/jwt';
-import { PassportModule } from '@nestjs/passport';
+import { Global, Module } from '@nestjs/common';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AuthController } from './auth.controller';
-import { AuthService } from './auth.service';
-import { JwtStrategy } from './strategies/jwt.strategy';
+import { CognitoAdminService } from './cognito-admin.service';
+import { CognitoTokenVerifier } from './cognito-token-verifier.service';
 
+@Global()
 @Module({
-  imports: [
-    PassportModule,
-    JwtModule.registerAsync({
-      useFactory: () => ({
-        secret: process.env.JWT_SECRET,
-        signOptions: {
-          expiresIn: (process.env.JWT_EXPIRES_IN ??
-            '1h') as JwtSignOptions['expiresIn'],
-        },
-      }),
-    }),
-  ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
+  providers: [CognitoTokenVerifier, CognitoAdminService, JwtAuthGuard],
+  exports: [CognitoTokenVerifier, CognitoAdminService, JwtAuthGuard],
 })
 export class AuthModule {}

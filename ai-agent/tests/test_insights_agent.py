@@ -353,6 +353,10 @@ def _fake_jwt() -> str:
     return f"{header}.{payload}.fake-signature"
 
 
+async def _service_token_provider() -> str:
+    return _fake_jwt()
+
+
 def _patch_backend_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
     """Point recommend_dead_stock_transfer() at a BackendClient backed by
     httpx.MockTransport instead of the real network - same pattern as
@@ -364,8 +368,7 @@ def _patch_backend_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
     """
     test_client = BackendClient(
         base_url="http://backend.test",
-        email="ai-agent@internal.local",
-        password="irrelevant-mocked",
+        service_token_provider=_service_token_provider,
         transport=httpx.MockTransport(handler),
     )
     monkeypatch.setattr(insights_tools_module, "get_backend_client", lambda: test_client)
@@ -378,8 +381,6 @@ def test_recommend_fulfillment_warehouse_uses_backend_available_stock_and_geogra
 
     def handler(request: httpx.Request) -> httpx.Response:
         requested_paths.append(request.url.path)
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/warehouse-routing/eligible-warehouses":
             payload = json.loads(request.content)
             assert payload["items"] == [
@@ -432,8 +433,6 @@ def test_recommend_dead_stock_transfer_wired_end_to_end_against_mocked_backend(
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
 
         if request.url.path == "/stock-insights/dead-stock":
             # Bare array, real DeadStockEntry field names.
@@ -527,8 +526,6 @@ def test_recommend_dead_stock_transfer_propagates_typed_backend_error(
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "dead-stock query timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -574,8 +571,6 @@ def test_get_stockout_risk_wired_end_to_end_against_mocked_backend(monkeypatch: 
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/stock-insights/stockout-risk":
             return httpx.Response(
                 200,
@@ -647,8 +642,6 @@ def test_get_stockout_risk_wired_end_to_end_against_mocked_backend(monkeypatch: 
 
 def test_get_stockout_risk_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "stockout-risk query timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -682,8 +675,6 @@ def test_analyze_dead_stock_wired_end_to_end_against_mocked_backend(monkeypatch:
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/stock-insights/dead-stock":
             return httpx.Response(
                 200,
@@ -728,8 +719,6 @@ def test_analyze_dead_stock_wired_end_to_end_against_mocked_backend(monkeypatch:
 
 def test_analyze_dead_stock_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "dead-stock query timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -774,8 +763,6 @@ def test_get_restock_recommendations_wired_end_to_end_against_mocked_backend(
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/stock-insights/restock-recommendations":
             return httpx.Response(
                 200,
@@ -840,8 +827,6 @@ def test_get_restock_recommendations_wired_end_to_end_against_mocked_backend(
 
 def test_get_restock_recommendations_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "restock-recommendations query timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -879,8 +864,6 @@ def test_get_transfer_recommendations_wired_end_to_end_against_mocked_backend(
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/stock-insights/transfer-recommendations":
             return httpx.Response(
                 200,
@@ -921,8 +904,6 @@ def test_get_transfer_recommendations_wired_end_to_end_against_mocked_backend(
 
 def test_get_transfer_recommendations_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "transfer-recommendations query timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -964,8 +945,6 @@ def test_get_consumption_anomalies_wired_end_to_end_against_mocked_backend(
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/stock-insights/consumption-anomalies":
             return httpx.Response(
                 200,
@@ -1017,8 +996,6 @@ def test_get_consumption_anomalies_wired_end_to_end_against_mocked_backend(
 
 def test_get_consumption_anomalies_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "consumption-anomalies query timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1064,8 +1041,6 @@ def test_get_open_purchase_orders_wired_end_to_end_against_mocked_backend(
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/inventory-transactions":
             assert request.url.params["type"] == "INCOMING"
             assert request.url.params["status"] == "PENDING"
@@ -1118,8 +1093,6 @@ def test_get_open_purchase_orders_wired_end_to_end_against_mocked_backend(
 
 def test_get_open_purchase_orders_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "inventory-transactions query timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1162,8 +1135,6 @@ def test_get_available_stock_specific_warehouse_wired_end_to_end_against_mocked_
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(
                 200,
@@ -1219,8 +1190,6 @@ def test_get_available_stock_discovery_mode_wired_end_to_end_against_mocked_back
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(
                 200,
@@ -1292,8 +1261,6 @@ def test_get_available_stock_name_is_none_for_inactive_product(monkeypatch: pyte
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=[])  # product 900 is inactive, not in the active catalog
         if request.url.path == "/warehouses":
@@ -1321,8 +1288,6 @@ def test_get_available_stock_propagates_typed_backend_error(monkeypatch: pytest.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=[{"id": 102, "name": "Widget", "category": None, "description": None, "isActive": True}])
         return httpx.Response(503, json={"message": "inventory service timed out"})
@@ -1371,8 +1336,6 @@ def test_get_low_stock_products_specific_warehouse_wired_end_to_end_against_mock
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/warehouses":
             return httpx.Response(
                 200, json=[{"id": 2, "name": "Main Warehouse", "location": None, "maxCapacity": None, "isActive": True}]
@@ -1421,8 +1384,6 @@ def test_get_low_stock_products_all_warehouses_wired_end_to_end_against_mocked_b
     requested_low_stock_warehouse_ids: list[int] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/warehouses":
             return httpx.Response(
                 200,
@@ -1467,8 +1428,6 @@ def test_get_low_stock_products_all_warehouses_wired_end_to_end_against_mocked_b
 
 def test_get_low_stock_products_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "warehouse inventory service timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1506,8 +1465,6 @@ def test_calculate_reorder_quantity_reorder_recommended_wired_end_to_end_against
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/stock-insights/restock-recommendations":
             return httpx.Response(
                 200,
@@ -1567,8 +1524,6 @@ def test_calculate_reorder_quantity_not_at_risk_wired_end_to_end_against_mocked_
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/stock-insights/restock-recommendations":
             return httpx.Response(
                 200,
@@ -1607,8 +1562,6 @@ def test_calculate_reorder_quantity_not_at_risk_when_list_is_empty(monkeypatch: 
     """No AT_RISK/OUT_OF_STOCK entries anywhere - every pair is healthy."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/stock-insights/restock-recommendations":
             return httpx.Response(200, json=[])
         raise AssertionError(f"unexpected path {request.url.path}")
@@ -1623,8 +1576,6 @@ def test_calculate_reorder_quantity_not_at_risk_when_list_is_empty(monkeypatch: 
 
 def test_calculate_reorder_quantity_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "restock-recommendations query timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1680,8 +1631,6 @@ def test_compare_suppliers_normal_case_wired_end_to_end_against_mocked_backend(
 
     def handler(request: httpx.Request) -> httpx.Response:
         requested_paths.append(request.url.path)
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/suppliers":
             return httpx.Response(
                 200,
@@ -1745,9 +1694,8 @@ def test_compare_suppliers_normal_case_wired_end_to_end_against_mocked_backend(
 
     result = asyncio.run(compare_suppliers(product_id=102))
 
-    # Exactly 2 real calls (plus the shared /auth/login) - never /compare, never /best.
-    non_auth_paths = [p for p in requested_paths if p != "/auth/login"]
-    assert sorted(non_auth_paths) == sorted(["/suppliers", "/supplier-intelligence/rank"])
+    # Exactly 2 real backend calls - service auth happens directly with Cognito.
+    assert sorted(requested_paths) == sorted(["/suppliers", "/supplier-intelligence/rank"])
 
     by_id = {score["supplierId"]: score for score in result["scores"]}
     assert by_id[7]["leadTimeDays"] == 5  # merged in from the separate /suppliers call
@@ -1776,8 +1724,6 @@ def test_compare_suppliers_no_recommendation_when_all_insufficient_data(
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/suppliers":
             return httpx.Response(
                 200,
@@ -1836,8 +1782,6 @@ def test_compare_suppliers_no_recommendation_when_no_candidates(monkeypatch: pyt
     """No supplier has ever supplied this product at all - empty list, not an error."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/suppliers":
             return httpx.Response(200, json=[])
         if request.url.path == "/supplier-intelligence/rank":
@@ -1861,8 +1805,6 @@ def test_compare_suppliers_partial_nulls_are_never_defaulted_to_zero(monkeypatch
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/suppliers":
             return httpx.Response(
                 200,
@@ -1936,8 +1878,6 @@ def test_compare_suppliers_partial_nulls_are_never_defaulted_to_zero(monkeypatch
 
 def test_compare_suppliers_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "supplier-intelligence service timed out"})
 
     _patch_backend_client(monkeypatch, handler)

@@ -4,6 +4,8 @@ import request from 'supertest';
 
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { CognitoTokenVerifier } from '../src/auth/cognito-token-verifier.service';
+import { cognitoAuthHeaderFor, mockCognitoVerifier } from './cognito-auth-test-helper';
 
 describe('Inventory integrity (e2e)', () => {
   let app: INestApplication;
@@ -18,7 +20,10 @@ describe('Inventory integrity (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(CognitoTokenVerifier)
+      .useValue(mockCognitoVerifier)
+      .compile();
 
     app = moduleFixture.createNestApplication();
 
@@ -34,17 +39,8 @@ describe('Inventory integrity (e2e)', () => {
 
     prisma = app.get(PrismaService);
 
-    const adminLogin = await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({ email: 'admin@minierp.com', password: 'Password123!' })
-      .expect(200);
-    adminAuthHeader = `Bearer ${adminLogin.body.access_token}`;
-
-    const employeeLogin = await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({ email: 'employee@minierp.com', password: 'Password123!' })
-      .expect(200);
-    employeeAuthHeader = `Bearer ${employeeLogin.body.access_token}`;
+    adminAuthHeader = await cognitoAuthHeaderFor(prisma, 'admin@minierp.com');
+    employeeAuthHeader = await cognitoAuthHeaderFor(prisma, 'employee@minierp.com');
 
     const beirut = await prisma.warehouse.findFirstOrThrow({
       where: { name: 'Beirut Warehouse' },

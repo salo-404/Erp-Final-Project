@@ -5,6 +5,8 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { InventoryTransactionType } from '../generated/prisma/client';
+import { CognitoTokenVerifier } from '../src/auth/cognito-token-verifier.service';
+import { cognitoAuthHeaderFor, mockCognitoVerifier } from './cognito-auth-test-helper';
 
 describe('DocumentReview presigned-url regeneration (e2e)', () => {
   let app: INestApplication;
@@ -17,7 +19,10 @@ describe('DocumentReview presigned-url regeneration (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(CognitoTokenVerifier)
+      .useValue(mockCognitoVerifier)
+      .compile();
 
     app = moduleFixture.createNestApplication();
 
@@ -33,11 +38,7 @@ describe('DocumentReview presigned-url regeneration (e2e)', () => {
 
     prisma = app.get(PrismaService);
 
-    const loginResponse = await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({ email: 'employee@minierp.com', password: 'Password123!' })
-      .expect(200);
-    authHeader = `Bearer ${loginResponse.body.access_token}`;
+    authHeader = await cognitoAuthHeaderFor(prisma, 'employee@minierp.com');
 
     // A row with a real (but nonexistent) S3 key — getPresignedUrl() only
     // signs a URL, it never checks the object actually exists, so this

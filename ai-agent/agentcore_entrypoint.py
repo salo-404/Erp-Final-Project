@@ -32,10 +32,13 @@ README.md "Deploying to AgentCore Runtime" for the full walkthrough):
 
 from __future__ import annotations
 
+import asyncio
+
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from agents.supervisor.agent import build_supervisor_agent
 from agents.supervisor.gate import is_in_scope
+from backend_client import HumanAuthenticatedBackendClient, Unauthorized
 from request_context import human_auth_scope
 
 app = BedrockAgentCoreApp()
@@ -61,6 +64,16 @@ def _human_bearer_token(context: object) -> str | None:
     if separator and scheme.lower() == "bearer" and token.strip():
         return token.strip()
     return None
+
+
+async def _validate_human_erp_membership(bearer_token: str | None) -> dict:
+    """Require the Cognito caller to still map to an ERP User before any agent runs."""
+    if not bearer_token:
+        raise Unauthorized(401, "A human Cognito access token is required.")
+    profile = await HumanAuthenticatedBackendClient(bearer_token).get("/auth/me")
+    if not isinstance(profile, dict) or not profile.get("id"):
+        raise Unauthorized(401, "The Cognito identity is not mapped to an ERP user.")
+    return profile
 
 
 @app.entrypoint
@@ -94,6 +107,9 @@ def invoke(payload: dict, context: object) -> dict:
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError('payload must contain a non-empty "prompt" string')
 
+    bearer_token = _human_bearer_token(context)
+    asyncio.run(_validate_human_erp_membership(bearer_token))
+
     allowed, reason = is_in_scope(prompt)
     if not allowed:
         return {
@@ -104,7 +120,7 @@ def invoke(payload: dict, context: object) -> dict:
             )
         }
 
-    with human_auth_scope(_human_bearer_token(context)):
+    with human_auth_scope(bearer_token):
         response = _supervisor_agent(prompt)
     return {"result": str(response)}
 

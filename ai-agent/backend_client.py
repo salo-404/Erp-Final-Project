@@ -12,7 +12,7 @@ Usage (once a tool is actually wired):
     data = await client.get("/stock-insights/dead-stock")
 
 get_backend_client() returns a shared, module-level singleton so every tool
-reuses the same cached login token instead of each one logging in
+reuses the same cached Cognito service token instead of re-authenticating
 separately - see BackendClient's own docstring below for why a fresh
 BackendClient() is still sometimes appropriate (tests, isolated scripts).
 
@@ -28,8 +28,10 @@ import asyncio
 import base64
 import json as json_module
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
+import boto3
 import httpx
 
 from config.settings import settings
@@ -51,7 +53,7 @@ class BackendError(Exception):
 
 
 class Unauthorized(BackendError):
-    """401 that survived BackendClient's one automatic re-login-and-retry.
+    """401 that survived BackendClient's one automatic re-authentication and retry.
 
     A routine expired-token 401 is handled transparently by BackendClient
     and never reaches calling code as this exception - seeing this means
@@ -134,12 +136,12 @@ def _decode_jwt_expiry(token: str) -> Optional[float]:
     as a 401). The backend independently validates the token's signature
     and expiry on every real request regardless of what this function
     returns, so a wrong/missing answer here is never a trust or security
-    issue - at worst it means one extra 401-triggered re-login.
+    issue - at worst it means one extra 401-triggered Cognito authentication.
 
     Returns None if the token isn't a three-segment JWT or carries no
     `exp` claim - the client then just treats the token's expiry as
     unknown (still works correctly; it simply can't refresh preemptively
-    and instead relies on the reactive 401 re-login).
+    and instead relies on reactive 401 re-authentication).
     """
     try:
         _, payload_segment, _ = token.split(".")
@@ -154,15 +156,15 @@ def _decode_jwt_expiry(token: str) -> Optional[float]:
 class BackendClient:
     """Authenticated HTTP client for the ERP backend.
 
-    Logs in lazily (on first request, not at construction), caches the
+    Authenticates lazily with Cognito (on first request, not at construction), caches the
     access token and its decoded expiry, sends it as a Bearer token on
-    every request, and re-logs-in + retries exactly once on a 401 -
+    every request, and re-authenticates + retries exactly once on a 401 -
     never more than once, so a genuinely bad credential fails fast as
     Unauthorized instead of looping.
 
     Not meant to be instantiated per call site - use get_backend_client()
     below for a shared instance so every caller reuses the same cached
-    login rather than each one logging in independently. Constructing a
+    service authentication rather than authenticating independently. Constructing a
     BackendClient() directly is still the right move for tests (inject a
     custom `transport`, e.g. httpx.MockTransport) or a one-off script.
 
@@ -180,14 +182,11 @@ class BackendClient:
     def __init__(
         self,
         base_url: Optional[str] = None,
-        email: Optional[str] = None,
-        password: Optional[str] = None,
         timeout_seconds: Optional[float] = None,
         transport: Optional[httpx.AsyncBaseTransport] = None,
+        service_token_provider: Optional[Callable[[], Awaitable[str]]] = None,
     ) -> None:
         self._base_url = base_url if base_url is not None else settings.backend_url
-        self._email = email if email is not None else settings.backend_service_email
-        self._password = password if password is not None else settings.backend_service_password
         self._timeout = (
             timeout_seconds if timeout_seconds is not None else settings.backend_request_timeout_seconds
         )
@@ -196,11 +195,36 @@ class BackendClient:
         self._client_loop: Optional[asyncio.AbstractEventLoop] = None
         self._token: Optional[str] = None
         self._token_expires_at: Optional[float] = None
+        self._service_token_provider = service_token_provider or self._get_cognito_access_token
+
+    async def _get_cognito_access_token(self) -> str:
+        """Authenticate the EMPLOYEE service user through Cognito using workload IAM."""
+        def authenticate() -> str:
+            client = boto3.client("cognito-idp", region_name=settings.aws_region)
+            response = client.admin_initiate_auth(
+                UserPoolId=settings.cognito_user_pool_id,
+                ClientId=settings.cognito_service_app_client_id,
+                AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+                AuthParameters={
+                    "USERNAME": settings.backend_service_cognito_username,
+                    "PASSWORD": settings.backend_service_cognito_password,
+                },
+            )
+            token = (response.get("AuthenticationResult") or {}).get("AccessToken")
+            if not token:
+                challenge = response.get("ChallengeName", "unknown challenge")
+                raise RuntimeError(f"Cognito service authentication did not return an access token ({challenge})")
+            return str(token)
+
+        try:
+            return await asyncio.to_thread(authenticate)
+        except Exception as exc:
+            raise ServiceUnavailable(0, "Could not authenticate the AI service identity with Cognito.") from exc
 
     def _get_client(self) -> httpx.AsyncClient:
         """Return an httpx.AsyncClient bound to the CURRENTLY RUNNING event loop.
 
-        Transparently rebuilds the client (and forgets the cached login
+        Transparently rebuilds the client (and forgets the cached service
         token) whenever the running loop differs from the one the
         existing client was built for - including on first use. httpx's
         AsyncClient (and the anyio transport under it) binds real
@@ -220,7 +244,7 @@ class BackendClient:
             self._client_loop = current_loop
             # The old token belongs to a client bound to a dead loop -
             # there's no safe way to carry it forward, and one extra
-            # login is a trivial cost next to correctness.
+            # Cognito authentication is a trivial cost next to correctness.
             self._token = None
             self._token_expires_at = None
         return self._client
@@ -237,31 +261,8 @@ class BackendClient:
         """POST path with a JSON body, returning the parsed JSON response (or None for empty/204)."""
         return await self._request("POST", path, json=json)
 
-    async def _login(self) -> None:
-        try:
-            response = await self._get_client().post(
-                "/auth/login",
-                json={"email": self._email, "password": self._password},
-            )
-        except httpx.TimeoutException as exc:
-            raise ServiceUnavailable(0, "Timed out logging in to the backend.") from exc
-        except httpx.HTTPError as exc:
-            raise ServiceUnavailable(
-                0, f"Could not reach the backend to log in: {exc.__class__.__name__}"
-            ) from exc
-
-        if response.status_code != 200:
-            raise _error_for_status(response.status_code, _extract_error_message(response))
-
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise ServiceUnavailable(response.status_code, "Login response was not valid JSON.") from exc
-
-        token = body.get("access_token") if isinstance(body, dict) else None
-        if not token:
-            raise ServiceUnavailable(response.status_code, "Login response had no access_token.")
-
+    async def _authenticate_service(self) -> None:
+        token = await self._service_token_provider()
         self._token = token
         self._token_expires_at = _decode_jwt_expiry(token)
 
@@ -270,15 +271,15 @@ class BackendClient:
         # since the last call, it resets self._token to None as part of
         # rebuilding the client - checking self._token before this would
         # see the stale value from the dead loop's session and skip
-        # logging in, only to fail with a stale/invalid token on the
+        # authenticating, only to fail with a stale/invalid token on the
         # actual request (self-healing via the 401 retry path, but
         # wastefully - this ordering avoids that extra round trip).
         self._get_client()
         if self._token is None:
-            await self._login()
+            await self._authenticate_service()
             return
         if self._token_expires_at is not None and time.time() >= self._token_expires_at:
-            await self._login()
+            await self._authenticate_service()
 
     async def _send(
         self,
@@ -308,11 +309,11 @@ class BackendClient:
         response = await self._send(method, path, params=params, json=json)
 
         if response.status_code == 401:
-            # Exactly one re-login + retry. A 401 that survives a FRESH
-            # login means the credentials themselves are bad (or the
+            # Exactly one re-authentication + retry. A 401 that survives a fresh
+            # Cognito token means the credentials themselves are bad (or the
             # account was disabled, or the role changed) - not that the
             # old token merely expired - so this does not loop.
-            await self._login()
+            await self._authenticate_service()
             response = await self._send(method, path, params=params, json=json)
 
         if response.status_code >= 400:
@@ -348,14 +349,26 @@ class HumanAuthenticatedBackendClient:
         self._timeout = timeout_seconds or settings.backend_request_timeout_seconds
         self._transport = transport
 
+    async def get(self, path: str) -> Any:
+        return await self._request("GET", path)
+
     async def post(self, path: str, json: Optional[dict[str, Any]] = None) -> Any:
+        return await self._request("POST", path, json=json)
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        json: Optional[dict[str, Any]] = None,
+    ) -> Any:
         try:
             async with httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=self._timeout,
                 transport=self._transport,
             ) as client:
-                response = await client.post(
+                response = await client.request(
+                    method,
                     path,
                     json=json,
                     headers={"Authorization": f"Bearer {self._bearer_token}"},
@@ -385,8 +398,8 @@ def get_backend_client() -> BackendClient:
     """Shared BackendClient instance.
 
     Every tool should call this rather than constructing its own
-    BackendClient, so the cached login token is reused across tool calls
-    instead of each tool logging in independently.
+    BackendClient, so the cached Cognito token is reused across tool calls
+    instead of each tool authenticating independently.
     """
     global _shared_client
     if _shared_client is None:

@@ -12,11 +12,6 @@ export class UpdateUserDto {
   email?: string;
 
   @IsOptional()
-  @IsString()
-  @MinLength(8)
-  password?: string;
-
-  @IsOptional()
   @IsEnum(UserRole)
   role?: UserRole;
 }

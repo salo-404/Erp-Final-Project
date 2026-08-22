@@ -185,6 +185,10 @@ def _fake_jwt() -> str:
     return f"{header}.{payload}.fake-signature"
 
 
+async def _service_token_provider() -> str:
+    return _fake_jwt()
+
+
 def _patch_backend_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
     """Point extract_document() at a BackendClient backed by
     httpx.MockTransport instead of the real network - same pattern as
@@ -195,8 +199,7 @@ def _patch_backend_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
     """
     test_client = BackendClient(
         base_url="http://backend.test",
-        email="ai-agent@internal.local",
-        password="irrelevant-mocked",
+        service_token_provider=_service_token_provider,
         transport=httpx.MockTransport(handler),
     )
     monkeypatch.setattr(document_tools_module, "get_backend_client", lambda: test_client)
@@ -418,8 +421,6 @@ def test_core_read_tools_use_authoritative_document_review_endpoints(
 
     def handler(request: httpx.Request) -> httpx.Response:
         requested.append((request.url.path, request.url.params.get("query", "")))
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         assert request.headers["Authorization"] != "Bearer human-admin-jwt"
         if request.url.path == "/document-review/pending":
             return httpx.Response(200, json=[{"id": 501, "status": "PENDING_REVIEW"}])
@@ -471,8 +472,6 @@ def test_document_resolvers_stop_when_numeric_review_does_not_exist(
 
     def handler(request: httpx.Request) -> httpx.Response:
         requested_paths.append(request.url.path)
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/999":
             return httpx.Response(404, json={"message": "Review not found"})
         raise AssertionError(f"resolver must not be called after 404: {request.url.path}")
@@ -522,8 +521,6 @@ def test_extract_document_invoice_wired_end_to_end_against_mocked_backend(
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/501":
             return httpx.Response(
                 200,
@@ -583,8 +580,6 @@ def test_extract_document_order_wired_handles_missing_price_line_item(
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/777":
             return httpx.Response(
                 200,
@@ -630,8 +625,6 @@ def test_extract_document_order_wired_handles_missing_price_line_item(
 
 def test_extract_document_propagates_not_found_for_unknown_id(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(404, json={"message": "PendingDocumentReview 999999 not found"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -642,8 +635,6 @@ def test_extract_document_propagates_not_found_for_unknown_id(monkeypatch: pytes
 
 def test_extract_document_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "document review service timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -714,8 +705,6 @@ def _patch_catalog_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/suppliers":
@@ -762,8 +751,6 @@ def test_invoice_branch_downstream_chain(monkeypatch: pytest.MonkeyPatch) -> Non
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/suppliers":
@@ -860,8 +847,6 @@ def test_order_branch_downstream_chain(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/801":
@@ -1085,14 +1070,9 @@ def test_match_names_to_catalog_matches_match_products_behavior_exactly(monkeypa
 
     test_client = BackendClient(
         base_url="http://backend.test",
-        email="ai-agent@internal.local",
-        password="irrelevant-mocked",
+        service_token_provider=_service_token_provider,
         transport=httpx.MockTransport(
-            lambda request: (
-                httpx.Response(200, json={"access_token": _fake_jwt()})
-                if request.url.path == "/auth/login"
-                else httpx.Response(200, json=_REAL_PRODUCT_ROWS)
-            )
+            lambda request: httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         ),
     )
     classifications = asyncio.run(_match_names_to_catalog(test_client, raw_names))
@@ -1126,8 +1106,6 @@ def test_find_supplier_wired_end_to_end_against_mocked_backend(monkeypatch: pyte
 
 def test_match_products_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "product catalog service timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1138,8 +1116,6 @@ def test_match_products_propagates_typed_backend_error(monkeypatch: pytest.Monke
 
 def test_find_supplier_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "supplier catalog service timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1160,8 +1136,6 @@ def test_find_supplier_propagates_typed_backend_error(monkeypatch: pytest.Monkey
 
 def _document_review_handler(document_id: str, extracted_items: list[dict]):
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == f"/document-review/{document_id}":
             return httpx.Response(200, json={"extractedItems": extracted_items})
         raise AssertionError(f"unexpected path {request.url.path}")
@@ -1171,8 +1145,6 @@ def _document_review_handler(document_id: str, extracted_items: list[dict]):
 
 def test_match_invoice_to_po_no_match_when_supplier_has_no_open_pos(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/701":
             return httpx.Response(
                 200, json={"extractedItems": [{"product": "Laptop Pro 14", "quantity": 5, "price": 820}]}
@@ -1193,8 +1165,6 @@ def test_match_invoice_to_po_no_match_when_supplier_has_no_open_pos(monkeypatch:
 
 def test_match_invoice_to_po_no_match_when_totals_diverge(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/702":
             return httpx.Response(
                 200, json={"extractedItems": [{"product": "Laptop Pro 14", "quantity": 5, "price": 820}]}
@@ -1230,8 +1200,6 @@ def test_match_invoice_to_po_multiple_candidates(monkeypatch: pytest.MonkeyPatch
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/703":
             return httpx.Response(
                 200, json={"extractedItems": [{"product": "Laptop Pro 14", "quantity": 10, "price": 1000}]}
@@ -1296,8 +1264,6 @@ def test_match_invoice_to_po_rejects_non_numeric_document_id() -> None:
 
 def test_match_invoice_to_po_propagates_not_found_for_unknown_document(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(404, json={"message": "PendingDocumentReview 999999 not found"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1308,8 +1274,6 @@ def test_match_invoice_to_po_propagates_not_found_for_unknown_document(monkeypat
 
 def test_match_invoice_to_po_propagates_typed_backend_error_from_po_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/705":
             return httpx.Response(
                 200, json={"extractedItems": [{"product": "Laptop Pro 14", "quantity": 5, "price": 820}]}
@@ -1346,8 +1310,6 @@ def test_detect_discrepancy_covers_every_line_item_discrepancy_type(monkeypatch:
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/706":
             return httpx.Response(
                 200,
@@ -1415,8 +1377,6 @@ def test_detect_discrepancy_flags_supplier_mismatch_independently(monkeypatch: p
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/707":
             return httpx.Response(
                 200, json={"extractedItems": [{"product": "Laptop Pro 14", "quantity": 5, "price": 820}]}
@@ -1448,8 +1408,6 @@ def test_detect_discrepancy_rejects_non_numeric_document_id() -> None:
 
 def test_detect_discrepancy_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "document review service timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1611,8 +1569,6 @@ def test_select_fulfillment_warehouse_empty_input_returns_no_winner() -> None:
 
 def test_choose_fulfillment_warehouse_no_eligible_warehouse(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/802":
@@ -1648,8 +1604,6 @@ def test_choose_fulfillment_warehouse_insufficient_data_when_nothing_resolves(mo
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/803":
@@ -1689,8 +1643,6 @@ def test_choose_fulfillment_warehouse_reports_unresolved_items_but_still_recomme
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/804":
@@ -1745,8 +1697,6 @@ def test_choose_fulfillment_warehouse_falls_back_when_nearest_warehouse_call_fai
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/805":
@@ -1786,8 +1736,6 @@ def test_choose_fulfillment_warehouse_propagates_not_found_for_unknown_document(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(404, json={"message": "PendingDocumentReview 999999 not found"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1805,8 +1753,6 @@ def test_choose_fulfillment_warehouse_propagates_typed_backend_error_from_eligib
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/806":
@@ -1971,8 +1917,6 @@ def test_detect_duplicate_document_finds_and_ranks_real_candidates(monkeypatch: 
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/860":
@@ -2006,8 +1950,6 @@ def test_detect_duplicate_document_no_candidates_in_pool(monkeypatch: pytest.Mon
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/865":
             return httpx.Response(
                 200,
@@ -2047,8 +1989,6 @@ def test_detect_duplicate_document_rejects_non_numeric_document_id() -> None:
 
 def test_detect_duplicate_document_propagates_not_found_for_unknown_document(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(404, json={"message": "PendingDocumentReview 999999 not found"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -2061,8 +2001,6 @@ def test_detect_duplicate_document_propagates_typed_backend_error_from_pending_f
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/866":
             return httpx.Response(
                 200,
@@ -2388,8 +2326,6 @@ def test_document_agent_reports_tool_error_instead_of_fabricating(monkeypatch: p
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             calls["n"] += 1
             if calls["n"] == 1:
