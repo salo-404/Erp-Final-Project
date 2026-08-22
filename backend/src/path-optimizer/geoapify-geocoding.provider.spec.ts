@@ -4,10 +4,12 @@ import { GeoapifyGeocodingProvider } from './geoapify-geocoding.provider';
 
 describe('GeoapifyGeocodingProvider', () => {
   const ORIGINAL_API_KEY = process.env.GEOAPIFY_API_KEY;
+  const ORIGINAL_TIMEOUT = process.env.GEOAPIFY_TIMEOUT_MS;
   const ORIGINAL_FETCH = global.fetch;
 
   afterEach(() => {
     process.env.GEOAPIFY_API_KEY = ORIGINAL_API_KEY;
+    process.env.GEOAPIFY_TIMEOUT_MS = ORIGINAL_TIMEOUT;
     global.fetch = ORIGINAL_FETCH;
   });
 
@@ -46,6 +48,7 @@ describe('GeoapifyGeocodingProvider', () => {
       formattedAddress: '1 Market St, CA, USA',
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
 
     const calledUrl = new URL(fetchMock.mock.calls[0][0]);
     expect(calledUrl.origin + calledUrl.pathname).toBe(
@@ -77,6 +80,45 @@ describe('GeoapifyGeocodingProvider', () => {
     await expect(provider.geocode('X')).rejects.toThrow(
       'Geoapify request failed for address "X": ECONNREFUSED',
     );
+  });
+
+  it('fails cleanly when Geoapify reaches the configured timeout', async () => {
+    process.env.GEOAPIFY_API_KEY = 'test-key';
+    process.env.GEOAPIFY_TIMEOUT_MS = '10';
+    global.fetch = jest.fn((_url: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) {
+          reject(new Error('missing abort signal'));
+          return;
+        }
+        const rejectWithSignalReason = () => reject(signal.reason);
+        if (signal.aborted) {
+          rejectWithSignalReason();
+        } else {
+          signal.addEventListener('abort', rejectWithSignalReason, {
+            once: true,
+          });
+        }
+      }),
+    ) as unknown as typeof fetch;
+
+    const provider = new GeoapifyGeocodingProvider();
+
+    await expect(provider.geocode('Slow address')).rejects.toThrow(
+      'Geoapify request timed out after 10ms for address "Slow address"',
+    );
+  });
+
+  it('also treats AbortError as a timeout for runtime compatibility', async () => {
+    process.env.GEOAPIFY_API_KEY = 'test-key';
+    const abortError = new Error('aborted');
+    abortError.name = 'AbortError';
+    global.fetch = jest.fn().mockRejectedValue(abortError);
+
+    await expect(
+      new GeoapifyGeocodingProvider().geocode('Aborted address'),
+    ).rejects.toThrow('Geoapify request timed out');
   });
 
   it('throws when Geoapify returns no results', async () => {

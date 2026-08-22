@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -80,6 +81,9 @@ export interface DocumentStorageProvider {
    * this one-time URL grants temporary read access to one object.
    */
   getPresignedUrl(key: string): Promise<string>;
+
+  /** Best-effort compensation for an object created by a failed upload flow. */
+  delete(key: string): Promise<void>;
 }
 
 export interface ExtractedDocumentItem {
@@ -104,6 +108,103 @@ export interface ExtractedDocumentData {
   deliveryRegion?: string;
   deliveryAddress?: string;
   items: ExtractedDocumentItem[];
+}
+
+export function validateExtractedDocumentData(
+  value: unknown,
+): ExtractedDocumentData {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BadRequestException('Invalid extraction response: expected an object');
+  }
+  const data = value as Record<string, unknown>;
+  if (
+    data.transactionType !== InventoryTransactionType.INCOMING &&
+    data.transactionType !== InventoryTransactionType.OUTGOING
+  ) {
+    throw new BadRequestException(
+      'Invalid extraction response: transactionType must be INCOMING or OUTGOING',
+    );
+  }
+  if (!Array.isArray(data.items)) {
+    throw new BadRequestException(
+      'Invalid extraction response: items must be an array',
+    );
+  }
+
+  const items = data.items.map((value, index): ExtractedDocumentItem => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadRequestException(
+        `Invalid extraction response: item ${index} must be an object`,
+      );
+    }
+    const item = value as Record<string, unknown>;
+    if (typeof item.product !== 'string' || !item.product.trim()) {
+      throw new BadRequestException(
+        `Invalid extraction response: item ${index} product must be a non-empty string`,
+      );
+    }
+    if (
+      typeof item.quantity !== 'number' ||
+      !Number.isFinite(item.quantity) ||
+      !Number.isInteger(item.quantity) ||
+      item.quantity <= 0
+    ) {
+      throw new BadRequestException(
+        `Invalid extraction response: item ${index} quantity must be a positive integer`,
+      );
+    }
+    if (
+      item.price !== undefined &&
+      (typeof item.price !== 'number' ||
+        !Number.isFinite(item.price) ||
+        item.price < 0)
+    ) {
+      throw new BadRequestException(
+        `Invalid extraction response: item ${index} price must be a finite non-negative number`,
+      );
+    }
+    return {
+      product: item.product,
+      quantity: item.quantity,
+      ...(item.price === undefined ? {} : { price: item.price }),
+    };
+  });
+
+  const optionalString = (field: string): string | undefined => {
+    const fieldValue = data[field];
+    if (fieldValue !== undefined && typeof fieldValue !== 'string') {
+      throw new BadRequestException(
+        `Invalid extraction response: ${field} must be a string`,
+      );
+    }
+    return fieldValue as string | undefined;
+  };
+  let date: Date | undefined;
+  if (data.date !== undefined) {
+    if (!(typeof data.date === 'string' || data.date instanceof Date)) {
+      throw new BadRequestException(
+        'Invalid extraction response: date must be an ISO date string',
+      );
+    }
+    date = data.date instanceof Date ? data.date : new Date(data.date);
+    if (!Number.isFinite(date.getTime())) {
+      throw new BadRequestException(
+        'Invalid extraction response: date must be a valid date',
+      );
+    }
+  }
+
+  return {
+    transactionType: data.transactionType,
+    partyName: optionalString('partyName'),
+    supplierName: optionalString('supplierName'),
+    date,
+    warehouseName: optionalString('warehouseName'),
+    deliveryCountry: optionalString('deliveryCountry'),
+    deliveryRegion: optionalString('deliveryRegion'),
+    deliveryAddress: optionalString('deliveryAddress'),
+    items,
+  };
 }
 
 /**
@@ -204,6 +305,8 @@ type PendingDocumentReviewWithDetails = Prisma.PendingDocumentReviewGetPayload<{
 
 @Injectable()
 export class DocumentReviewService {
+  private readonly logger = new Logger(DocumentReviewService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventoryTransactionsService: InventoryTransactionsService,
@@ -236,32 +339,44 @@ export class DocumentReviewService {
       content: input.content,
     });
 
-    const presignedUrl = await this.storageProvider.getPresignedUrl(
-      uploaded.key,
-    );
+    let review: PendingDocumentReview;
+    try {
+      const presignedUrl = await this.storageProvider.getPresignedUrl(
+        uploaded.key,
+      );
+      const extracted = validateExtractedDocumentData(
+        await this.extractionProvider.extract({
+          mimeType: input.mimeType,
+          documentUrl: presignedUrl,
+        }),
+      );
 
-    const extracted = await this.extractionProvider.extract({
-      mimeType: input.mimeType,
-      documentUrl: presignedUrl,
-    });
-    this.validateExtractedTransactionType(extracted.transactionType);
-
-    const review = await this.prisma.pendingDocumentReview.create({
-      data: {
-        documentUrl: uploaded.url,
-        documentKey: uploaded.key,
-        transactionType: extracted.transactionType,
-        extractedPartyName: extracted.partyName,
-        extractedSupplierName: extracted.supplierName,
-        extractedDate: extracted.date,
-        extractedWarehouseName: extracted.warehouseName,
-        extractedDeliveryCountry: extracted.deliveryCountry,
-        extractedDeliveryRegion: extracted.deliveryRegion,
-        extractedDeliveryAddress: extracted.deliveryAddress,
-        extractedItems: extracted.items as unknown as Prisma.InputJsonValue,
-        status: DocumentReviewStatus.PENDING_REVIEW,
-      },
-    });
+      review = await this.prisma.pendingDocumentReview.create({
+        data: {
+          documentUrl: uploaded.url,
+          documentKey: uploaded.key,
+          transactionType: extracted.transactionType,
+          extractedPartyName: extracted.partyName,
+          extractedSupplierName: extracted.supplierName,
+          extractedDate: extracted.date,
+          extractedWarehouseName: extracted.warehouseName,
+          extractedDeliveryCountry: extracted.deliveryCountry,
+          extractedDeliveryRegion: extracted.deliveryRegion,
+          extractedDeliveryAddress: extracted.deliveryAddress,
+          extractedItems: extracted.items as unknown as Prisma.InputJsonValue,
+          status: DocumentReviewStatus.PENDING_REVIEW,
+        },
+      });
+    } catch (error) {
+      try {
+        await this.storageProvider.delete(uploaded.key);
+      } catch {
+        this.logger.error(
+          'Failed to clean up a newly uploaded document after upload pipeline failure',
+        );
+      }
+      throw error;
+    }
 
     await this.notifier.notifyNewInvoice({
       reviewId: review.id,
@@ -558,19 +673,6 @@ export class DocumentReviewService {
     if (input.content.length > MAX_DOCUMENT_SIZE_BYTES) {
       throw new BadRequestException(
         `File exceeds the maximum allowed size of ${MAX_DOCUMENT_SIZE_BYTES} bytes`,
-      );
-    }
-  }
-
-  private validateExtractedTransactionType(
-    type: InventoryTransactionType,
-  ): void {
-    if (
-      type !== InventoryTransactionType.INCOMING &&
-      type !== InventoryTransactionType.OUTGOING
-    ) {
-      throw new BadRequestException(
-        `Document review only supports INCOMING or OUTGOING documents, got ${type}`,
       );
     }
   }

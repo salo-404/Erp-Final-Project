@@ -1,6 +1,7 @@
 /// <reference types="jest" />
 
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -152,6 +153,20 @@ describe('S3DocumentStorageService', () => {
     ).rejects.toThrow(
       'Failed to generate a presigned URL for S3 object "documents/abc-invoice.pdf": SignatureError',
     );
+  });
+
+  it('deletes exactly the requested object from the configured bucket', async () => {
+    sendSpy.mockResolvedValue({});
+    const service = new S3DocumentStorageService();
+
+    await service.delete('documents/failed-upload.pdf');
+
+    const command = sendSpy.mock.calls[0][0];
+    expect(command).toBeInstanceOf(DeleteObjectCommand);
+    expect((command as DeleteObjectCommand).input).toEqual({
+      Bucket: 'test-bucket',
+      Key: 'documents/failed-upload.pdf',
+    });
   });
 
   it('never logs document content, presigned URLs, or AWS credentials on success or failure', async () => {

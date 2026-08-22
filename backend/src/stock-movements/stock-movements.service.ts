@@ -308,48 +308,28 @@ export class StockMovementsService {
   /**
    * Locks the WarehouseInventory row for (productId, warehouseId) via
    * SELECT ... FOR UPDATE so concurrent movements against the same row
-   * serialize correctly. If the row doesn't exist yet (first-ever movement
-   * for this product/warehouse pair), it's created with onHand = 0 inside
-   * this same transaction. A concurrent first-insert race is handled by
-   * catching the unique-constraint violation and re-locking the row the
-   * other transaction just committed.
+   * serialize correctly. INSERT ... ON CONFLICT first establishes the row
+   * without raising a unique-constraint error, so concurrent first inserts
+   * cannot abort their PostgreSQL transactions. The same transaction then
+   * locks and reads the single resulting row.
    */
   private async lockOrCreateInventoryRow(
     tx: Prisma.TransactionClient,
     productId: number,
     warehouseId: number,
   ): Promise<number> {
-    const existing = await tx.$queryRaw<{ onHand: number }[]>`
+    await tx.$executeRaw`
+      INSERT INTO "WarehouseInventory" ("productId", "warehouseId", "onHand")
+      VALUES (${productId}, ${warehouseId}, 0)
+      ON CONFLICT ("productId", "warehouseId") DO NOTHING
+    `;
+
+    const locked = await tx.$queryRaw<{ onHand: number }[]>`
       SELECT "onHand" FROM "WarehouseInventory"
       WHERE "productId" = ${productId} AND "warehouseId" = ${warehouseId}
       FOR UPDATE
     `;
-
-    if (existing.length > 0) {
-      return existing[0].onHand;
-    }
-
-    try {
-      await tx.warehouseInventory.create({
-        data: { productId, warehouseId, onHand: 0 },
-      });
-      return 0;
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        const retried = await tx.$queryRaw<{ onHand: number }[]>`
-          SELECT "onHand" FROM "WarehouseInventory"
-          WHERE "productId" = ${productId} AND "warehouseId" = ${warehouseId}
-          FOR UPDATE
-        `;
-        if (retried.length > 0) {
-          return retried[0].onHand;
-        }
-      }
-      throw error;
-    }
+    return locked[0].onHand;
   }
 
   /**

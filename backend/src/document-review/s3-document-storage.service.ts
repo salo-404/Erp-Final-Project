@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import {
   GetObjectCommand,
+  DeleteObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -111,6 +112,12 @@ export class S3DocumentStorageService implements DocumentStorageProvider {
         `Failed to generate a presigned URL for S3 object "${key}": ${(error as Error).message}`,
       );
     }
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.client.send(
+      new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
   }
 
   /**

@@ -6,6 +6,7 @@ import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { CognitoTokenVerifier } from '../src/auth/cognito-token-verifier.service';
 import { cognitoAuthHeaderFor, mockCognitoVerifier } from './cognito-auth-test-helper';
+import { StockMovementsService } from '../src/stock-movements/stock-movements.service';
 
 describe('Inventory integrity (e2e)', () => {
   let app: INestApplication;
@@ -105,6 +106,56 @@ describe('Inventory integrity (e2e)', () => {
     expect(movement.quantity).toBe(7);
     expect(movement.productId).toBe(mouseId);
     expect(movement.warehouseId).toBe(beirutId);
+  });
+
+  it('serializes concurrent first movements into one inventory row without losing ledger updates', async () => {
+    const suffix = `${Date.now()}-${Math.random()}`;
+    const product = await prisma.product.create({
+      data: { name: `First-row concurrency product ${suffix}` },
+    });
+    const warehouse = await prisma.warehouse.create({
+      data: { name: `First-row concurrency warehouse ${suffix}` },
+    });
+    const movements = app.get(StockMovementsService);
+
+    try {
+      await Promise.all([
+        movements.recordMovement({
+          productId: product.id,
+          warehouseId: warehouse.id,
+          type: 'INCOMING',
+          quantity: 5,
+        }),
+        movements.recordMovement({
+          productId: product.id,
+          warehouseId: warehouse.id,
+          type: 'INCOMING',
+          quantity: 7,
+        }),
+      ]);
+
+      const inventoryRows = await prisma.warehouseInventory.findMany({
+        where: { productId: product.id, warehouseId: warehouse.id },
+      });
+      const ledgerRows = await prisma.stockMovement.findMany({
+        where: { productId: product.id, warehouseId: warehouse.id },
+      });
+      expect(inventoryRows).toHaveLength(1);
+      expect(inventoryRows[0].onHand).toBe(12);
+      expect(ledgerRows).toHaveLength(2);
+      expect(ledgerRows.map((row) => row.quantity).sort((a, b) => a - b)).toEqual([
+        5, 7,
+      ]);
+    } finally {
+      await prisma.stockMovement.deleteMany({
+        where: { productId: product.id, warehouseId: warehouse.id },
+      });
+      await prisma.warehouseInventory.deleteMany({
+        where: { productId: product.id, warehouseId: warehouse.id },
+      });
+      await prisma.product.delete({ where: { id: product.id } });
+      await prisma.warehouse.delete({ where: { id: warehouse.id } });
+    }
   });
 
   it('rejects inventory adjustment from an EMPLOYEE', async () => {

@@ -703,6 +703,11 @@ export class InventoryTransactionsService {
     const itemChangesById = new Map(
       (input.items ?? []).map((change) => [change.itemId, change]),
     );
+    if (itemChangesById.size !== (input.items?.length ?? 0)) {
+      throw new BadRequestException(
+        'items must not contain duplicate itemId values',
+      );
+    }
     for (const itemId of itemChangesById.keys()) {
       if (!transaction.items.some((item) => item.id === itemId)) {
         throw new NotFoundException(

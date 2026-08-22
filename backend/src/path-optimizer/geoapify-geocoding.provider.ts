@@ -2,6 +2,7 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { GeocodeResult, GeocodingProvider } from './path-optimizer.service';
 
 const GEOAPIFY_GEOCODE_URL = 'https://api.geoapify.com/v1/geocode/search';
+const DEFAULT_GEOAPIFY_TIMEOUT_MS = 5000;
 
 interface GeoapifyGeocodeResponseResult {
   lat: number;
@@ -24,6 +25,7 @@ interface GeoapifyGeocodeResponse {
 @Injectable()
 export class GeoapifyGeocodingProvider implements GeocodingProvider {
   private readonly apiKey: string;
+  private readonly timeoutMs: number;
 
   constructor() {
     const apiKey = process.env.GEOAPIFY_API_KEY;
@@ -33,6 +35,11 @@ export class GeoapifyGeocodingProvider implements GeocodingProvider {
       );
     }
     this.apiKey = apiKey;
+    const configuredTimeout = Number(process.env.GEOAPIFY_TIMEOUT_MS);
+    this.timeoutMs =
+      Number.isFinite(configuredTimeout) && configuredTimeout > 0
+        ? configuredTimeout
+        : DEFAULT_GEOAPIFY_TIMEOUT_MS;
   }
 
   async geocode(address: string): Promise<GeocodeResult> {
@@ -44,8 +51,18 @@ export class GeoapifyGeocodingProvider implements GeocodingProvider {
 
     let response: Response;
     try {
-      response = await fetch(url.toString());
+      response = await fetch(url.toString(), {
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
     } catch (error) {
+      if (
+        (error as Error).name === 'TimeoutError' ||
+        (error as Error).name === 'AbortError'
+      ) {
+        throw new InternalServerErrorException(
+          `Geoapify request timed out after ${this.timeoutMs}ms for address "${address}"`,
+        );
+      }
       throw new InternalServerErrorException(
         `Geoapify request failed for address "${address}": ${(error as Error).message}`,
       );

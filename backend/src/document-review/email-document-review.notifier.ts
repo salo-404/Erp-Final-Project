@@ -32,10 +32,18 @@ export class EmailDocumentReviewNotifier implements DocumentReviewNotifier {
   ) {}
 
   async notifyNewInvoice(event: NewInvoiceNotificationEvent): Promise<void> {
-    const admins = await this.prisma.user.findMany({
-      where: { role: UserRole.ADMIN },
-      select: { email: true },
-    });
+    let admins: { email: string }[];
+    try {
+      admins = await this.prisma.user.findMany({
+        where: { role: UserRole.ADMIN },
+        select: { email: true },
+      });
+    } catch {
+      this.logger.error(
+        `Failed to load ADMIN recipients for document review ${event.reviewId}`,
+      );
+      return;
+    }
 
     const party =
       event.extractedSupplierName ??
@@ -47,7 +55,7 @@ export class EmailDocumentReviewNotifier implements DocumentReviewNotifier {
       `Review ID: ${event.reviewId}`,
       `Type: ${event.transactionType}`,
       `Party: ${party}`,
-      `Document: ${event.documentUrl}`,
+      `Open pending document review #${event.reviewId} in Mini ERP to view the document securely.`,
       `Uploaded at: ${event.createdAt.toISOString()}`,
     ].join('\n');
 

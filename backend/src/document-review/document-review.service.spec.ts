@@ -94,8 +94,13 @@ function createMockStorageProvider() {
   getPresignedUrl.mockResolvedValue(
     'https://s3.example.com/doc-1.pdf?X-Amz-Signature=fake',
   );
-  const provider: DocumentStorageProvider = { upload, getPresignedUrl };
-  return { provider, upload, getPresignedUrl };
+  const deleteObject = jest.fn<Promise<void>, [string]>().mockResolvedValue();
+  const provider: DocumentStorageProvider = {
+    upload,
+    getPresignedUrl,
+    delete: deleteObject,
+  };
+  return { provider, upload, getPresignedUrl, deleteObject };
 }
 
 function createMockExtractionProvider() {
@@ -134,6 +139,7 @@ function buildService(tx: MockTx) {
     provider: storageProvider,
     upload,
     getPresignedUrl,
+    deleteObject,
   } = createMockStorageProvider();
   const { provider: extractionProvider, extract } =
     createMockExtractionProvider();
@@ -154,6 +160,7 @@ function buildService(tx: MockTx) {
     createOutgoing,
     upload,
     getPresignedUrl,
+    deleteObject,
     extract,
     notifyNewInvoice,
   };
@@ -173,6 +180,7 @@ describe('DocumentReviewService.upload', () => {
       prismaRoot,
       upload,
       getPresignedUrl,
+      deleteObject,
       extract,
       notifyNewInvoice,
     } = buildService(tx);
@@ -227,6 +235,39 @@ describe('DocumentReviewService.upload', () => {
       createdAt: createdReview.createdAt,
     });
     expect(result).toEqual(createdReview);
+    expect(deleteObject).not.toHaveBeenCalled();
+  });
+
+  it('deletes the newly uploaded object when extraction fails', async () => {
+    const tx = createMockTx();
+    const { service, extract, deleteObject, prismaRoot } = buildService(tx);
+    const original = new Error('extraction unavailable');
+    extract.mockRejectedValue(original);
+
+    await expect(service.upload(VALID_UPLOAD_INPUT)).rejects.toBe(original);
+    expect(deleteObject).toHaveBeenCalledWith('documents/doc-1.pdf');
+    expect(prismaRoot.pendingDocumentReview.create).not.toHaveBeenCalled();
+  });
+
+  it('deletes the newly uploaded object when review persistence fails', async () => {
+    const tx = createMockTx();
+    const { service, deleteObject, prismaRoot } = buildService(tx);
+    const original = new Error('database unavailable');
+    prismaRoot.pendingDocumentReview.create.mockRejectedValue(original);
+
+    await expect(service.upload(VALID_UPLOAD_INPUT)).rejects.toBe(original);
+    expect(deleteObject).toHaveBeenCalledWith('documents/doc-1.pdf');
+  });
+
+  it('preserves the original pipeline error when object cleanup also fails', async () => {
+    const tx = createMockTx();
+    const { service, extract, deleteObject } = buildService(tx);
+    const original = new Error('original extraction failure');
+    extract.mockRejectedValue(original);
+    deleteObject.mockRejectedValue(new Error('cleanup failure'));
+
+    await expect(service.upload(VALID_UPLOAD_INPUT)).rejects.toBe(original);
+    expect(deleteObject).toHaveBeenCalledWith('documents/doc-1.pdf');
   });
 
   it.each(ALLOWED_DOCUMENT_MIME_TYPES)(
@@ -285,19 +326,50 @@ describe('DocumentReviewService.upload', () => {
 
   it('rejects a document whose extracted transactionType is not INCOMING/OUTGOING, without creating a review row', async () => {
     const tx = createMockTx();
-    const { service, extract, prismaRoot, notifyNewInvoice } = buildService(tx);
+    const { service, extract, prismaRoot, notifyNewInvoice, deleteObject } =
+      buildService(tx);
     extract.mockResolvedValue({
       transactionType: 'TRANSFER' as never,
       items: [],
     });
 
     await expect(service.upload(VALID_UPLOAD_INPUT)).rejects.toThrow(
-      'Document review only supports INCOMING or OUTGOING documents, got TRANSFER',
+      'Invalid extraction response: transactionType must be INCOMING or OUTGOING',
     );
 
     expect(prismaRoot.pendingDocumentReview.create).not.toHaveBeenCalled();
     expect(notifyNewInvoice).not.toHaveBeenCalled();
+    expect(deleteObject).toHaveBeenCalledWith('documents/doc-1.pdf');
   });
+
+  it.each([
+    [{ transactionType: 'INCOMING', items: 'bad' }, 'items must be an array'],
+    [
+      { transactionType: 'INCOMING', items: [{ product: 'Widget', quantity: 1.5 }] },
+      'quantity must be a positive integer',
+    ],
+    [
+      { transactionType: 'INCOMING', items: [{ product: 'Widget', quantity: 1, price: Number.POSITIVE_INFINITY }] },
+      'price must be a finite non-negative number',
+    ],
+    [
+      { transactionType: 'INCOMING', date: 'not-a-date', items: [] },
+      'date must be a valid date',
+    ],
+  ] as const)(
+    'rejects malformed extracted data and cleans up the object',
+    async (extracted, expectedMessage) => {
+      const tx = createMockTx();
+      const { service, extract, deleteObject, prismaRoot } = buildService(tx);
+      extract.mockResolvedValue(extracted as never);
+
+      await expect(service.upload(VALID_UPLOAD_INPUT)).rejects.toThrow(
+        expectedMessage,
+      );
+      expect(deleteObject).toHaveBeenCalledWith('documents/doc-1.pdf');
+      expect(prismaRoot.pendingDocumentReview.create).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('DocumentReviewService.approve', () => {

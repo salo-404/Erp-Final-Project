@@ -9,6 +9,7 @@ function createMockTx() {
     warehouse: { findUnique: jest.fn() },
     warehouseInventory: { create: jest.fn(), update: jest.fn() },
     stockMovement: { create: jest.fn() },
+    $executeRaw: jest.fn(),
     $queryRaw: jest.fn(),
   };
 }
@@ -136,8 +137,7 @@ describe('StockMovementsService.recordMovement', () => {
     const tx = createMockTx();
     tx.product.findUnique.mockResolvedValue(PRODUCT);
     tx.warehouse.findUnique.mockResolvedValue(WAREHOUSE);
-    tx.$queryRaw.mockResolvedValue([]); // no existing row
-    tx.warehouseInventory.create.mockResolvedValue({});
+    tx.$queryRaw.mockResolvedValue([{ onHand: 0 }]);
     tx.warehouseInventory.update.mockResolvedValue({});
     tx.stockMovement.create.mockResolvedValue({ id: 1 });
     const service = new StockMovementsService(createMockPrisma(tx));
@@ -149,9 +149,7 @@ describe('StockMovementsService.recordMovement', () => {
       quantity: 5,
     });
 
-    expect(tx.warehouseInventory.create).toHaveBeenCalledWith({
-      data: { productId: 1, warehouseId: 10, onHand: 0 },
-    });
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
     expect(tx.warehouseInventory.update).toHaveBeenCalledWith({
       where: { productId_warehouseId: { productId: 1, warehouseId: 10 } },
       data: { onHand: 5 },

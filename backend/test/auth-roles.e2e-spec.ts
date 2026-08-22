@@ -17,6 +17,10 @@ import { RolesGuard } from '../src/common/guards/roles.guard';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { UsersController } from '../src/users/users.controller';
 import { UsersService } from '../src/users/users.service';
+import { EmailController } from '../src/integrations/email/email.controller';
+import { EmailService } from '../src/integrations/email/email.service';
+import { CalendarController } from '../src/integrations/calendar/calendar.controller';
+import { CalendarService } from '../src/integrations/calendar/calendar.service';
 
 @Controller('test-role')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -47,7 +51,13 @@ describe('Cognito authentication and database roles (e2e)', () => {
     };
 
     const moduleRef = await Test.createTestingModule({
-      controllers: [AuthController, TestRoleController, UsersController],
+      controllers: [
+        AuthController,
+        TestRoleController,
+        UsersController,
+        EmailController,
+        CalendarController,
+      ],
       providers: [
         JwtAuthGuard,
         RolesGuard,
@@ -62,6 +72,18 @@ describe('Cognito authentication and database roles (e2e)', () => {
             findOne: jest.fn(async (id: number) =>
               [...users.values()].find((user) => user.id === id),
             ),
+          },
+        },
+        {
+          provide: EmailService,
+          useValue: { sendEmail: jest.fn(async () => ({ sent: true })) },
+        },
+        {
+          provide: CalendarService,
+          useValue: {
+            getCalendarEvents: jest.fn(async () => []),
+            createCalendarEvent: jest.fn(async () => ({ id: 'event-1' })),
+            createShipmentReminder: jest.fn(async () => ({ id: 'reminder-1' })),
           },
         },
       ],
@@ -145,4 +167,24 @@ describe('Cognito authentication and database roles (e2e)', () => {
       .expect(403);
     await request(app.getHttpServer()).get('/users/1').expect(401);
   });
+
+  it.each([
+    ['post', '/integrations/email/send', { to: 'x@example.com', subject: 'x', body: 'x' }],
+    ['post', '/integrations/calendar/event', { summary: 'x', startDateTime: '2026-08-23T10:00:00.000Z', endDateTime: '2026-08-23T11:00:00.000Z' }],
+    ['post', '/integrations/calendar/shipment-reminder', { transactionId: 1 }],
+  ] as const)(
+    'restricts %s %s to ADMIN while preserving authentication',
+    async (method, path, payload) => {
+      await request(app.getHttpServer())[method](path)
+        .set('Authorization', 'Bearer admin-sub')
+        .send(payload)
+        .expect((status) => expect(status.status).not.toBe(401))
+        .expect((status) => expect(status.status).not.toBe(403));
+      await request(app.getHttpServer())[method](path)
+        .set('Authorization', 'Bearer employee-sub')
+        .send(payload)
+        .expect(403);
+      await request(app.getHttpServer())[method](path).send(payload).expect(401);
+    },
+  );
 });

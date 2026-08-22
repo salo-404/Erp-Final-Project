@@ -34,6 +34,7 @@ function buildApp() {
   const storageProvider: DocumentStorageProvider = {
     upload,
     getPresignedUrl,
+    delete: jest.fn().mockResolvedValue(undefined),
   };
 
   const extract = jest.fn<

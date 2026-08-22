@@ -969,6 +969,31 @@ describe('InventoryTransactionsService.cancel', () => {
 });
 
 describe('InventoryTransactionsService.update', () => {
+  it('rejects duplicate itemId changes instead of applying last-write-wins', async () => {
+    const tx = createMockTx();
+    tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+    tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+      id: 1,
+      type: 'INCOMING',
+      sourceWarehouseId: null,
+      destinationWarehouseId: 10,
+      items: [{ id: 11, productId: 100, quantity: 5 }],
+    });
+    const { service, release, reserve } = buildService(tx);
+
+    await expect(
+      service.update(1, {
+        items: [
+          { itemId: 11, quantity: 4 },
+          { itemId: 11, quantity: 7 },
+        ],
+      }),
+    ).rejects.toThrow('items must not contain duplicate itemId values');
+    expect(tx.inventoryTransactionItem.update).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
   it.each(['OUTGOING', 'TRANSFER'] as const)(
     'releases every old %s reservation before reserving a product swap',
     async (type) => {

@@ -2,7 +2,10 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import {
   DocumentExtractionProvider,
   ExtractedDocumentData,
+  validateExtractedDocumentData,
 } from './document-review.service';
+
+const DEFAULT_RIBAL_AGENT_TIMEOUT_MS = 30000;
 
 /**
  * NestJS-side boundary for Ribal's document-extraction agent
@@ -20,6 +23,7 @@ import {
 @Injectable()
 export class RibalDocumentExtractionProvider implements DocumentExtractionProvider {
   private readonly agentUrl: string;
+  private readonly timeoutMs: number;
 
   constructor() {
     const agentUrl = process.env.RIBAL_AGENT_URL;
@@ -29,6 +33,11 @@ export class RibalDocumentExtractionProvider implements DocumentExtractionProvid
       );
     }
     this.agentUrl = agentUrl;
+    const configuredTimeout = Number(process.env.RIBAL_AGENT_TIMEOUT_MS);
+    this.timeoutMs =
+      Number.isFinite(configuredTimeout) && configuredTimeout > 0
+        ? configuredTimeout
+        : DEFAULT_RIBAL_AGENT_TIMEOUT_MS;
   }
 
   async extract(input: {
@@ -44,8 +53,17 @@ export class RibalDocumentExtractionProvider implements DocumentExtractionProvid
           mimeType: input.mimeType,
           documentUrl: input.documentUrl,
         }),
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
+      if (
+        (error as Error).name === 'TimeoutError' ||
+        (error as Error).name === 'AbortError'
+      ) {
+        throw new InternalServerErrorException(
+          `Ribal extraction request timed out after ${this.timeoutMs}ms`,
+        );
+      }
       throw new InternalServerErrorException(
         `Ribal extraction request failed: ${(error as Error).message}`,
       );
@@ -57,6 +75,14 @@ export class RibalDocumentExtractionProvider implements DocumentExtractionProvid
       );
     }
 
-    return (await response.json()) as ExtractedDocumentData;
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new InternalServerErrorException(
+        'Ribal extraction agent returned malformed JSON',
+      );
+    }
+    return validateExtractedDocumentData(body);
   }
 }
