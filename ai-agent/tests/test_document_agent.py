@@ -446,6 +446,46 @@ def test_core_read_tools_use_authoritative_document_review_endpoints(
     assert ("/document-review/resolve-supplier", "TechSource") in requested
 
 
+@pytest.mark.parametrize(
+    ("resolver", "resolver_path", "resolver_args"),
+    [
+        (
+            resolve_document_product,
+            "/document-review/resolve-product",
+            ("999", "27in Monitor", 12),
+        ),
+        (
+            resolve_document_supplier,
+            "/document-review/resolve-supplier",
+            ("999", "TechSource"),
+        ),
+    ],
+)
+def test_document_resolvers_stop_when_numeric_review_does_not_exist(
+    monkeypatch: pytest.MonkeyPatch,
+    resolver,
+    resolver_path: str,
+    resolver_args: tuple,
+) -> None:
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path == "/auth/login":
+            return httpx.Response(200, json={"access_token": _fake_jwt()})
+        if request.url.path == "/document-review/999":
+            return httpx.Response(404, json={"message": "Review not found"})
+        raise AssertionError(f"resolver must not be called after 404: {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+
+    with pytest.raises(NotFound, match="Review not found"):
+        asyncio.run(resolver(*resolver_args))
+
+    assert "/document-review/999" in requested_paths
+    assert resolver_path not in requested_paths
+
+
 def test_map_extracted_items_handles_missing_price() -> None:
     """Pure logic: price is optional in the real extractedItems Json blob -
     an entry with no `price` key at all maps to unitPrice: None, never

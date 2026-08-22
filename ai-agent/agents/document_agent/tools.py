@@ -1,55 +1,15 @@
 """Document processing tools for the Strands Agent.
 
-Every function is decorated with @tool. ALL SEVEN tools are wired to the
-real backend now (2026-08-22): extract_document(), match_products(),
-find_supplier(), match_invoice_to_po(), detect_discrepancy(),
-choose_fulfillment_warehouse(), and detect_duplicate_document()
-(GET /document-review/:id, GET /document-review/pending, GET /products,
-GET /suppliers, GET /inventory-transactions,
-POST /warehouse-routing/eligible-warehouses,
-POST /path-optimizer/nearest-warehouse - see backend_client.py). No tool
-in this file calls into a mock module any more - tools/mocks/
-document_mock_data.py (the mock-era version of every tool below,
-including DocumentNotFoundError) was deleted entirely as dead code during
-the pre-handoff cleanup pass (2026-08-22), once its last caller here was
-wired to the real backend.
+The active runtime registry lives in ``agents/document_agent/agent.py`` and
+contains exactly: get_pending_document_reviews, get_document_review,
+resolve_document_product, resolve_document_supplier, approve_document_review,
+reject_document_review, and detect_duplicate_document.
 
-match_products()/find_supplier() do not validate document_id at all -
-matching runs against the REAL, always-current product/supplier catalog
-instead of a per-document fixture, so there is no "known document" concept
-for these two to check against. document_id is still required and still
-echoed back for traceability, but is otherwise unused by these two tools.
-Every other tool DOES still look up document_id for real - they fetch the
-actual document itself, same as extract_document() - so an unrecognized
-id 404s for real for all of them, never a fabricated placeholder response.
-
-_match_names_to_catalog() is a shared internal helper (not a @tool itself)
-factored out of match_products()'s own fetch+classify logic - match_products(),
-detect_discrepancy(), choose_fulfillment_warehouse(), and
-detect_duplicate_document() all call it, so raw product-name matching
-against the real catalog happens in exactly one place, with exactly one
-set of validated thresholds (_MATCH_THRESHOLD/_AMBIGUOUS_FLOOR/
-_AMBIGUOUS_GAP), never duplicated or re-tuned per caller.
-
-extract_document() is the entry point. It does NOT take a doc_type input -
-real extraction already happened server-side at upload time (POST
-/document-review/upload, outside this tool's responsibility), so the
-document's type is already decided and stored as the real transactionType;
-this tool only fetches that row and derives docType from it
-(INCOMING -> "invoice", OUTGOING -> "order"). The agent reads docType from
-extract_document()'s response and routes to exactly one of two branches
-based on it - it never guesses or chooses the type itself. See
-agents/document_agent/prompts.py for the branching rules the agent must
-follow after extraction.
-
-Every tool below requires `document_id` as its first argument. This is a
-deliberate fix for a real bug: these tools used to accept no document
-reference (or an unvalidated one) and would return a plausible-looking
-mocked result even when called with no real document in play, which reads
-as a confident, fabricated answer. Every tool that still looks up
-document_id (all but match_products/find_supplier - see above) now
-enforces this for real: an unrecognized document_id 404s as a real
-NotFound backend error, never a fabricated placeholder response.
+Legacy helpers including extract_document, match_products, find_supplier,
+match_invoice_to_po, detect_discrepancy, and choose_fulfillment_warehouse
+remain temporarily for direct regression-test compatibility. They are not
+active runtime tools and will be handled in the later stale/dead-code cleanup
+phase.
 """
 
 from __future__ import annotations
@@ -168,8 +128,9 @@ async def resolve_document_product(
     Partial/multiple suggestions remain advisory and require human resolution.
     requested_quantity is echoed solely for the structured Supervisor handoff.
     """
-    _numeric_review_id(document_id)
+    review_id = _numeric_review_id(document_id)
     client = get_backend_client()
+    await client.get(f"/document-review/{review_id}")
     suggestions = await client.get(
         "/document-review/resolve-product",
         params={"query": product_name},
@@ -189,8 +150,9 @@ async def resolve_document_product(
 @tool
 async def resolve_document_supplier(document_id: str, supplier_name: str) -> dict:
     """Get authoritative backend Supplier suggestions for an extracted supplier name."""
-    _numeric_review_id(document_id)
+    review_id = _numeric_review_id(document_id)
     client = get_backend_client()
+    await client.get(f"/document-review/{review_id}")
     suggestions = await client.get(
         "/document-review/resolve-supplier",
         params={"query": supplier_name},
