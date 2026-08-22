@@ -738,6 +738,13 @@ export class InventoryTransactionsService {
         return productA - productB;
       });
 
+      const resyncPlans: Array<{
+        item: (typeof sorted)[number];
+        change: UpdateTransactionItemChange | undefined;
+        newProductId: number;
+        newQuantity: number;
+        existingReservationId: number;
+      }> = [];
       for (const item of sorted) {
         const change = itemChangesById.get(item.id);
         const newProductId = change?.productId ?? item.productId;
@@ -754,28 +761,49 @@ export class InventoryTransactionsService {
           id,
           item.productId,
         );
-        await this.reservationsService.release(existingReservation.id, tx);
+        resyncPlans.push({
+          item,
+          change,
+          newProductId,
+          newQuantity,
+          existingReservationId: existingReservation.id,
+        });
+      }
+
+      // Release the complete old set before creating any replacement. A new
+      // reservation for one swapped product can therefore never be mistaken
+      // for another item's old reservation lookup.
+      for (const plan of resyncPlans) {
+        await this.reservationsService.release(
+          plan.existingReservationId,
+          tx,
+        );
+      }
+
+      for (const plan of resyncPlans) {
         await this.reservationsService.reserve(
           {
             transactionId: id,
-            productId: newProductId,
+            productId: plan.newProductId,
             warehouseId: newSourceWarehouseId!,
-            quantity: newQuantity,
+            quantity: plan.newQuantity,
           },
           tx,
         );
 
-        if (change) {
+        if (plan.change) {
           await tx.inventoryTransactionItem.update({
-            where: { id: item.id },
+            where: { id: plan.item.id },
             data: {
-              ...(change.productId !== undefined
-                ? { productId: change.productId }
+              ...(plan.change.productId !== undefined
+                ? { productId: plan.change.productId }
                 : {}),
-              ...(change.quantity !== undefined
-                ? { quantity: change.quantity }
+              ...(plan.change.quantity !== undefined
+                ? { quantity: plan.change.quantity }
                 : {}),
-              ...(change.price !== undefined ? { price: change.price } : {}),
+              ...(plan.change.price !== undefined
+                ? { price: plan.change.price }
+                : {}),
             },
           });
         }

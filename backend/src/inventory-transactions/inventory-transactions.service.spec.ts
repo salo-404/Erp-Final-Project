@@ -969,6 +969,54 @@ describe('InventoryTransactionsService.cancel', () => {
 });
 
 describe('InventoryTransactionsService.update', () => {
+  it.each(['OUTGOING', 'TRANSFER'] as const)(
+    'releases every old %s reservation before reserving a product swap',
+    async (type) => {
+      const tx = createMockTx();
+      tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });
+      tx.inventoryTransaction.findUniqueOrThrow.mockResolvedValue({
+        id: 1,
+        type,
+        sourceWarehouseId: 10,
+        destinationWarehouseId: type === 'TRANSFER' ? 20 : null,
+        items: [
+          { id: 11, productId: 100, quantity: 5 },
+          { id: 12, productId: 200, quantity: 3 },
+        ],
+      });
+      tx.product.findUnique.mockImplementation(
+        ({ where }: { where: { id: number } }) =>
+          Promise.resolve({ id: where.id, name: 'P', isActive: true }),
+      );
+      tx.reservation.findFirst.mockImplementation(
+        ({ where }: { where: { productId: number } }) =>
+          Promise.resolve({
+            id: where.productId === 100 ? 501 : 502,
+            productId: where.productId,
+            status: 'ACTIVE',
+          }),
+      );
+      const { service, release, reserve } = buildService(tx);
+
+      await service.update(1, {
+        items: [
+          { itemId: 11, productId: 200 },
+          { itemId: 12, productId: 100 },
+        ],
+      });
+
+      expect(release).toHaveBeenCalledTimes(2);
+      expect(reserve).toHaveBeenCalledTimes(2);
+      expect(release.mock.invocationCallOrder[1]).toBeLessThan(
+        reserve.mock.invocationCallOrder[0],
+      );
+      expect(reserve.mock.calls.map(([input]) => input)).toEqual([
+        { transactionId: 1, productId: 100, warehouseId: 10, quantity: 3 },
+        { transactionId: 1, productId: 200, warehouseId: 10, quantity: 5 },
+      ]);
+    },
+  );
+
   it('synchronizes the reservation when an item quantity changes (release old, reserve new)', async () => {
     const tx = createMockTx();
     tx.inventoryTransaction.updateMany.mockResolvedValue({ count: 1 });

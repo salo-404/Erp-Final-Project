@@ -12,7 +12,10 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { DocumentReviewService } from './document-review.service';
+import {
+  DocumentReviewService,
+  MAX_DOCUMENT_SIZE_BYTES,
+} from './document-review.service';
 import { ApproveDocumentReviewDto } from './dto/approve-document-review.dto';
 import { RejectDocumentReviewDto } from './dto/reject-document-review.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -37,7 +40,11 @@ export class DocumentReviewController {
    * the sensitive step, gated separately below.
    */
   @Post('upload')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_DOCUMENT_SIZE_BYTES },
+    }),
+  )
   upload(@UploadedFile() file?: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('file is required');

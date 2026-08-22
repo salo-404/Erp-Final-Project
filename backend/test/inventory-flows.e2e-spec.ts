@@ -364,6 +364,99 @@ describe('Inventory transaction flows (e2e)', () => {
     expect(transferIn?.quantity).toBe(4);
   });
 
+  it.each(['outgoing', 'transfer'] as const)(
+    'resynchronizes a two-product %s reservation swap without collisions',
+    async (kind) => {
+      const productIds = [laptopId, dockId];
+      const quantities = [1, 2];
+      const inventoryBefore = await prisma.warehouseInventory.findMany({
+        where: { warehouseId: beirutId, productId: { in: productIds } },
+      });
+      const reservedBefore = await Promise.all(
+        productIds.map((productId) =>
+          prisma.reservation.aggregate({
+            where: { warehouseId: beirutId, productId, status: 'ACTIVE' },
+            _sum: { quantity: true },
+          }),
+        ),
+      );
+
+      const payload = {
+        sourceWarehouseId: beirutId,
+        ...(kind === 'transfer'
+          ? { destinationWarehouseId: tripoliId }
+          : {
+              partyName: 'Reservation Swap E2E',
+              deliveryCountry: 'Lebanon',
+              deliveryRegion: 'Beirut',
+              deliveryAddress: 'Downtown',
+            }),
+        items: productIds.map((productId, index) => ({
+          productId,
+          quantity: quantities[index],
+        })),
+      };
+      const created = await request(app.getHttpServer())
+        .post(`/inventory-transactions/${kind}`)
+        .set('Authorization', authHeader)
+        .send(payload)
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .patch(`/inventory-transactions/${created.body.id}`)
+        .set('Authorization', authHeader)
+        .send({
+          items: [
+            { itemId: created.body.items[0].id, productId: productIds[1] },
+            { itemId: created.body.items[1].id, productId: productIds[0] },
+          ],
+        })
+        .expect(200);
+
+      const reservations = await prisma.reservation.findMany({
+        where: { transactionId: created.body.id },
+        orderBy: { id: 'asc' },
+      });
+      const active = reservations.filter((row) => row.status === 'ACTIVE');
+      expect(active).toHaveLength(2);
+      expect(reservations.filter((row) => row.status === 'CANCELLED')).toHaveLength(2);
+      expect(
+        active
+          .map((row) => [row.productId, row.quantity, row.warehouseId])
+          .sort((a, b) => a[0] - b[0]),
+      ).toEqual([
+        [productIds[0], quantities[1], beirutId],
+        [productIds[1], quantities[0], beirutId],
+      ]);
+
+      const inventoryAfter = await prisma.warehouseInventory.findMany({
+        where: { warehouseId: beirutId, productId: { in: productIds } },
+      });
+      expect(
+        inventoryAfter.map((row) => [row.productId, row.onHand]).sort(),
+      ).toEqual(inventoryBefore.map((row) => [row.productId, row.onHand]).sort());
+      const reservedAfter = await Promise.all(
+        productIds.map((productId) =>
+          prisma.reservation.aggregate({
+            where: { warehouseId: beirutId, productId, status: 'ACTIVE' },
+            _sum: { quantity: true },
+          }),
+        ),
+      );
+      expect(reservedAfter[0]._sum.quantity).toBe(
+        (reservedBefore[0]._sum.quantity ?? 0) + quantities[1],
+      );
+      expect(reservedAfter[1]._sum.quantity).toBe(
+        (reservedBefore[1]._sum.quantity ?? 0) + quantities[0],
+      );
+
+      await request(app.getHttpServer())
+        .post(`/inventory-transactions/${created.body.id}/cancel`)
+        .set('Authorization', authHeader)
+        .expect(201);
+    },
+  );
+
   // --------------------------------------------------
   // 4. CANCEL
   // --------------------------------------------------

@@ -58,6 +58,10 @@ describe('Cognito authentication and database roles (e2e)', () => {
           provide: UsersService,
           useValue: {
             create: jest.fn(async (dto) => ({ id: 3, ...dto })),
+            findAll: jest.fn(async () => [...users.values()]),
+            findOne: jest.fn(async (id: number) =>
+              [...users.values()].find((user) => user.id === id),
+            ),
           },
         },
       ],
@@ -116,5 +120,29 @@ describe('Cognito authentication and database roles (e2e)', () => {
       .set('Authorization', 'Bearer admin-sub')
       .send({ ...payload, password: 'retired-password' })
       .expect(400);
+  });
+
+  it('allows only ADMIN users to list the user directory', async () => {
+    await request(app.getHttpServer())
+      .get('/users')
+      .set('Authorization', 'Bearer admin-sub')
+      .expect(200);
+    await request(app.getHttpServer())
+      .get('/users')
+      .set('Authorization', 'Bearer employee-sub')
+      .expect(403);
+    await request(app.getHttpServer()).get('/users').expect(401);
+  });
+
+  it('allows only ADMIN users to read one directory user', async () => {
+    await request(app.getHttpServer())
+      .get('/users/1')
+      .set('Authorization', 'Bearer admin-sub')
+      .expect(200);
+    await request(app.getHttpServer())
+      .get('/users/1')
+      .set('Authorization', 'Bearer employee-sub')
+      .expect(403);
+    await request(app.getHttpServer()).get('/users/1').expect(401);
   });
 });

@@ -10,6 +10,7 @@ import {
   DocumentReviewService,
   DocumentStorageProvider,
   ExtractedDocumentData,
+  MAX_DOCUMENT_SIZE_BYTES,
   UploadedDocument,
 } from './document-review.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -198,6 +199,21 @@ describe('DocumentReviewController.upload', () => {
       });
 
     expect(response.status).toBe(400);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('rejects an oversized upload at the multipart interceptor before normal processing', async () => {
+    const { service, upload } = buildApp();
+    app = await createTestApp(service);
+
+    const response = await request(app.getHttpServer())
+      .post('/document-review/upload')
+      .attach('file', Buffer.alloc(MAX_DOCUMENT_SIZE_BYTES + 1), {
+        filename: 'oversized.pdf',
+        contentType: 'application/pdf',
+      });
+
+    expect(response.status).toBe(413);
     expect(upload).not.toHaveBeenCalled();
   });
 
