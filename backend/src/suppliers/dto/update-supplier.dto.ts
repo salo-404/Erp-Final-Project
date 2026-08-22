@@ -1,9 +1,11 @@
 import {
   IsBoolean,
   IsEmail,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
+  Min,
 } from 'class-validator';
 
 export class UpdateSupplierDto {
@@ -15,6 +17,11 @@ export class UpdateSupplierDto {
   @IsOptional()
   @IsEmail()
   email?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  leadTimeDays?: number;
 
   @IsOptional()
   @IsBoolean()

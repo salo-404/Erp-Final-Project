@@ -26,7 +26,7 @@ IN SCOPE or OUT OF SCOPE, and call the classification tool with your \
 verdict.
 
 IN SCOPE: anything about inventory, stock levels, warehouses, stockout \
-risk, restocking, transfers, expiry, dead stock, consumption anomalies, \
+risk, restocking, transfers, dead stock, consumption anomalies, \
 suppliers, purchase orders, invoices, customer orders, or processing an \
 uploaded document (invoice or order) for this ERP system.
 

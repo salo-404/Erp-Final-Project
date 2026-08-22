@@ -2,16 +2,18 @@
 
 get_mock_supplier_stats() stands in for the backend's existing
 getSupplierStats() / rankSuppliers() / getTransactionHistory(). Every
-supplier here is the SAME supplier already used in
-tools/mocks/insights_mock_data.py's compare_suppliers_mock() (Nordic
-Components AB, Global Peripherals Ltd, Rapid Source Trading) and
-get_restock_recommendations_mock()'s Pixel Display Co candidate -
-unit_cost/lead_time_days/reliability_score/overall_score are copied
-exactly from there, not reinvented, so a narration about "supplier 5"
-here is consistent with what compare_suppliers() would say about the same
-supplier. recent_transaction_count/on_time_delivery_rate/product_categories
-are new fields not present in the Insights mocks - added here as plausible
-values consistent with each supplier's existing profile.
+supplier here (Nordic Components AB, Global Peripherals Ltd, Rapid Source
+Trading, Pixel Display Co) originally had its unit_cost/lead_time_days/
+reliability_score/overall_score copied exactly from
+tools/mocks/insights_mock_data.py's old compare_suppliers_mock()/
+get_restock_recommendations_mock() fixtures (both deleted as dead code
+during the pre-handoff cleanup pass, 2026-08-22, once compare_suppliers()
+was wired to the real backend) - the values below are unchanged from
+that original source, just no longer cross-referenced via a shared
+import. recent_transaction_count/on_time_delivery_rate/product_categories
+are fields that were never present in those old Insights mocks - added
+here as plausible values consistent with each supplier's existing
+profile.
 """
 
 from __future__ import annotations
@@ -19,8 +21,7 @@ from __future__ import annotations
 from tools.schemas.supplier_schema import SupplierStats
 
 _MOCK_SUPPLIERS: dict[int, dict] = {
-    # Matches insights_mock_data.compare_suppliers_mock()'s recommendedSupplier
-    # exactly - the reliable-but-pricier option.
+    # The reliable-but-pricier option.
     5: {
         "supplier_id": 5,
         "name": "Nordic Components AB",
@@ -32,8 +33,7 @@ _MOCK_SUPPLIERS: dict[int, dict] = {
         "on_time_delivery_rate": 0.95,
         "product_categories": ["USB-C Docking Stations", "Computer Mice"],
     },
-    # Matches insights_mock_data.compare_suppliers_mock() - cheapest, but
-    # slowest and least reliable of the three.
+    # Cheapest, but slowest and least reliable of the three.
     7: {
         "supplier_id": 7,
         "name": "Global Peripherals Ltd",
@@ -45,8 +45,7 @@ _MOCK_SUPPLIERS: dict[int, dict] = {
         "on_time_delivery_rate": 0.71,
         "product_categories": ["Mechanical Keyboards", "Peripherals"],
     },
-    # Matches insights_mock_data.compare_suppliers_mock() - fastest lead
-    # time, solid reliability, mid-range cost.
+    # Fastest lead time, solid reliability, mid-range cost.
     12: {
         "supplier_id": 12,
         "name": "Rapid Source Trading",
@@ -58,10 +57,8 @@ _MOCK_SUPPLIERS: dict[int, dict] = {
         "on_time_delivery_rate": 0.85,
         "product_categories": ["General Hardware", "Fast-Turnaround Orders"],
     },
-    # Matches insights_mock_data.get_restock_recommendations_mock()'s Pixel
-    # Display Co candidate (unit_cost/lead_time_days only there - reliability/
-    # overall scores and the new fields below are added here, consistent
-    # with a premium, higher-cost/longer-lead-time monitor specialist.
+    # Pixel Display Co - a premium, higher-cost/longer-lead-time monitor
+    # specialist.
     3: {
         "supplier_id": 3,
         "name": "Pixel Display Co",
@@ -80,8 +77,9 @@ class SupplierNotFoundError(LookupError):
     """Raised by get_mock_supplier_stats() when supplier_id isn't a known mock supplier.
 
     Deliberately a raised exception rather than a silent fallback to a
-    default supplier record - same "don't guess" principle as
-    tools/mocks/document_mock_data.py's DocumentNotFoundError.
+    default supplier record - "don't guess or fabricate an id, fail
+    loudly instead" is the same principle every wired tool in this
+    codebase now enforces for real against the actual backend.
     """
 
 

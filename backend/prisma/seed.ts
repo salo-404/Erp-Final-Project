@@ -73,6 +73,31 @@ async function main() {
     },
   });
 
+  // AI layer's own backend service account (see ai-agent/backend_client.py
+  // and ai-agent/config/settings.py - BACKEND_SERVICE_EMAIL/PASSWORD).
+  // EMPLOYEE role, deliberately least-privilege: every AI tool call is a
+  // read (or a proposal a human still confirms), so this account has no
+  // business holding ADMIN. Password is read from
+  // AI_SERVICE_ACCOUNT_PASSWORD at seed time - NEVER hardcode a real
+  // credential here. The 'dev-only-change-me' fallback exists only so a
+  // fresh local checkout can seed and log in without extra setup; it must
+  // never be relied on outside local development.
+  const aiServiceAccountPassword =
+    process.env.AI_SERVICE_ACCOUNT_PASSWORD ?? 'dev-only-change-me';
+  const aiServiceAccountPasswordHash = await bcrypt.hash(
+    aiServiceAccountPassword,
+    10,
+  );
+
+  const aiServiceAccount = await prisma.user.create({
+    data: {
+      name: 'AI Agent Service Account',
+      email: 'ai-agent@internal.local',
+      passwordHash: aiServiceAccountPasswordHash,
+      role: UserRole.EMPLOYEE,
+    },
+  });
+
   // ---------------------------------------------------
   // 3. SUPPLIERS
   // ---------------------------------------------------
@@ -81,6 +106,8 @@ async function main() {
     data: {
       name: 'TechSource Lebanon',
       email: 'sales@techsource.com',
+      // Placeholder only — no real lead-time data source yet.
+      leadTimeDays: 5,
     },
   });
 
@@ -88,6 +115,8 @@ async function main() {
     data: {
       name: 'Cedar Electronics',
       email: 'orders@cedarelectronics.com',
+      // Placeholder only — no real lead-time data source yet.
+      leadTimeDays: 3,
     },
   });
 
@@ -95,6 +124,8 @@ async function main() {
     data: {
       name: 'Levant Trading',
       email: 'contact@levanttrading.com',
+      // Placeholder only — no real lead-time data source yet.
+      leadTimeDays: 8,
     },
   });
 
@@ -103,6 +134,8 @@ async function main() {
       name: 'Old Supplier',
       email: 'old@supplier.com',
       isActive: false,
+      // Placeholder only — no real lead-time data source yet.
+      leadTimeDays: 10,
     },
   });
 
@@ -853,6 +886,11 @@ async function main() {
   console.log('Test users:');
   console.log('ADMIN:    admin@minierp.com / Password123!');
   console.log('EMPLOYEE: employee@minierp.com / Password123!');
+  console.log(
+    process.env.AI_SERVICE_ACCOUNT_PASSWORD
+      ? 'AI_AGENT: ai-agent@internal.local / (password from AI_SERVICE_ACCOUNT_PASSWORD env var - not printed)'
+      : 'AI_AGENT: ai-agent@internal.local / dev-only-change-me (dev-only default - set AI_SERVICE_ACCOUNT_PASSWORD to override)',
+  );
   console.log('');
   console.log('Seed includes:');
   console.log('- normal inventory');

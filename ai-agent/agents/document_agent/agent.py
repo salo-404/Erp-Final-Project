@@ -31,7 +31,6 @@ from agents.document_agent.tools import (
     detect_discrepancy,
     detect_duplicate_document,
     extract_document,
-    find_customer,
     find_supplier,
     match_invoice_to_po,
     match_products,
@@ -43,7 +42,6 @@ DOCUMENT_TOOLS = [
     match_products,
     find_supplier,
     match_invoice_to_po,
-    find_customer,
     choose_fulfillment_warehouse,
     detect_duplicate_document,
     detect_discrepancy,
@@ -187,7 +185,7 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
 
 @tool
 def document_agent_tool(query: str) -> str:
-    """Delegate a question about processing an uploaded invoice or order document - extraction, product/supplier/customer matching, PO matching, fulfillment warehouse choice, duplicate detection, or discrepancy detection - to the Document specialist agent.
+    """Delegate a question about processing an uploaded invoice or order document - extraction, product/supplier matching, PO matching, fulfillment warehouse choice, duplicate detection, or discrepancy detection - to the Document specialist agent.
 
     Args:
         query: The user's document-processing request, in natural language.

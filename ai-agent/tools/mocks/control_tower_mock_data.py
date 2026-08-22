@@ -2,24 +2,33 @@
 
 get_mock_control_tower_alerts() stands in for the backend's not-yet-built
 getControlTowerAlerts(). Evidence dicts deliberately reuse field names and,
-where the same underlying situation is being described, the same sample
-data as tools/mocks/insights_mock_data.py and
-tools/mocks/document_mock_data.py - e.g. the stockout_risk alert below
-mirrors get_stockout_risk_mock()'s Mechanical Keyboard entry, and the
-invoice_discrepancy alert reuses the same document_id as
-detect_discrepancy_mock()'s discrepant example - so narration output stays
-consistent with what the rest of the system would say about the same
-product/document if you asked it directly.
+where the same underlying situation is being described, sample data that
+used to also appear in tools/mocks/insights_mock_data.py and
+tools/mocks/document_mock_data.py (both trimmed/deleted as dead code
+during the pre-handoff cleanup pass, 2026-08-22, once their tools were
+wired to the real backend) - e.g. the stockout_risk alert below still
+mirrors the same Mechanical Keyboard shape the old get_stockout_risk_mock()
+used, and the invoice/order_discrepancy alerts still use the same document_id
+strings the Document agent's own tests use for their live-model prompt
+placeholders - so narration output stays consistent with what the rest of
+the system would say about the same product/document if you asked it
+directly, even though the shared-constant import itself no longer exists.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from tools.mocks.document_mock_data import KNOWN_INVOICE_DOCUMENT_ID, KNOWN_ORDER_DOCUMENT_ID
 from tools.schemas.control_tower_schema import Alert
 
 _NOW = datetime(2026, 8, 15, 9, 0, 0)
+# Standalone literals now (used to be shared constants imported from
+# tools/mocks/document_mock_data.py, deleted as dead code - see the
+# module docstring above). Only used as illustrative documentId values in
+# this file's own mock alert evidence dicts below - not looked up
+# against anything real.
+_INVOICE_DOCUMENT_ID_EXAMPLE = "doc_inv_2026_0815_001"
+_ORDER_DOCUMENT_ID_EXAMPLE = "doc_ord_2026_0815_001"
 
 
 def get_mock_control_tower_alerts() -> list[Alert]:
@@ -33,7 +42,8 @@ def get_mock_control_tower_alerts() -> list[Alert]:
     """
     raw_alerts: list[dict] = [
         # --- low_stock ------------------------------------------------
-        # Mirrors get_low_stock_products_mock()'s USB-C Docking Station entry.
+        # Same USB-C Docking Station low-stock shape used elsewhere in this
+        # system's example data.
         {
             "id": "alert-001",
             "category": "low_stock",
@@ -70,7 +80,8 @@ def get_mock_control_tower_alerts() -> list[Alert]:
             "warehouse_id": 2,
         },
         # --- stockout_risk ----------------------------------------------
-        # Mirrors get_stockout_risk_mock()'s Mechanical Keyboard entry exactly.
+        # Same Mechanical Keyboard stockout-risk shape used elsewhere in
+        # this system's example data.
         {
             "id": "alert-003",
             "category": "stockout_risk",
@@ -110,7 +121,8 @@ def get_mock_control_tower_alerts() -> list[Alert]:
             "warehouse_id": 1,
         },
         # --- consumption_anomaly ------------------------------------------
-        # Mirrors get_consumption_anomalies_mock()'s Wireless Mouse SPIKE entry.
+        # Same Wireless Mouse consumption-spike shape used elsewhere in
+        # this system's example data.
         {
             "id": "alert-005",
             "category": "consumption_anomaly",
@@ -130,7 +142,8 @@ def get_mock_control_tower_alerts() -> list[Alert]:
             "warehouse_id": 1,
         },
         # --- expiring_inventory ------------------------------------------
-        # Mirrors get_expiry_risk_mock()'s Thermal Paste entry.
+        # Standalone Control Tower example data (this module's own mock
+        # alerts, independent of any insights_agent tool).
         {
             "id": "alert-006",
             "category": "expiring_inventory",
@@ -150,15 +163,15 @@ def get_mock_control_tower_alerts() -> list[Alert]:
             "warehouse_id": 1,
         },
         # --- invoice_discrepancy ------------------------------------------
-        # Reuses detect_discrepancy_mock()'s discrepant example, tied to the
-        # same known invoice document_id used throughout the Document agent's
-        # own tests.
+        # Uses the same illustrative invoice document_id string the
+        # Document agent's own tests use for their live-model prompt
+        # placeholders.
         {
             "id": "alert-007",
             "category": "invoice_discrepancy",
             "severity": "medium",
             "evidence": {
-                "documentId": KNOWN_INVOICE_DOCUMENT_ID,
+                "documentId": _INVOICE_DOCUMENT_ID_EXAMPLE,
                 "discrepancies": [
                     {
                         "type": "QUANTITY_MISMATCH",
@@ -183,15 +196,15 @@ def get_mock_control_tower_alerts() -> list[Alert]:
             "warehouse_id": 1,
         },
         # --- order_discrepancy ------------------------------------------
-        # Tied to the known order document_id - a different discrepancy type
-        # (UNEXPECTED_LINE_ITEM/quantity-well-above-usual) than the invoice
-        # example above, for variety.
+        # Uses the same illustrative order document_id string - a
+        # different discrepancy type (UNEXPECTED_LINE_ITEM/quantity-well-
+        # above-usual) than the invoice example above, for variety.
         {
             "id": "alert-008",
             "category": "order_discrepancy",
             "severity": "medium",
             "evidence": {
-                "documentId": KNOWN_ORDER_DOCUMENT_ID,
+                "documentId": _ORDER_DOCUMENT_ID_EXAMPLE,
                 "discrepancies": [
                     {
                         "type": "UNEXPECTED_LINE_ITEM",

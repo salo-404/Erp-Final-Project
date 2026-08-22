@@ -6,6 +6,12 @@ alone). It mirrors settings.build_model()'s provider branching so these
 tests skip cleanly with no credentials under any provider, and run
 automatically once one is actually usable - not just under OpenAI, since
 local testing here isn't OpenAI-only (see config/settings.py).
+
+backend_reachable() is the same idea for the real ERP backend rather than
+a model provider - gates @pytest.mark.integration tests that need a real
+running `npm run start:dev` backend (see backend_client.py), so they skip
+cleanly on a machine/CI run with no backend up, and run automatically once
+one actually is.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import urllib.request
 from config.settings import settings
 
 _OLLAMA_PROBE_TIMEOUT_SECONDS = 1.0
+_BACKEND_PROBE_TIMEOUT_SECONDS = 1.0
 
 
 def live_model_configured() -> bool:
@@ -45,6 +52,22 @@ def _ollama_reachable() -> bool:
     url = f"{settings.ollama_host.rstrip('/')}/api/tags"
     try:
         with urllib.request.urlopen(url, timeout=_OLLAMA_PROBE_TIMEOUT_SECONDS):
+            return True
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def backend_reachable() -> bool:
+    """Cheap, fast reachability probe against BACKEND_URL.
+
+    Not "is BACKEND_URL configured" - it's usually set to a sensible
+    localhost default even when nothing is actually listening there (a
+    fresh checkout, CI, or the backend just isn't running right now), and
+    that must skip @pytest.mark.integration tests rather than fail them.
+    """
+    url = settings.backend_url.rstrip("/") + "/"
+    try:
+        with urllib.request.urlopen(url, timeout=_BACKEND_PROBE_TIMEOUT_SECONDS):
             return True
     except (urllib.error.URLError, OSError, ValueError):
         return False

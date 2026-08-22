@@ -63,6 +63,7 @@ export type ConsumptionAnomalyDirection = 'INCREASE' | 'DECREASE';
 
 export interface ConsumptionAnomaly {
   productId: number;
+  warehouseId: number;
   recentQuantity: number;
   baselineQuantity: number;
   /** null when baselineQuantity is 0 (percentage change is undefined from a zero base). */
@@ -327,39 +328,42 @@ export class StockInsightsService {
   }
 
   /**
-   * Read-only. Compares each product's total consumption (OUTGOING quantity
-   * only, summed across warehouses) in the most recent `windowDays` against
-   * the same-length window immediately before it, and flags products whose
-   * change exceeds `thresholdPercent`. Only OUTGOING counts as consumption
-   * here — an internal TRANSFER_OUT moves stock to another of our own
-   * warehouses rather than to a customer, and an INCOMING purchase or an
-   * ADJUSTMENT isn't consumption at all, so none of them should be able to
-   * manufacture or mask a consumption anomaly.
+   * Read-only. Compares each (productId, warehouseId) pair's OUTGOING
+   * consumption in the most recent `windowDays` against the same-length
+   * window immediately before it, and flags pairs whose change exceeds
+   * `thresholdPercent`. Evaluated PER WAREHOUSE, not summed across a
+   * product's warehouses — a spike at one warehouse offset by a slump at
+   * another must not cancel out and hide both from Control Tower. Only
+   * OUTGOING counts as consumption here — an internal TRANSFER_OUT moves
+   * stock to another of our own warehouses rather than to a customer, and
+   * an INCOMING purchase or an ADJUSTMENT isn't consumption at all, so none
+   * of them should be able to manufacture or mask a consumption anomaly.
    *
    * `windowDays` (default 30) and `thresholdPercent` (default 50) are not
    * documented anywhere in the schema/project docs, so both are explicit,
    * caller-configurable parameters rather than hidden hard-coded policy.
    * `referenceDate` is injectable for deterministic testing.
    *
-   * A product with zero baseline consumption that has any recent
-   * consumption is always flagged (percentChange is undefined from a zero
-   * base, reported as null) — new consumption appearing from nothing is
-   * itself the anomaly. A product with zero consumption in both windows is
-   * never flagged (no change to speak of).
+   * A (productId, warehouseId) pair with zero baseline consumption that has
+   * any recent consumption is always flagged (percentChange is undefined
+   * from a zero base, reported as null) — new consumption appearing from
+   * nothing is itself the anomaly. A pair with zero consumption in both
+   * windows is never flagged (no change to speak of).
    *
    * Fetches the combined date range in a single call to
    * StockMovementsService.getLedger() (reused, not reimplemented) and
    * aggregates in memory — no direct StockMovement query, no duplicated
    * filtering logic. Results are sorted by |percentChange| descending
-   * (products with no baseline — percentChange null — sort first, since
-   * they represent the most extreme case: a change from zero), tie-broken
-   * by productId ascending, for deterministic output suitable for
+   * (pairs with no baseline — percentChange null — sort first, since they
+   * represent the most extreme case: a change from zero), tie-broken by
+   * (productId, warehouseId) ascending — same convention as
+   * getStockoutRisk() — for deterministic output suitable for
    * ControlTowerService.
    *
    * `minimumQuantityChange` (default 0 — a no-op) exists to let a caller
    * suppress noise like "1 unit -> 2 units = 100% increase": when set above
-   * 0, a product is only flagged if the ABSOLUTE unit change also meets
-   * this floor, in addition to the percentage threshold. No schema field or
+   * 0, a pair is only flagged if the ABSOLUTE unit change also meets this
+   * floor, in addition to the percentage threshold. No schema field or
    * documented business rule currently defines what that floor should be
    * (no "typical order size"/"minimum meaningful quantity" concept exists
    * anywhere in this project), so no non-zero default is invented here —
@@ -397,37 +401,34 @@ export class StockInsightsService {
       dateTo: referenceDate,
     });
 
-    const recentByProduct = new Map<number, number>();
-    const baselineByProduct = new Map<number, number>();
+    const recentByKey = new Map<string, number>();
+    const baselineByKey = new Map<string, number>();
 
     for (const movement of movements) {
       if (!CUSTOMER_CONSUMPTION_TYPES.has(movement.type)) {
         continue;
       }
+      const key = this.inventoryKey(movement.productId, movement.warehouseId);
       const bucket =
         movement.createdAt.getTime() >= recentStart.getTime()
-          ? recentByProduct
-          : baselineByProduct;
-      bucket.set(
-        movement.productId,
-        (bucket.get(movement.productId) ?? 0) + movement.quantity,
-      );
+          ? recentByKey
+          : baselineByKey;
+      bucket.set(key, (bucket.get(key) ?? 0) + movement.quantity);
     }
 
-    const productIds = new Set([
-      ...recentByProduct.keys(),
-      ...baselineByProduct.keys(),
-    ]);
+    const keys = new Set([...recentByKey.keys(), ...baselineByKey.keys()]);
 
     const anomalies: ConsumptionAnomaly[] = [];
-    for (const productId of productIds) {
-      const recentQuantity = recentByProduct.get(productId) ?? 0;
-      const baselineQuantity = baselineByProduct.get(productId) ?? 0;
+    for (const key of keys) {
+      const [productId, warehouseId] = key.split(':').map(Number);
+      const recentQuantity = recentByKey.get(key) ?? 0;
+      const baselineQuantity = baselineByKey.get(key) ?? 0;
 
       if (baselineQuantity === 0) {
         if (recentQuantity > 0 && recentQuantity >= minimumQuantityChange) {
           anomalies.push({
             productId,
+            warehouseId,
             recentQuantity,
             baselineQuantity,
             percentChange: null,
@@ -446,6 +447,7 @@ export class StockInsightsService {
       ) {
         anomalies.push({
           productId,
+          warehouseId,
           recentQuantity,
           baselineQuantity,
           percentChange,
@@ -460,7 +462,11 @@ export class StockInsightsService {
         a.percentChange === null ? Infinity : Math.abs(a.percentChange);
       const magnitudeB =
         b.percentChange === null ? Infinity : Math.abs(b.percentChange);
-      return magnitudeB - magnitudeA || a.productId - b.productId;
+      return (
+        magnitudeB - magnitudeA ||
+        a.productId - b.productId ||
+        a.warehouseId - b.warehouseId
+      );
     });
   }
 
@@ -1073,8 +1079,8 @@ export class StockInsightsService {
         severity: 'WARNING',
         message:
           entry.percentChange === null
-            ? `Product ${entry.productId} consumption appeared from zero: ${entry.recentQuantity} units in the recent window`
-            : `Product ${entry.productId} consumption ${entry.direction === 'INCREASE' ? 'increased' : 'decreased'} ${Math.abs(entry.percentChange).toFixed(1)}% (baseline ${entry.baselineQuantity} -> recent ${entry.recentQuantity})`,
+            ? `Product ${entry.productId} in warehouse ${entry.warehouseId} consumption appeared from zero: ${entry.recentQuantity} units in the recent window`
+            : `Product ${entry.productId} in warehouse ${entry.warehouseId} consumption ${entry.direction === 'INCREASE' ? 'increased' : 'decreased'} ${Math.abs(entry.percentChange).toFixed(1)}% (baseline ${entry.baselineQuantity} -> recent ${entry.recentQuantity})`,
         data: entry as unknown as Record<string, unknown>,
         referenceDate,
       });

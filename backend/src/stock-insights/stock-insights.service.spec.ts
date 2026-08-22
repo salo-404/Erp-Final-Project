@@ -572,6 +572,7 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
     expect(result).toEqual([
       {
         productId: 900,
+        warehouseId: 10,
         recentQuantity: 30,
         baselineQuantity: 10,
         percentChange: 200,
@@ -608,6 +609,7 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
     expect(result).toEqual([
       {
         productId: 100,
+        warehouseId: 10,
         recentQuantity: 30,
         baselineQuantity: 10,
         percentChange: 200,
@@ -638,6 +640,7 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
     expect(result).toEqual([
       {
         productId: 200,
+        warehouseId: 10,
         recentQuantity: 5,
         baselineQuantity: 20,
         percentChange: -75,
@@ -690,6 +693,7 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
     expect(result).toEqual([
       {
         productId: 700,
+        warehouseId: 10,
         recentQuantity: 15,
         baselineQuantity: 10,
         percentChange: 50,
@@ -748,6 +752,7 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
     expect(result).toEqual([
       {
         productId: 400,
+        warehouseId: 10,
         recentQuantity: 8,
         baselineQuantity: 0,
         percentChange: null,
@@ -801,9 +806,10 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
     expect(result).toEqual([]);
   });
 
-  it('sums consumption across multiple warehouses for the same product', async () => {
+  it('evaluates each warehouse independently rather than summing across warehouses for the same product', async () => {
     const { service, getLedger } = buildService();
     getLedger.mockResolvedValue([
+      // warehouse 10: baseline 10 -> recent 30 = +200%
       movement({
         productId: 600,
         warehouseId: 10,
@@ -813,29 +819,51 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
       }),
       movement({
         productId: 600,
+        warehouseId: 10,
+        type: 'OUTGOING',
+        quantity: 30,
+        createdAt: new Date('2026-05-20T00:00:00.000Z'),
+      }),
+      // warehouse 20: baseline 20 -> recent 5 = -75%
+      movement({
+        productId: 600,
         warehouseId: 20,
         type: 'OUTGOING',
         quantity: 20,
-        createdAt: new Date('2026-05-20T00:00:00.000Z'),
+        createdAt: new Date('2026-04-16T00:00:00.000Z'),
       }),
       movement({
         productId: 600,
-        warehouseId: 30,
+        warehouseId: 20,
         type: 'OUTGOING',
-        quantity: 10,
+        quantity: 5,
         createdAt: new Date('2026-05-21T00:00:00.000Z'),
       }),
     ]);
 
     const result = await service.getConsumptionAnomalies(30, 50, NOW);
 
+    // Summed across warehouses (the old behavior) this would be baseline
+    // 30 -> recent 35 = +16.7%, below the 50% threshold - no anomaly at
+    // all, and both warehouses' real swings would be invisible. Evaluated
+    // per-warehouse (the new behavior), both cross the threshold on their
+    // own and are reported as two separate entries.
     expect(result).toEqual([
       {
         productId: 600,
+        warehouseId: 10,
         recentQuantity: 30,
         baselineQuantity: 10,
         percentChange: 200,
         direction: 'INCREASE',
+      },
+      {
+        productId: 600,
+        warehouseId: 20,
+        recentQuantity: 5,
+        baselineQuantity: 20,
+        percentChange: -75,
+        direction: 'DECREASE',
       },
     ]);
   });
@@ -921,6 +949,7 @@ describe('StockInsightsService.getConsumptionAnomalies', () => {
     expect(result).toEqual([
       {
         productId: 100,
+        warehouseId: 10,
         recentQuantity: 2,
         baselineQuantity: 1,
         percentChange: 100,
@@ -1896,6 +1925,7 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
     jest.spyOn(service, 'getConsumptionAnomalies').mockResolvedValue([
       {
         productId: 2,
+        warehouseId: 10,
         recentQuantity: 30,
         baselineQuantity: 10,
         percentChange: 200,

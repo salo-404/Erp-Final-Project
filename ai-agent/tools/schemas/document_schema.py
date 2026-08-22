@@ -9,10 +9,10 @@ Every response tied to a specific document carries a `documentId` field
 echoing the caller-supplied document_id, so a response can always be traced
 back to which document it's actually about. This exists to close a real
 bug: without it, a tool response looked equally plausible whether or not a
-real document was ever behind it. See
-tools/mocks/document_mock_data.py::DocumentNotFoundError for the other half
-of that fix (every mock validates document_id against a known document
-before returning anything).
+real document was ever behind it. Every tool in agents/document_agent/tools.py
+that looks up document_id now enforces the other half of that fix for
+real - an unrecognized id 404s against the actual backend, never a
+fabricated placeholder response.
 """
 
 from __future__ import annotations
@@ -31,15 +31,45 @@ DocType = Literal["invoice", "order"]
 # ---------------------------------------------------------------------------
 
 
+class DocumentReviewStatus(str, Enum):
+    """Matches the real backend's DocumentReviewStatus exactly (see
+    schema.prisma) - direct pass-through, no remapping.
+    """
+
+    PENDING_REVIEW = "PENDING_REVIEW"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
 class ExtractedLineItem(BaseModel):
+    """productNameRaw/unitPrice map to the real extractedItems entry's
+    `product`/`price` (see PendingDocumentReview.extractedItems in
+    schema.prisma - a Json blob shaped [{product, quantity, price?}]).
+    unitPrice is None exactly when the real entry has no `price` -
+    never defaulted to 0 or fabricated.
+    """
+
     productNameRaw: str = Field(..., description="Product name/description as it appears on the document.")
     quantity: int
     unitPrice: Optional[float] = None
 
 
 class ExtractDocumentResponse(BaseModel):
-    documentId: str = Field(..., description="Echoes the input document_id, for traceability.")
+    """Field names track the real PendingDocumentReview model directly
+    (see backend/prisma/schema.prisma). docType is derived from the real
+    transactionType (INCOMING->invoice, OUTGOING->order) - the real
+    upload-time validation rejects any other transactionType, so this
+    mapping is exhaustive, not a guess. status/rejectionReason are real
+    pass-through fields (rejectionReason is None unless status is
+    REJECTED). extractedDeliveryAddress is a real field that had no
+    AI-schema slot before this tool was wired - added here alongside
+    the pre-existing extractedDeliveryCountry/extractedDeliveryRegion,
+    which already matched real fields.
+    """
+
+    documentId: str = Field(..., description="The real PendingDocumentReview id, as a string - echoes the input document_id.")
     docType: DocType
+    status: DocumentReviewStatus
     extractedPartyName: Optional[str] = Field(
         None, description="Customer name (order branch) or supplier-side contact name."
     )
@@ -48,8 +78,10 @@ class ExtractDocumentResponse(BaseModel):
     extractedWarehouseName: Optional[str] = None
     extractedDeliveryCountry: Optional[str] = None
     extractedDeliveryRegion: Optional[str] = None
+    extractedDeliveryAddress: Optional[str] = None
     extractedItems: list[ExtractedLineItem]
     documentUrl: str
+    rejectionReason: Optional[str] = Field(None, description="Set only when status is REJECTED.")
 
 
 # ---------------------------------------------------------------------------
@@ -63,14 +95,34 @@ class ProductMatchStatus(str, Enum):
     NOT_FOUND = "NOT_FOUND"
 
 
+class ProductMatchCandidate(BaseModel):
+    """One scored candidate, used only in ProductMatch.candidates (AMBIGUOUS only)."""
+
+    productId: int
+    productName: str
+    score: float = Field(..., ge=0, le=100, description="rapidfuzz WRatio score, native 0-100 scale - not rescaled.")
+
+
 class ProductMatch(BaseModel):
+    """confidence/candidates carry rapidfuzz's real WRatio score (see
+    agents/document_agent/tools.py::_classify_fuzzy_match) - the native
+    0-100 scale, not rescaled to 0-1, same convention already established
+    for compare_suppliers' overallScore. confidence is None only when
+    status is NOT_FOUND - nothing plausible was found to score at all, so
+    there is no real number to report. candidates is populated (top 2-3
+    by score) only when status is AMBIGUOUS - e.g. a real, confirmed case:
+    raw text "Office" scores 90.0 against BOTH "Office Headset" and
+    "Office Chair" in this catalog, an exact tie between two real,
+    plausible products.
+    """
+
     productNameRaw: str
     status: ProductMatchStatus
     productId: Optional[int] = None
     productName: Optional[str] = None
-    confidence: float = Field(..., ge=0, le=1, description="Backend-calculated match confidence.")
-    candidates: list[int] = Field(
-        default_factory=list, description="Candidate productIds when status is AMBIGUOUS."
+    confidence: Optional[float] = Field(None, ge=0, le=100, description="rapidfuzz WRatio score. None only when status is NOT_FOUND.")
+    candidates: list[ProductMatchCandidate] = Field(
+        default_factory=list, description="Top 2-3 scored candidates, populated only when status is AMBIGUOUS."
     )
 
 
@@ -90,14 +142,27 @@ class SupplierMatchStatus(str, Enum):
     NOT_FOUND = "NOT_FOUND"
 
 
+class SupplierMatchCandidate(BaseModel):
+    """One scored candidate, used only in FindSupplierResponse.candidates (AMBIGUOUS only)."""
+
+    supplierId: int
+    supplierName: str
+    score: float = Field(..., ge=0, le=100, description="rapidfuzz WRatio score, native 0-100 scale - not rescaled.")
+
+
 class FindSupplierResponse(BaseModel):
+    """See ProductMatch's docstring - same confidence/candidates convention
+    (native 0-100 rapidfuzz scale, confidence None only for NOT_FOUND,
+    candidates populated only for AMBIGUOUS).
+    """
+
     documentId: str = Field(..., description="Echoes the input document_id, for traceability.")
     extractedSupplierName: str
     status: SupplierMatchStatus
     supplierId: Optional[int] = None
     supplierName: Optional[str] = None
-    confidence: float = Field(..., ge=0, le=1)
-    candidates: list[int] = Field(default_factory=list)
+    confidence: Optional[float] = Field(None, ge=0, le=100, description="rapidfuzz WRatio score. None only when status is NOT_FOUND.")
+    candidates: list[SupplierMatchCandidate] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -109,35 +174,53 @@ class PoMatchStatus(str, Enum):
     MATCHED = "MATCHED"
     NO_MATCH = "NO_MATCH"
     MULTIPLE_CANDIDATES = "MULTIPLE_CANDIDATES"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+
+
+class PoCandidate(BaseModel):
+    """One candidate PO, used only in MatchInvoiceToPoResponse.candidates (MULTIPLE_CANDIDATES only)."""
+
+    purchaseOrderId: int
+    total: float = Field(
+        ...,
+        description=(
+            "Real PO total - quantity * price summed across items. Every INCOMING transaction "
+            "item is guaranteed a price at creation, so this is always a complete total."
+        ),
+    )
+    expectedDate: Optional[datetime] = None
 
 
 class MatchInvoiceToPoResponse(BaseModel):
+    """No invented "confidence" score - a total-amount comparison isn't a
+    probabilistic text match the way ProductMatch's rapidfuzz score is, so
+    the real numbers (extractedTotal/purchaseOrderTotal/amountDifference)
+    are reported directly instead of behind one invented figure.
+    extractedTotal is None only when status is INSUFFICIENT_DATA (no
+    extracted line item had a price at all - nothing real to sum).
+    purchaseOrderTotal/amountDifference are set only when status is
+    MATCHED (a single PO was found within tolerance). See
+    agents/document_agent/tools.py::match_invoice_to_po for the tolerance
+    (2% of the larger total, or $1.00, whichever is greater - a reasoned
+    default, NOT empirically calibrated against real data the way
+    rapidfuzz's thresholds were: real seed data only has two PENDING
+    INCOMING POs total, nowhere near enough diversity to derive a
+    threshold from evidence - see the wiring investigation).
+    """
+
     documentId: str = Field(..., description="Echoes the input document_id, for traceability.")
     status: PoMatchStatus
     purchaseOrderId: Optional[int] = None
-    confidence: float = Field(..., ge=0, le=1)
-    candidatePurchaseOrderIds: list[int] = Field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# find_customer (order branch only)
-# ---------------------------------------------------------------------------
-
-
-class CustomerMatchStatus(str, Enum):
-    MATCHED = "MATCHED"
-    AMBIGUOUS = "AMBIGUOUS"
-    NOT_FOUND = "NOT_FOUND"
-    NEW_CUSTOMER = "NEW_CUSTOMER"
-
-
-class FindCustomerResponse(BaseModel):
-    documentId: str = Field(..., description="Echoes the input document_id, for traceability.")
-    extractedPartyName: str
-    status: CustomerMatchStatus
-    customerId: Optional[int] = None
-    customerName: Optional[str] = None
-    confidence: float = Field(..., ge=0, le=1)
+    extractedTotal: Optional[float] = Field(
+        None, description="Sum of quantity*unitPrice across extractedItems that have a price. None only when status is INSUFFICIENT_DATA."
+    )
+    purchaseOrderTotal: Optional[float] = Field(None, description="The matched PO's real total. Set only when status is MATCHED.")
+    amountDifference: Optional[float] = Field(
+        None, description="extractedTotal - purchaseOrderTotal. Set only when status is MATCHED."
+    )
+    candidates: list[PoCandidate] = Field(
+        default_factory=list, description="Top real POs within tolerance, populated only when status is MULTIPLE_CANDIDATES."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -145,19 +228,74 @@ class FindCustomerResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class WarehouseSelectionStatus(str, Enum):
+    RECOMMENDED = "RECOMMENDED"
+    NO_ELIGIBLE_WAREHOUSE = "NO_ELIGIBLE_WAREHOUSE"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+
+
 class WarehouseCandidate(BaseModel):
+    """Every candidate here is already stock-eligible for the FULL order
+    (every line item, at the requested quantity) - that's the real
+    correctness filter from GET/POST /warehouse-routing/eligible-warehouses,
+    so there is no "canFullyFulfill" field here the way the old mocked
+    schema had one - it would always be true by construction. distanceKm
+    is real, from POST /path-optimizer/nearest-warehouse's geocoding - not
+    a fabricated 0-1 "distanceScore" the way the old mocked schema had.
+    """
+
     warehouseId: int
     warehouseName: str
-    canFullyFulfill: bool
-    distanceScore: float = Field(..., ge=0, le=1, description="Backend-calculated proximity score.")
+    distanceKm: Optional[float] = Field(
+        None, description="Real great-circle distance from the delivery destination, in km. None only when distanceUnconfirmed is true."
+    )
+    distanceUnconfirmed: bool = Field(
+        False,
+        description=(
+            "True when this warehouse's real distance could not be determined (geocoding failed, or the "
+            "distance-lookup call itself failed) - it may still be recommended if no better-confirmed "
+            "alternative exists, but the choice is not distance-verified."
+        ),
+    )
+    minRemainingMargin: int = Field(
+        ...,
+        description=(
+            "The smallest (available - requestedQuantity) across every order line item at this warehouse - "
+            "how much stock headroom this warehouse has on its TIGHTEST item, not an average. This is the "
+            "tiebreak criterion when two or more eligible warehouses are within 50km of each other."
+        ),
+    )
 
 
 class ChooseFulfillmentWarehouseResponse(BaseModel):
+    """status is RECOMMENDED only when at least one real, stock-eligible
+    warehouse was found and selected. NO_ELIGIBLE_WAREHOUSE means
+    POST /warehouse-routing/eligible-warehouses genuinely returned zero
+    warehouses that can fully stock every requested line item - a real,
+    honest answer, not a fallback to a partial match. INSUFFICIENT_DATA
+    means none of the order's extracted line items could even be resolved
+    to a real productId (see unresolvedItems) - there was nothing real to
+    check eligibility for at all. recommendedWarehouseId/Name are None for
+    both non-RECOMMENDED statuses.
+    """
+
     documentId: str = Field(..., description="Echoes the input document_id, for traceability.")
-    recommendedWarehouseId: int
-    recommendedWarehouseName: str
-    reason: str
-    candidates: list[WarehouseCandidate]
+    status: WarehouseSelectionStatus
+    recommendedWarehouseId: Optional[int] = None
+    recommendedWarehouseName: Optional[str] = None
+    reason: str = Field(..., description="Deterministic, built in Python from real data - never left to the model to invent.")
+    unresolvedItems: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Raw extracted product names that could not be resolved to a real productId - excluded from the "
+            "eligibility check. Any recommendation is INCOMPLETE if this is non-empty; those items were never "
+            "actually checked against warehouse stock."
+        ),
+    )
+    candidates: list[WarehouseCandidate] = Field(
+        default_factory=list,
+        description="Every stock-eligible warehouse for the full order (not just the winner), each with real distance/margin data.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -173,17 +311,37 @@ class ChooseFulfillmentWarehouseResponse(BaseModel):
 
 
 class DuplicateMatch(BaseModel):
+    """No invented "similarityScore" - see
+    agents/document_agent/tools.py::detect_duplicate_document for the real
+    signal-based comparison (4 real signals, >= 3 agreeing flags a
+    candidate). matchedOn lists exactly which real signals agreed, e.g.
+    ["supplier", "date", "total"] - itemOverlapRatio is the one genuinely
+    well-defined real number here (Jaccard ratio of resolved productId
+    sets), kept as its own field rather than folded into an opaque score.
+    extractedIdentityName/extractedDate/totalValue are the CANDIDATE's own
+    real values, given directly for human comparison rather than hidden
+    behind a match/no-match verdict.
+    """
+
     documentReviewId: int
-    similarityScore: float = Field(..., ge=0, le=1)
-    matchedOn: list[str] = Field(
-        ..., description="e.g. ['supplierName', 'totalAmount', 'date'] - which fields matched."
+    matchedOn: list[str] = Field(..., description="Which of the 4 real signals agreed, e.g. ['supplier', 'date', 'total'].")
+    extractedIdentityName: Optional[str] = Field(
+        None, description="The candidate's own extractedSupplierName (invoice) or extractedPartyName (order)."
+    )
+    extractedDate: Optional[datetime] = None
+    totalValue: Optional[float] = Field(None, description="The candidate's own real total - quantity*price summed across extractedItems that have a price.")
+    itemOverlapRatio: Optional[float] = Field(
+        None, ge=0, le=1, description="Jaccard ratio of the two documents' resolved productId sets - real, not fabricated. None if neither document has a resolvable item."
     )
 
 
 class DetectDuplicateDocumentResponse(BaseModel):
     documentId: str = Field(..., description="Echoes the input document_id, for traceability.")
     isDuplicate: bool
-    matches: list[DuplicateMatch]
+    matches: list[DuplicateMatch] = Field(
+        default_factory=list,
+        description="Every same-transactionType PENDING candidate with >= 3 of 4 signals agreeing, sorted by most signals agreed first.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +363,15 @@ class DiscrepancyType(str, Enum):
 
 
 class Discrepancy(BaseModel):
+    """SUPPLIER_MISMATCH's productId/productName are always None (it's a
+    document-level check, not a line-item one) - expectedValue/actualValue
+    carry the two supplierIds being compared instead. For the other four
+    types, productId is None only when a raw extracted line item's name
+    could not be resolved to any real product at all (UNEXPECTED_LINE_ITEM
+    with productName holding the raw, unresolved text) - see
+    agents/document_agent/tools.py::detect_discrepancy.
+    """
+
     type: DiscrepancyType
     productId: Optional[int] = None
     productName: Optional[str] = None
@@ -218,5 +385,5 @@ class DetectDiscrepancyResponse(BaseModel):
     hasDiscrepancies: bool
     discrepancies: list[Discrepancy]
     comparedAgainst: Optional[str] = Field(
-        None, description="e.g. 'purchaseOrderId=482' - what this document was compared against."
+        None, description="e.g. 'purchaseOrderId=482' - deterministically built from the real po_id input, never a free-form caller string."
     )

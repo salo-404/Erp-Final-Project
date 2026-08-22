@@ -22,6 +22,17 @@ IN_SCOPE_QUERIES = [
     "What's the available stock for the 27in Monitor at Manchester North?",
     "Draft a purchase order for 60 units of the Mechanical Keyboard.",
     "Is there a duplicate for the order we just received from Bluewater Retail Group?",
+    # "expiry" was deliberately removed from GATE_SYSTEM_PROMPT's IN SCOPE
+    # list on 2026-08-21 (get_expiry_risk no longer exists - see
+    # agents/insights_agent). This query stays here NOT because "expiry" is
+    # still an explicit keyword, but to confirm the gate's own "when
+    # uncertain, prefer IN SCOPE for questions that plausibly relate to
+    # inventory" rule still correctly classifies it as an inventory
+    # question - it should still pass the gate. Insights itself (not the
+    # gate) is what now has to honestly decline, since it has no tool for
+    # this - see test_insights_agent.py's
+    # test_insights_agent_declines_expiry_questions_honestly.
+    "Which products are approaching their expiry date?",
 ]
 
 OUT_OF_SCOPE_QUERIES = [

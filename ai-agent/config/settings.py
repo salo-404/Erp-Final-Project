@@ -186,6 +186,20 @@ class Settings:
     guardrail_id: str = os.getenv("BEDROCK_GUARDRAIL_ID", "")
     guardrail_version: str = os.getenv("BEDROCK_GUARDRAIL_VERSION", "DRAFT")
 
+    # ------------------------------------------------------------------
+    # Backend connection (ai-agent's OWN service-account auth against the
+    # NestJS backend - see backend_client.py. Entirely separate from
+    # model_provider above: this is about calling the ERP backend's REST
+    # API for real data, not about which LLM answers a query. Also
+    # separate from any END-USER auth - the AI layer authenticates as its
+    # own least-privilege EMPLOYEE service account (see
+    # backend/prisma/seed.ts), never as the human asking the question.
+    # ------------------------------------------------------------------
+    backend_url: str = os.getenv("BACKEND_URL", "http://localhost:3000")
+    backend_service_email: str = os.getenv("BACKEND_SERVICE_EMAIL", "")
+    backend_service_password: str = os.getenv("BACKEND_SERVICE_PASSWORD", "")
+    backend_request_timeout_seconds: float = float(os.getenv("BACKEND_REQUEST_TIMEOUT_SECONDS", "10"))
+
     # General
     environment: str = os.getenv("APP_ENV", "development")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
