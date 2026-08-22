@@ -282,3 +282,18 @@ model PendingDocumentReview {
   reviewedBy  User?                 @relation("DocumentReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
   transaction InventoryTransaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
 }
+
+// ====================
+// SQL-RAG QUERY EXAMPLES
+// ====================
+
+model QueryExample {
+  id          Int      @id @default(autoincrement())
+  question    String
+  sqlQuery    String
+  category    String?
+  description String?
+  createdAt   DateTime @default(now())
+
+  embedding Unsupported("vector(512)")?
+}

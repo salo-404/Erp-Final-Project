@@ -104,6 +104,18 @@ class Settings:
     # ------------------------------------------------------------------
     aws_region: str = os.getenv("AWS_REGION", "eu-west-1")
 
+    # SQL-RAG model used to generate read-only PostgreSQL queries.
+    bedrock_sql_model_id: str = os.getenv(
+    "BEDROCK_SQL_MODEL_ID",
+    "",
+    )
+
+    # Bedrock embedding model used for semantic retrieval of QueryExample rows.
+    bedrock_embedding_model_id: str = os.getenv(
+    "BEDROCK_EMBEDDING_MODEL_ID",
+    "amazon.titan-embed-text-v2:0",
+    )
+
     # Bedrock model ID for all agents unless overridden per-agent below.
     #
     # TODO: Verify this inference profile ID is enabled for your Bedrock
@@ -115,7 +127,7 @@ class Settings:
     # assuming this default is live in every account. Target production
     # model is Amazon Nova Pro - see README.md "Switching providers".
     bedrock_model_id: str = os.getenv(
-        "BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-5-v1:0"
+        "BEDROCK_MODEL_ID",""
     )
 
     # ------------------------------------------------------------------
@@ -199,6 +211,12 @@ class Settings:
     backend_service_email: str = os.getenv("BACKEND_SERVICE_EMAIL", "")
     backend_service_password: str = os.getenv("BACKEND_SERVICE_PASSWORD", "")
     backend_request_timeout_seconds: float = float(os.getenv("BACKEND_REQUEST_TIMEOUT_SECONDS", "10"))
+
+    # Direct read-only PostgreSQL connection used by the SQL-RAG pipeline.
+    ai_database_url: str = os.getenv(
+        "AI_DATABASE_URL",
+        "postgresql://mini_erp:mini_erp@127.0.0.1:5433/mini_erp",
+    )
 
     # General
     environment: str = os.getenv("APP_ENV", "development")

@@ -39,3 +39,7 @@ rapidfuzz>=3.14.5
 # since it only serves HTTP requests around build_supervisor_agent() - it
 # does not itself talk to Bedrock.
 bedrock-agentcore>=1.21.0
+
+# SQL-RAG PostgreSQL access and SQL AST validation.
+psycopg[binary]>=3.2
+sqlglot>=27.0
