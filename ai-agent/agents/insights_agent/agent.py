@@ -17,9 +17,7 @@ from strands import Agent, tool
 from agents.insights_agent.prompts import INSIGHTS_SYSTEM_PROMPT
 from agents.insights_agent.tools import (
     analyze_dead_stock,
-    calculate_reorder_quantity,
     compare_suppliers,
-    draft_purchase_order,
     get_available_stock,
     get_consumption_anomalies,
     get_low_stock_products,
@@ -27,9 +25,9 @@ from agents.insights_agent.tools import (
     get_restock_recommendations,
     get_stockout_risk,
     get_transfer_recommendations,
-    recommend_dead_stock_transfer,
 )
 from config.settings import settings
+from tools.query_database import query_database
 
 INSIGHTS_TOOLS = [
     get_available_stock,
@@ -39,11 +37,9 @@ INSIGHTS_TOOLS = [
     get_transfer_recommendations,
     analyze_dead_stock,
     get_consumption_anomalies,
-    calculate_reorder_quantity,
     compare_suppliers,
     get_open_purchase_orders,
-    draft_purchase_order,
-    recommend_dead_stock_transfer,
+    query_database,
 ]
 
 

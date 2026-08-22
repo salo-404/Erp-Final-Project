@@ -1,15 +1,8 @@
 """Insights (and Procurement) tools for the Strands Agent.
 
 Every function is decorated with @tool so it can be attached directly to a
-Strands Agent. Every tool in this file is wired to the real backend via
-get_backend_client() (see backend_client.py) EXCEPT draft_purchase_order,
-which is intentionally, permanently AI-side-only - no proposal-only backend
-endpoint exists (the real backend's createIncoming() actually executes a
-purchase, it doesn't draft one), so it still calls into
-tools/mocks/insights_mock_data.py::draft_purchase_order_mock() and
-validates the result against tools/schemas/insights_schema.py before
-returning it as a plain dict, the same way every tool here used to before
-being wired. Every real backend call's typed errors (Unauthorized,
+Strands Agent. Every active tool in this file is wired to the real backend
+via get_backend_client() (see backend_client.py). Every real backend call's typed errors (Unauthorized,
 Forbidden, NotFound, ValidationError, Conflict, ServiceUnavailable - see
 backend_client.py) propagate uncaught, same convention as every other
 wired tool in this codebase.
@@ -27,12 +20,10 @@ from typing import Optional
 from strands import tool
 
 from backend_client import NotFound, get_backend_client
-from tools.mocks import insights_mock_data as mocks
 from tools.schemas.insights_schema import (
     AvailableStockResponse,
     ConsumptionAnomaliesResponse,
     DeadStockResponse,
-    DraftPurchaseOrderResponse,
     LowStockResponse,
     OpenPurchaseOrdersResponse,
     RecommendDeadStockTransferResponse,
@@ -669,28 +660,6 @@ async def get_open_purchase_orders() -> dict:
 
     return OpenPurchaseOrdersResponse.model_validate(
         {"orders": orders, "asOf": datetime.now().isoformat()}
-    ).model_dump(mode="json")
-
-
-@tool
-def draft_purchase_order(product_id: int, warehouse_id: int, quantity: int) -> dict:
-    """Draft a purchase order PROPOSAL for a product at a warehouse. Does NOT submit or execute anything.
-
-    This only produces a proposal for a human to review and approve. It
-    never creates a real purchase order, contacts a supplier, or commits
-    spend.
-
-    Args:
-        product_id: The product's database ID to reorder.
-        warehouse_id: The warehouse's database ID the stock should arrive at.
-        quantity: The quantity to include on the draft order.
-
-    Returns:
-        A dict describing the draft order (supplier, line items, estimated
-        total, estimated lead time). `isDraft` is always True.
-    """
-    return DraftPurchaseOrderResponse.model_validate(
-        mocks.draft_purchase_order_mock(product_id, warehouse_id, quantity)
     ).model_dump(mode="json")
 
 

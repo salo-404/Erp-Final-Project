@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import re
 import time
@@ -27,6 +28,7 @@ import pytest
 
 from agents.insights_agent import tools as insights_tools_module
 from agents.insights_agent.agent import INSIGHTS_TOOLS, build_insights_agent
+from agents.insights_agent.prompts import INSIGHTS_SYSTEM_PROMPT
 from agents.insights_agent.tools import (
     _build_dead_stock_transfer_reason,
     _build_transfer_recommendation_reason,
@@ -49,6 +51,7 @@ from backend_client import BackendClient, ServiceUnavailable
 from config.settings import settings
 from tests._helpers import backend_reachable, live_model_configured
 from tools.mocks import insights_mock_data
+from tools.query_database import query_database
 from tools.schemas.insights_schema import (
     ConsumptionAnomalyDirection,
     PurchaseOrderStatus,
@@ -63,7 +66,45 @@ def test_insights_agent_builds_standalone() -> None:
     """The Insights agent must construct without any Supervisor dependency."""
     agent = build_insights_agent()
     assert agent.name == "insights_agent"
-    assert len(INSIGHTS_TOOLS) == 12
+    assert len(INSIGHTS_TOOLS) == 10
+
+
+def test_active_insights_tool_registry_is_exact() -> None:
+    assert INSIGHTS_TOOLS == [
+        get_available_stock,
+        get_low_stock_products,
+        get_stockout_risk,
+        get_restock_recommendations,
+        get_transfer_recommendations,
+        analyze_dead_stock,
+        get_consumption_anomalies,
+        compare_suppliers,
+        get_open_purchase_orders,
+        query_database,
+    ]
+    assert INSIGHTS_TOOLS.count(query_database) == 1
+
+
+def test_deprecated_tools_are_not_active() -> None:
+    assert calculate_reorder_quantity not in INSIGHTS_TOOLS
+    assert recommend_dead_stock_transfer not in INSIGHTS_TOOLS
+    assert all(getattr(tool, "__name__", "") != "draft_purchase_order" for tool in INSIGHTS_TOOLS)
+
+
+def test_runtime_insights_tools_module_does_not_import_mocks() -> None:
+    assert "tools.mocks" not in inspect.getsource(insights_tools_module)
+
+
+def test_insights_prompt_matches_active_tool_boundaries() -> None:
+    assert "query_database()" in INSIGHTS_SYSTEM_PROMPT
+    assert "flexible read-only ERP questions" in INSIGHTS_SYSTEM_PROMPT
+    assert "specialized tools" in INSIGHTS_SYSTEM_PROMPT
+    for removed_tool_name in (
+        "calculate_reorder_quantity",
+        "recommend_dead_stock_transfer",
+        "draft_purchase_order",
+    ):
+        assert removed_tool_name not in INSIGHTS_SYSTEM_PROMPT
 
 
 def test_get_available_stock_rejects_empty_product_ids() -> None:
@@ -1896,36 +1937,23 @@ def test_insights_agent_live_openai_smoke() -> None:
 def test_insights_agent_reports_tool_error_instead_of_fabricating(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression test for a real bug caught in local testing (general error-handling gap, not tool-specific).
 
-    Forces draft_purchase_order to fail on its first call and asserts the
+    Forces get_available_stock's backend call to fail and asserts the
     agent's final answer is honest about it: either it genuinely retried (a
     second real call recorded below) or it clearly told the user the action
     failed - never that it silently claimed success with invented figures.
-    Deliberately uses draft_purchase_order, not one of the stockout/
-    dead-stock/supplier tools (those tested correctly already and are out
-    of scope here) - this is testing the general tool-error-handling
-    instruction, not any specific tool's behavior. Was get_available_stock,
-    then get_low_stock_products, then get_expiry_risk, until each in turn
-    either got wired to the real backend or was removed outright
-    (get_expiry_risk deleted 2026-08-21 - no expiry/batch model ever
-    existed in the real backend, so the tool was removed rather than left
-    permanently mocked). draft_purchase_order is intentionally, durably
-    mocked - blocked on a real backend gap (no proposal-only endpoint
-    exists, only one that executes for real) - so it won't need swapping
-    out again the next time a tool gets wired or removed.
+    This uses an active backend-backed tool and an HTTP mock transport; it
+    does not restore a mock-only production tool.
     """
     calls = {"n": 0}
-    original_draft_purchase_order_mock = insights_mock_data.draft_purchase_order_mock
 
-    def flaky_draft_purchase_order_mock(product_id: int, warehouse_id: int, quantity: int) -> dict:
+    def handler(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("Simulated transient failure from the inventory service.")
-        return original_draft_purchase_order_mock(product_id, warehouse_id, quantity)
+        return httpx.Response(503, json={"message": "Simulated transient failure"})
 
-    monkeypatch.setattr(insights_mock_data, "draft_purchase_order_mock", flaky_draft_purchase_order_mock)
+    _patch_backend_client(monkeypatch, handler)
 
     agent = build_insights_agent()
-    result = agent("Draft a purchase order proposal for product 102 at warehouse 1 for 50 units. Give me a short summary.")
+    result = agent("Check available stock for product ID 102 at warehouse 1. Give me a short summary.")
     text = str(result).strip()
     assert text, "Expected a non-empty response from the live model"
 
