@@ -519,12 +519,13 @@ async def calculate_reorder_quantity(product_id: int, warehouse_id: int) -> dict
 
 @tool
 async def compare_suppliers(product_id: int) -> dict:
-    """Compare available suppliers for a product on cost, lead time, and reliability.
+    """Compare suppliers using the backend ranking plus lead-time context.
 
     Returns a backend-scored list plus a single recommendedSupplier. The
-    recommended supplier is NOT necessarily the cheapest - it weighs lead
-    time and reliability alongside cost. Always mention this trade-off when
-    presenting the recommendation.
+    backend overallScore weights price (40%), on-time delivery (30%),
+    cancellation performance (20%), and product supply history (10%).
+    leadTimeDays is separate operational context from GET /suppliers and
+    does not contribute to overallScore or rank.
 
     Composes two real backend calls, never three: GET /supplier-intelligence/rank
     already returns every field GET /supplier-intelligence/compare does (rank
@@ -534,8 +535,8 @@ async def compare_suppliers(product_id: int) -> dict:
     rank === 1 entry - exactly what GET /supplier-intelligence/best does
     internally (ranked.find(s => s.rank === 1) ?? null) - so /best is
     never called either. leadTimeDays isn't on either supplier-intelligence
-    endpoint at all (it's a raw Supplier field), so one GET /suppliers call
-    supplies it for every supplier in one shot.
+    endpoint or in its ranking formula (it's a raw Supplier field), so one
+    GET /suppliers call supplies it for every supplier as additional context.
 
     Args:
         product_id: The product's database ID.
@@ -548,6 +549,8 @@ async def compare_suppliers(product_id: int) -> dict:
         `recommendedSupplier` (None when no supplier reached rank 1), and
         `recommendationStatus` ("supplier_recommended" or
         "no_recommendation" - a real, deliberate answer, not missing data).
+        overallScore is the backend's 40/30/20/10 weighted score described
+        above; leadTimeDays is not one of its components.
         unitCost/leadTimeDays/reliabilityScore/overallScore are None
         exactly when the real backend has no value for that supplier -
         never defaulted to 0.

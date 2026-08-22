@@ -107,6 +107,17 @@ def test_insights_prompt_matches_active_tool_boundaries() -> None:
         assert removed_tool_name not in INSIGHTS_SYSTEM_PROMPT
 
 
+def test_supplier_ranking_prompt_separates_score_from_lead_time_context() -> None:
+    normalized_prompt = " ".join(INSIGHTS_SYSTEM_PROMPT.split())
+
+    assert "price (40%)" in normalized_prompt
+    assert "on-time delivery (30%)" in normalized_prompt
+    assert "cancellation performance (20%)" in normalized_prompt
+    assert "product supply history (10%)" in normalized_prompt
+    assert "`leadTimeDays` is fetched separately" in normalized_prompt
+    assert "does NOT contribute to `overallScore` or rank" in normalized_prompt
+
+
 def test_get_available_stock_rejects_empty_product_ids() -> None:
     """product_ids is required - there is no "every product, every
     warehouse" mode (the real backend has no bulk-available endpoint; see
@@ -1695,7 +1706,8 @@ def test_compare_suppliers_normal_case_wired_end_to_end_against_mocked_backend(
     cheapest = min(result["scores"], key=lambda s: s["unitCost"])
     # The mock data is deliberately set up so the recommended supplier is
     # NOT the cheapest one - proving the tool surfaces the real backend's
-    # reliability-weighted pick, not just raw cost.
+    # backend's weighted pick, not just raw cost. leadTimeDays is returned
+    # separately as context and is not part of this ranking assertion.
     assert recommended["supplierId"] != cheapest["supplierId"]
 
 
