@@ -27,24 +27,24 @@ from strands import Agent, tool
 
 from agents.document_agent.prompts import DOCUMENT_SYSTEM_PROMPT
 from agents.document_agent.tools import (
-    choose_fulfillment_warehouse,
-    detect_discrepancy,
+    approve_document_review,
     detect_duplicate_document,
-    extract_document,
-    find_supplier,
-    match_invoice_to_po,
-    match_products,
+    get_document_review,
+    get_pending_document_reviews,
+    reject_document_review,
+    resolve_document_product,
+    resolve_document_supplier,
 )
 from config.settings import settings
 
 DOCUMENT_TOOLS = [
-    extract_document,
-    match_products,
-    find_supplier,
-    match_invoice_to_po,
-    choose_fulfillment_warehouse,
+    get_pending_document_reviews,
+    get_document_review,
+    resolve_document_product,
+    resolve_document_supplier,
+    approve_document_review,
+    reject_document_review,
     detect_duplicate_document,
-    detect_discrepancy,
 ]
 
 
@@ -76,22 +76,11 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
     without relying on those identifiers surviving a trip through
     free-text prose.
 
-    document_id comes from any document tool's call input (every document
-    tool requires it - see agents/document_agent/tools.py). product_ids
-    comes from two sources, merged: match_products()'s tool RESULT (present
-    on both the invoice and order branches) and choose_fulfillment_warehouse()'s
-    tool call INPUT (order branch only, where the agent already resolved
-    which products the order is about).
-
-    requested_quantities joins extract_document()'s extractedItems
-    (productNameRaw -> quantity) with match_products()'s matches
-    (productNameRaw -> productId) on the raw name, so a fulfillment check
-    downstream can compare AVAILABLE quantity against REQUESTED quantity,
-    not just confirm a product has some stock. Without this, "is there
-    stock" and "is there ENOUGH stock for this order" look identical from
-    the Supervisor's perspective - which is exactly how a real shortage
-    (e.g. 25 requested vs. 4 available) can get reported as "fulfillable"
-    by mistake.
+    document_id comes from document-specific tool input. product_ids come
+    only from RESOLVED resolve_document_product() results (plus the existing
+    fulfillment advisory input). requested_quantities come from the resolver's
+    echoed requested_quantity or from get_document_review() extractedItems,
+    so downstream fulfillment compares requested against available stock.
 
     Returns:
         {"document_id": str, "product_ids": list[int], "requested_quantities":
@@ -110,8 +99,8 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
             seen_product_ids.add(value)
             product_ids.append(value)
 
-    # Pass 1: tool_use blocks - map toolUseId -> tool name, grab document_id,
-    # and grab product_ids directly from choose_fulfillment_warehouse's input.
+    # Pass 1: map tool calls, capture the real document id, and retain any
+    # already-resolved IDs passed to the fulfillment advisory.
     for message in messages:
         for block in message.get("content", []):
             tool_use = block.get("toolUse")
@@ -134,17 +123,15 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
     if document_id is None:
         return None
 
-    # Pass 2: tool_result blocks - pull matched productIds out of any
-    # match_products() result (works for both invoice and order branches),
-    # and requested quantities per raw product name out of
-    # extract_document()'s result.
+    # Pass 2: pull exact IDs only from authoritative resolver results and
+    # quantities from those calls or the stored review's extracted items.
     for message in messages:
         for block in message.get("content", []):
             tool_result = block.get("toolResult")
             if not tool_result:
                 continue
             result_tool_name = tool_names_by_id.get(tool_result.get("toolUseId"))
-            if result_tool_name not in ("match_products", "extract_document"):
+            if result_tool_name not in ("resolve_document_product", "get_document_review"):
                 continue
 
             for content_item in tool_result.get("content") or []:
@@ -156,16 +143,18 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
                 except (json.JSONDecodeError, TypeError):
                     continue
 
-                if result_tool_name == "match_products":
-                    for match in payload.get("matches") or []:
-                        product_id = match.get("productId")
-                        _add_product_id(product_id)
-                        raw_name = match.get("productNameRaw")
-                        if isinstance(raw_name, str) and isinstance(product_id, int):
-                            product_id_by_raw_name[raw_name] = product_id
-                elif result_tool_name == "extract_document":
+                if result_tool_name == "resolve_document_product":
+                    product_id = payload.get("productId")
+                    raw_name = payload.get("productNameRaw")
+                    _add_product_id(product_id)
+                    if isinstance(raw_name, str) and isinstance(product_id, int):
+                        product_id_by_raw_name[raw_name] = product_id
+                    quantity = payload.get("requestedQuantity")
+                    if isinstance(raw_name, str) and isinstance(quantity, int):
+                        quantity_by_raw_name[raw_name] = quantity
+                elif result_tool_name == "get_document_review":
                     for item in payload.get("extractedItems") or []:
-                        raw_name = item.get("productNameRaw")
+                        raw_name = item.get("product")
                         quantity = item.get("quantity")
                         if isinstance(raw_name, str) and isinstance(quantity, int):
                             quantity_by_raw_name[raw_name] = quantity
@@ -185,7 +174,7 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
 
 @tool
 def document_agent_tool(query: str) -> str:
-    """Delegate a question about processing an uploaded invoice or order document - extraction, product/supplier matching, PO matching, fulfillment warehouse choice, duplicate detection, or discrepancy detection - to the Document specialist agent.
+    """Delegate pending-review lookup, document matching, advisory checks, or review decisions to the Document specialist agent.
 
     Args:
         query: The user's document-processing request, in natural language.

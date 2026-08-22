@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import time
 
@@ -72,8 +73,10 @@ import httpx
 import pytest
 
 from agents.document_agent import tools as document_tools_module
-from agents.document_agent.agent import DOCUMENT_TOOLS, build_document_agent
+from agents.document_agent.agent import DOCUMENT_TOOLS, _extract_matched_data, build_document_agent
+from agents.document_agent.prompts import DOCUMENT_SYSTEM_PROMPT
 from agents.document_agent.tools import (
+    DocumentReviewAuthorizationRequired,
     _NEAREST_WAREHOUSE_PATH,
     _WAREHOUSE_ELIGIBLE_PATH,
     _classify_fuzzy_match,
@@ -91,13 +94,19 @@ from agents.document_agent.tools import (
     _sum_extracted_items_value,
     _sum_po_items_value,
     _totals_close,
+    approve_document_review,
     choose_fulfillment_warehouse,
     detect_discrepancy,
     detect_duplicate_document,
     extract_document,
     find_supplier,
+    get_document_review,
+    get_pending_document_reviews,
     match_invoice_to_po,
     match_products,
+    reject_document_review,
+    resolve_document_product,
+    resolve_document_supplier,
 )
 from backend_client import BackendClient, NotFound, ServiceUnavailable, get_backend_client
 from config.settings import settings
@@ -189,6 +198,114 @@ def test_document_agent_builds_standalone() -> None:
     agent = build_document_agent()
     assert agent.name == "document_agent"
     assert len(DOCUMENT_TOOLS) == 7
+
+
+def test_document_runtime_registry_is_exact() -> None:
+    assert DOCUMENT_TOOLS == [
+        get_pending_document_reviews,
+        get_document_review,
+        resolve_document_product,
+        resolve_document_supplier,
+        approve_document_review,
+        reject_document_review,
+        detect_duplicate_document,
+    ]
+    for inactive_tool in (
+        extract_document,
+        match_products,
+        find_supplier,
+        match_invoice_to_po,
+        detect_discrepancy,
+        choose_fulfillment_warehouse,
+    ):
+        assert inactive_tool not in DOCUMENT_TOOLS
+
+
+def test_document_runtime_has_no_mock_dependency() -> None:
+    assert "tools.mocks" not in inspect.getsource(document_tools_module)
+
+
+def test_document_prompt_locks_current_ownership_and_safety() -> None:
+    prompt = " ".join(DOCUMENT_SYSTEM_PROMPT.split())
+    assert "Raw file extraction happens before you are called" in prompt
+    assert "is not one of your tools" in prompt
+    assert "Never mutate inventory directly" in prompt
+    assert "Never invent or guess" in prompt
+    assert "authenticated human ADMIN" in prompt
+    assert "Never claim a decision occurred unless the backend tool explicitly confirms it" in prompt
+    assert "Do not invent or refer to a separate PurchaseOrder model" in prompt
+
+
+def test_structured_handoff_preserves_exact_resolved_ids_and_quantities() -> None:
+    messages = [
+        {"content": [
+            {"toolUse": {"toolUseId": "r1", "name": "resolve_document_product", "input": {
+                "document_id": "501", "product_name": "27in Monitor", "requested_quantity": 12,
+            }}},
+            {"toolUse": {"toolUseId": "r2", "name": "resolve_document_product", "input": {
+                "document_id": "501", "product_name": "Mechanical Keyboard", "requested_quantity": 25,
+            }}},
+        ]},
+        {"content": [
+            {"toolResult": {"toolUseId": "r1", "content": [{"text": json.dumps({
+                "documentId": "501", "productNameRaw": "27in Monitor",
+                "requestedQuantity": 12, "status": "RESOLVED", "productId": 103,
+            })}]}},
+            {"toolResult": {"toolUseId": "r2", "content": [{"text": json.dumps({
+                "documentId": "501", "productNameRaw": "Mechanical Keyboard",
+                "requestedQuantity": 25, "status": "RESOLVED", "productId": 108,
+            })}]}},
+        ]},
+    ]
+
+    assert _extract_matched_data(messages) == {
+        "document_id": "501",
+        "product_ids": [103, 108],
+        "requested_quantities": [
+            {"product_id": 103, "quantity": 12},
+            {"product_id": 108, "quantity": 25},
+        ],
+    }
+
+
+def test_review_decisions_fail_closed_without_admin_context() -> None:
+    with pytest.raises(DocumentReviewAuthorizationRequired, match="no approval occurred"):
+        asyncio.run(approve_document_review(document_id="501", items=[{"productId": 103, "quantity": 1}]))
+    with pytest.raises(DocumentReviewAuthorizationRequired, match="no rejection occurred"):
+        asyncio.run(reject_document_review(document_id="501", rejection_reason="Duplicate"))
+
+
+def test_core_read_tools_use_authoritative_document_review_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append((request.url.path, request.url.params.get("query", "")))
+        if request.url.path == "/auth/login":
+            return httpx.Response(200, json={"access_token": _fake_jwt()})
+        if request.url.path == "/document-review/pending":
+            return httpx.Response(200, json=[{"id": 501, "status": "PENDING_REVIEW"}])
+        if request.url.path == "/document-review/501":
+            return httpx.Response(200, json={"id": 501, "status": "PENDING_REVIEW", "extractedItems": []})
+        if request.url.path == "/document-review/resolve-product":
+            return httpx.Response(200, json=[{"productId": 103, "name": "27in Monitor", "score": 1}])
+        if request.url.path == "/document-review/resolve-supplier":
+            return httpx.Response(200, json=[{"supplierId": 41, "name": "TechSource", "score": 1}])
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+
+    assert asyncio.run(get_pending_document_reviews())["reviews"][0]["id"] == 501
+    assert asyncio.run(get_document_review(document_id="501"))["id"] == 501
+    product = asyncio.run(resolve_document_product("501", "27in Monitor", 12))
+    supplier = asyncio.run(resolve_document_supplier("501", "TechSource"))
+
+    assert product["status"] == "RESOLVED" and product["productId"] == 103
+    assert product["requestedQuantity"] == 12
+    assert supplier["status"] == "RESOLVED" and supplier["supplierId"] == 41
+    assert ("/document-review/resolve-product", "27in Monitor") in requested
+    assert ("/document-review/resolve-supplier", "TechSource") in requested
 
 
 def test_map_extracted_items_handles_missing_price() -> None:

@@ -18,6 +18,7 @@ whichever provider isn't currently active in the environment.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import re
 import time
@@ -31,6 +32,8 @@ from agents.document_agent.agent import document_agent_tool
 from agents.insights_agent import tools as insights_tools_module
 from agents.insights_agent.agent import insights_agent_tool
 from agents.supervisor.agent import SUPERVISOR_TOOLS, build_supervisor_agent
+from agents.supervisor import agent as supervisor_agent_module
+from agents.supervisor.prompts import SUPERVISOR_SYSTEM_PROMPT
 from backend_client import BackendClient
 from config.settings import settings
 from tests._helpers import live_model_configured
@@ -44,7 +47,7 @@ _MATCHED_DATA_RE = re.compile(r"\[MATCHED_DATA\]\s*(\{.*?\})\s*\[/MATCHED_DATA\]
 # for the fuller picture), so any fictional-looking id works here. This
 # used to be tools/mocks/document_mock_data.py's KNOWN_ORDER_DOCUMENT_ID
 # constant, now inlined directly since that file (100% dead) was deleted.
-_ORDER_PROMPT_PLACEHOLDER_DOCUMENT_ID = "doc_ord_2026_0815_001"
+_ORDER_PROMPT_PLACEHOLDER_DOCUMENT_ID = "801"
 
 # Same fixed catalog test_insights_agent.py's mock data used to encode
 # before get_available_stock was wired to the real backend - kept here so
@@ -77,6 +80,36 @@ def test_supervisor_tools_list_has_exactly_two_specialists() -> None:
     assert len(SUPERVISOR_TOOLS) == 2
     assert insights_agent_tool in SUPERVISOR_TOOLS
     assert document_agent_tool in SUPERVISOR_TOOLS
+
+
+def test_supervisor_does_not_expose_sql_rag_or_runtime_mocks() -> None:
+    tool_names = {getattr(tool, "__name__", "") for tool in SUPERVISOR_TOOLS}
+    assert "query_database" not in tool_names
+    assert "tools.mocks" not in inspect.getsource(supervisor_agent_module)
+
+
+def test_supervisor_prompt_has_explicit_specialist_routing_boundaries() -> None:
+    prompt = " ".join(SUPERVISOR_SYSTEM_PROMPT.split())
+
+    assert "Route pure inventory and analytics requests to insights_agent_tool" in prompt
+    assert "Route pure document/review requests to document_agent_tool" in prompt
+    assert "document_agent_tool first and insights_agent_tool second" in prompt
+    assert "Never call query_database directly" in prompt
+    assert "must never write or execute SQL directly" in prompt
+    assert "Never ask Insights to guess IDs from product names" in prompt
+    assert "Insights can evaluate full-order AVAILABLE stock and recommend a fulfillment warehouse" in prompt
+    assert "NO ability to choose a fulfillment warehouse" not in prompt
+    assert 'NEVER ask it to "choose a warehouse"' not in prompt
+
+
+def test_supervisor_prompt_excludes_removed_tools_and_fourth_agent() -> None:
+    for removed_tool_name in (
+        "draft_purchase_order",
+        "calculate_reorder_quantity",
+        "recommend_dead_stock_transfer",
+    ):
+        assert removed_tool_name not in SUPERVISOR_SYSTEM_PROMPT
+    assert "Control Tower is batch narration, not an agent" in SUPERVISOR_SYSTEM_PROMPT
 
 
 def test_supervisor_agent_builds_and_registers_both_specialist_tools() -> None:
@@ -159,6 +192,10 @@ def _tool_use_and_result_by_name(messages: list[dict]) -> tuple[dict[str, list[d
     return tool_uses_by_name, tool_results_by_name
 
 
+@pytest.mark.skipif(
+    not live_model_configured(),
+    reason="No live model configured for MODEL_PROVIDER - skipping Supervisor routing integration test",
+)
 def test_flagship_scenario_threads_matched_product_ids_from_document_to_insights(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -329,10 +366,10 @@ def test_flagship_scenario_threads_matched_product_ids_from_document_to_insights
     agent = build_supervisor_agent()
     result = agent(
         f"The order document with document_id={_ORDER_PROMPT_PLACEHOLDER_DOCUMENT_ID} has ALREADY been "
-        "extracted - do not call extract_document for it. Here is its already-extracted order "
+        "extracted upstream. Here is its already-extracted order "
         "data: customer Bluewater Retail Group, ordering 12 units of a 27in Monitor and 25 "
         "units of a Mechanical Keyboard. Match these line items against our product catalog, "
-        "choose a fulfillment warehouse, and tell me whether we can actually fulfill it right "
+        "and tell me whether we can actually fulfill it right "
         "now - compare available stock against the requested quantity for each item."
     )
     final_text = str(result)
@@ -356,14 +393,22 @@ def test_flagship_scenario_threads_matched_product_ids_from_document_to_insights
     assert set(matched_data["product_ids"]) >= {103, 108}, (
         f"Expected product_ids to include 103 and 108, got {matched_data['product_ids']!r}"
     )
+    assert {item["product_id"]: item["quantity"] for item in matched_data["requested_quantities"]} == {
+        103: 12,
+        108: 25,
+    }
 
     # 2. insights_agent_tool was called afterward with those IDs explicitly
     # present in the query text sent to it (not a generic question).
     insights_calls = tool_uses_by_name.get("insights_agent_tool")
     assert insights_calls, "Expected insights_agent_tool to have been called at least once"
     assert any(
-        "103" in call.get("query", "") and "108" in call.get("query", "") for call in insights_calls
-    ), f"Expected an insights_agent_tool call whose query explicitly mentions IDs 103 and 108, got: {insights_calls!r}"
+        all(value in call.get("query", "") for value in ("103", "108", "12", "25"))
+        for call in insights_calls
+    ), (
+        "Expected an insights_agent_tool call whose query explicitly mentions IDs 103 and 108 "
+        f"and requested quantities 12 and 25, got: {insights_calls!r}"
+    )
 
     # 3. The real get_available_stock tool executed genuine backend calls
     # covering both items - not a None/generic call.

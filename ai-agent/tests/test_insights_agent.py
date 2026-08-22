@@ -45,6 +45,7 @@ from agents.insights_agent.tools import (
     get_restock_recommendations,
     get_stockout_risk,
     get_transfer_recommendations,
+    recommend_fulfillment_warehouse,
     recommend_dead_stock_transfer,
 )
 from backend_client import BackendClient, ServiceUnavailable
@@ -66,7 +67,7 @@ def test_insights_agent_builds_standalone() -> None:
     """The Insights agent must construct without any Supervisor dependency."""
     agent = build_insights_agent()
     assert agent.name == "insights_agent"
-    assert len(INSIGHTS_TOOLS) == 10
+    assert len(INSIGHTS_TOOLS) == 11
 
 
 def test_active_insights_tool_registry_is_exact() -> None:
@@ -80,6 +81,7 @@ def test_active_insights_tool_registry_is_exact() -> None:
         get_consumption_anomalies,
         compare_suppliers,
         get_open_purchase_orders,
+        recommend_fulfillment_warehouse,
         query_database,
     ]
     assert INSIGHTS_TOOLS.count(query_database) == 1
@@ -116,6 +118,13 @@ def test_supplier_ranking_prompt_separates_score_from_lead_time_context() -> Non
     assert "product supply history (10%)" in normalized_prompt
     assert "`leadTimeDays` is fetched separately" in normalized_prompt
     assert "does NOT contribute to `overallScore` or rank" in normalized_prompt
+
+
+def test_fulfillment_prompt_uses_available_stock_and_optional_geography() -> None:
+    normalized_prompt = " ".join(INSIGHTS_SYSTEM_PROMPT.split())
+    assert "recommend_fulfillment_warehouse()" in normalized_prompt
+    assert "full-order eligibility from AVAILABLE stock" in normalized_prompt
+    assert "delivery country, region, and address" in normalized_prompt
 
 
 def test_get_available_stock_rejects_empty_product_ids() -> None:
@@ -360,6 +369,53 @@ def _patch_backend_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
         transport=httpx.MockTransport(handler),
     )
     monkeypatch.setattr(insights_tools_module, "get_backend_client", lambda: test_client)
+
+
+def test_recommend_fulfillment_warehouse_uses_backend_available_stock_and_geography(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path == "/auth/login":
+            return httpx.Response(200, json={"access_token": _fake_jwt()})
+        if request.url.path == "/warehouse-routing/eligible-warehouses":
+            payload = json.loads(request.content)
+            assert payload["items"] == [
+                {"productId": 103, "quantity": 12},
+                {"productId": 108, "quantity": 25},
+            ]
+            return httpx.Response(200, json=[
+                {"warehouseId": 2, "warehouseName": "North", "location": "Tripoli", "items": [
+                    {"productId": 103, "onHand": 20, "reserved": 8, "available": 12, "requestedQuantity": 12},
+                    {"productId": 108, "onHand": 40, "reserved": 10, "available": 30, "requestedQuantity": 25},
+                ]},
+                {"warehouseId": 3, "warehouseName": "Central", "location": "Beirut", "items": [
+                    {"productId": 103, "onHand": 30, "reserved": 2, "available": 28, "requestedQuantity": 12},
+                    {"productId": 108, "onHand": 30, "reserved": 1, "available": 29, "requestedQuantity": 25},
+                ]},
+            ])
+        if request.url.path == "/path-optimizer/nearest-warehouse":
+            return httpx.Response(200, json={"consideredCandidates": [
+                {"warehouseId": 2, "distanceKm": 80.0},
+                {"warehouseId": 3, "distanceKm": 12.0},
+            ]})
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+    result = asyncio.run(recommend_fulfillment_warehouse(
+        items=[{"productId": 103, "quantity": 12}, {"productId": 108, "quantity": 25}],
+        delivery_country="Lebanon",
+        delivery_region="Beirut",
+        delivery_address="Hamra",
+    ))
+
+    assert result["status"] == "RECOMMENDED"
+    assert result["recommendedWarehouseId"] == 3
+    assert result["geographyConsidered"] is True
+    assert "/warehouse-routing/eligible-warehouses" in requested_paths
+    assert "/path-optimizer/nearest-warehouse" in requested_paths
 
 
 def test_recommend_dead_stock_transfer_wired_end_to_end_against_mocked_backend(

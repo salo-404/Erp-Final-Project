@@ -71,6 +71,10 @@ from tools.schemas.document_schema import (
     MatchProductsResponse,
 )
 
+
+class DocumentReviewAuthorizationRequired(RuntimeError):
+    """Raised when an ADMIN-authenticated review decision cannot be made."""
+
 # Classification thresholds for _classify_fuzzy_match(), validated against
 # the real product/supplier catalog before adopting (see the wiring
 # investigation report) - not guesses. rapidfuzz.fuzz.WRatio's native scale
@@ -120,6 +124,106 @@ def _map_extracted_items(raw_items: list[dict]) -> list[dict]:
         }
         for item in raw_items
     ]
+
+
+def _numeric_review_id(document_id: str) -> int:
+    try:
+        return int(document_id)
+    except ValueError as exc:
+        raise ValueError(
+            f"document_id must be a real numeric PendingDocumentReview id, got {document_id!r}"
+        ) from exc
+
+
+@tool
+async def get_pending_document_reviews() -> dict:
+    """Return real PendingDocumentReview rows still awaiting human review."""
+    client = get_backend_client()
+    reviews = await client.get("/document-review/pending")
+    return {"reviews": reviews}
+
+
+@tool
+async def get_document_review(document_id: str) -> dict:
+    """Fetch one real document-review record; raw extraction already occurred upstream."""
+    client = get_backend_client()
+    return await client.get(f"/document-review/{_numeric_review_id(document_id)}")
+
+
+@tool
+async def resolve_document_product(
+    document_id: str,
+    product_name: str,
+    requested_quantity: Optional[int] = None,
+) -> dict:
+    """Get authoritative backend Product suggestions for one extracted line item.
+
+    A product is marked RESOLVED only for one unique exact backend match.
+    Partial/multiple suggestions remain advisory and require human resolution.
+    requested_quantity is echoed solely for the structured Supervisor handoff.
+    """
+    _numeric_review_id(document_id)
+    client = get_backend_client()
+    suggestions = await client.get(
+        "/document-review/resolve-product",
+        params={"query": product_name},
+    )
+    exact = [suggestion for suggestion in suggestions if suggestion.get("score") == 1]
+    resolved = exact[0] if len(exact) == 1 else None
+    return {
+        "documentId": document_id,
+        "productNameRaw": product_name,
+        "requestedQuantity": requested_quantity,
+        "status": "RESOLVED" if resolved else ("AMBIGUOUS" if suggestions else "NOT_FOUND"),
+        "productId": resolved["productId"] if resolved else None,
+        "suggestions": suggestions,
+    }
+
+
+@tool
+async def resolve_document_supplier(document_id: str, supplier_name: str) -> dict:
+    """Get authoritative backend Supplier suggestions for an extracted supplier name."""
+    _numeric_review_id(document_id)
+    client = get_backend_client()
+    suggestions = await client.get(
+        "/document-review/resolve-supplier",
+        params={"query": supplier_name},
+    )
+    exact = [suggestion for suggestion in suggestions if suggestion.get("score") == 1]
+    resolved = exact[0] if len(exact) == 1 else None
+    return {
+        "documentId": document_id,
+        "supplierNameRaw": supplier_name,
+        "status": "RESOLVED" if resolved else ("AMBIGUOUS" if suggestions else "NOT_FOUND"),
+        "supplierId": resolved["supplierId"] if resolved else None,
+        "suggestions": suggestions,
+    }
+
+
+@tool
+async def approve_document_review(document_id: str, items: list[dict]) -> dict:
+    """Approve a review only with the future caller's propagated ADMIN identity.
+
+    The current AI backend client authenticates as an EMPLOYEE service account,
+    so this fails closed and never calls the ADMIN-only backend endpoint.
+    """
+    _numeric_review_id(document_id)
+    raise DocumentReviewAuthorizationRequired(
+        "Document approval requires the authenticated human ADMIN context; "
+        "that context is not propagated to the Document Agent yet, so no approval occurred."
+    )
+
+
+@tool
+async def reject_document_review(document_id: str, rejection_reason: str) -> dict:
+    """Reject a review only with the future caller's propagated ADMIN identity."""
+    _numeric_review_id(document_id)
+    if not rejection_reason.strip():
+        raise ValueError("rejection_reason must not be empty")
+    raise DocumentReviewAuthorizationRequired(
+        "Document rejection requires the authenticated human ADMIN context; "
+        "that context is not propagated to the Document Agent yet, so no rejection occurred."
+    )
 
 
 @tool

@@ -25,6 +25,7 @@ from agents.insights_agent.tools import (
     get_restock_recommendations,
     get_stockout_risk,
     get_transfer_recommendations,
+    recommend_fulfillment_warehouse,
 )
 from config.settings import settings
 from tools.query_database import query_database
@@ -39,6 +40,7 @@ INSIGHTS_TOOLS = [
     get_consumption_anomalies,
     compare_suppliers,
     get_open_purchase_orders,
+    recommend_fulfillment_warehouse,
     query_database,
 ]
 

@@ -19,7 +19,7 @@ from typing import Optional
 
 from strands import tool
 
-from backend_client import NotFound, get_backend_client
+from backend_client import BackendError, NotFound, get_backend_client
 from tools.schemas.insights_schema import (
     AvailableStockResponse,
     ConsumptionAnomaliesResponse,
@@ -157,6 +157,85 @@ async def get_available_stock(product_ids: list[int], warehouse_id: Optional[int
     return AvailableStockResponse.model_validate(
         {"items": items, "asOf": datetime.now().isoformat()}
     ).model_dump(mode="json")
+
+
+@tool
+async def recommend_fulfillment_warehouse(
+    items: list[dict],
+    delivery_country: Optional[str] = None,
+    delivery_region: Optional[str] = None,
+    delivery_address: Optional[str] = None,
+) -> dict:
+    """Recommend a warehouse for an order using backend available stock and geography.
+
+    items must be exact resolved productId/quantity pairs. The backend checks
+    whether one warehouse can fulfill the entire order using onHand minus
+    ACTIVE reservations. Geography is best-effort; without confirmed distance,
+    eligible warehouses are returned without inventing a nearest choice.
+    """
+    if not items:
+        raise ValueError("items must not be empty")
+
+    client = get_backend_client()
+    eligible = await client.post(
+        "/warehouse-routing/eligible-warehouses",
+        json={
+            "items": items,
+            "deliveryCountry": delivery_country,
+            "deliveryRegion": delivery_region,
+        },
+    )
+    if not eligible:
+        return {
+            "status": "NO_ELIGIBLE_WAREHOUSE",
+            "recommendedWarehouseId": None,
+            "recommendedWarehouseName": None,
+            "eligibleWarehouses": [],
+            "geographyConsidered": False,
+        }
+
+    distance_by_warehouse_id: dict[int, float] = {}
+    if any((delivery_country, delivery_region, delivery_address)):
+        first_item = items[0]
+        try:
+            distance_result = await client.post(
+                "/path-optimizer/nearest-warehouse",
+                json={
+                    "productId": first_item["productId"],
+                    "requiredQuantity": first_item["quantity"],
+                    "deliveryCountry": delivery_country,
+                    "deliveryRegion": delivery_region,
+                    "deliveryAddress": delivery_address,
+                },
+            )
+            eligible_ids = {warehouse["warehouseId"] for warehouse in eligible}
+            distance_by_warehouse_id = {
+                candidate["warehouseId"]: candidate["distanceKm"]
+                for candidate in distance_result.get("consideredCandidates", [])
+                if candidate["warehouseId"] in eligible_ids and candidate.get("distanceKm") is not None
+            }
+        except BackendError:
+            distance_by_warehouse_id = {}
+
+    ranked = sorted(
+        (warehouse for warehouse in eligible if warehouse["warehouseId"] in distance_by_warehouse_id),
+        key=lambda warehouse: (
+            distance_by_warehouse_id[warehouse["warehouseId"]],
+            warehouse["warehouseId"],
+        ),
+    )
+    recommended = ranked[0] if ranked else None
+
+    return {
+        "status": "RECOMMENDED" if recommended else "ELIGIBLE_WAREHOUSES_FOUND",
+        "recommendedWarehouseId": recommended["warehouseId"] if recommended else None,
+        "recommendedWarehouseName": recommended["warehouseName"] if recommended else None,
+        "eligibleWarehouses": [
+            {**warehouse, "distanceKm": distance_by_warehouse_id.get(warehouse["warehouseId"])}
+            for warehouse in eligible
+        ],
+        "geographyConsidered": recommended is not None,
+    }
 
 
 @tool
