@@ -36,6 +36,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from agents.supervisor.agent import build_supervisor_agent
 from agents.supervisor.gate import is_in_scope
+from request_context import human_auth_scope
 
 app = BedrockAgentCoreApp()
 
@@ -47,8 +48,23 @@ app = BedrockAgentCoreApp()
 _supervisor_agent = build_supervisor_agent()
 
 
+def _human_bearer_token(context: object) -> str | None:
+    """Extract a human bearer token from AgentCore's request headers."""
+    headers = getattr(context, "request_headers", None) or {}
+    authorization = next(
+        (value for key, value in headers.items() if key.lower() == "authorization"),
+        None,
+    )
+    if not isinstance(authorization, str):
+        return None
+    scheme, separator, token = authorization.strip().partition(" ")
+    if separator and scheme.lower() == "bearer" and token.strip():
+        return token.strip()
+    return None
+
+
 @app.entrypoint
-def invoke(payload: dict) -> dict:
+def invoke(payload: dict, context: object) -> dict:
     """AgentCore Runtime entrypoint - one HTTP invocation in, one JSON response out.
 
     Mirrors agents/supervisor/agent.py's handle_query(), but against the
@@ -60,6 +76,8 @@ def invoke(payload: dict) -> dict:
     Args:
         payload: The raw JSON request body. Must contain a "prompt" key
             with the user's query as a string.
+        context: AgentCore request context. Its Authorization bearer value,
+            when present, is scoped to this invocation as the human identity.
 
     Returns:
         {"result": <the Supervisor's text response>} - either the
@@ -86,7 +104,8 @@ def invoke(payload: dict) -> dict:
             )
         }
 
-    response = _supervisor_agent(prompt)
+    with human_auth_scope(_human_bearer_token(context)):
+        response = _supervisor_agent(prompt)
     return {"result": str(response)}
 
 

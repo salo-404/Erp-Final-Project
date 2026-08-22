@@ -60,7 +60,13 @@ from typing import Optional
 from rapidfuzz import fuzz, utils
 from strands import tool
 
-from backend_client import BackendClient, BackendError, get_backend_client
+from backend_client import (
+    BackendClient,
+    BackendError,
+    HumanAuthenticatedBackendClient,
+    get_backend_client,
+)
+from request_context import get_human_bearer_token
 from tools.schemas.document_schema import (
     ChooseFulfillmentWarehouseResponse,
     DetectDiscrepancyResponse,
@@ -201,28 +207,60 @@ async def resolve_document_supplier(document_id: str, supplier_name: str) -> dic
 
 
 @tool
-async def approve_document_review(document_id: str, items: list[dict]) -> dict:
-    """Approve a review only with the future caller's propagated ADMIN identity.
+async def approve_document_review(
+    document_id: str,
+    items: list[dict],
+    expected_date: Optional[str] = None,
+    supplier_id: Optional[int] = None,
+    destination_warehouse_id: Optional[int] = None,
+    source_warehouse_id: Optional[int] = None,
+    party_name: Optional[str] = None,
+    delivery_country: Optional[str] = None,
+    delivery_region: Optional[str] = None,
+    delivery_address: Optional[str] = None,
+) -> dict:
+    """Approve a review as the authenticated human; the backend enforces ADMIN."""
+    review_id = _numeric_review_id(document_id)
+    bearer_token = get_human_bearer_token()
+    if not bearer_token:
+        raise DocumentReviewAuthorizationRequired(
+            "Document approval requires an authenticated human ADMIN context; "
+            "no approval occurred."
+        )
 
-    The current AI backend client authenticates as an EMPLOYEE service account,
-    so this fails closed and never calls the ADMIN-only backend endpoint.
-    """
-    _numeric_review_id(document_id)
-    raise DocumentReviewAuthorizationRequired(
-        "Document approval requires the authenticated human ADMIN context; "
-        "that context is not propagated to the Document Agent yet, so no approval occurred."
+    body = {"items": items}
+    optional_fields = {
+        "expectedDate": expected_date,
+        "supplierId": supplier_id,
+        "destinationWarehouseId": destination_warehouse_id,
+        "sourceWarehouseId": source_warehouse_id,
+        "partyName": party_name,
+        "deliveryCountry": delivery_country,
+        "deliveryRegion": delivery_region,
+        "deliveryAddress": delivery_address,
+    }
+    body.update({key: value for key, value in optional_fields.items() if value is not None})
+    return await HumanAuthenticatedBackendClient(bearer_token).post(
+        f"/document-review/{review_id}/approve",
+        json=body,
     )
 
 
 @tool
 async def reject_document_review(document_id: str, rejection_reason: str) -> dict:
-    """Reject a review only with the future caller's propagated ADMIN identity."""
-    _numeric_review_id(document_id)
+    """Reject a review as the authenticated human; the backend enforces ADMIN."""
+    review_id = _numeric_review_id(document_id)
     if not rejection_reason.strip():
         raise ValueError("rejection_reason must not be empty")
-    raise DocumentReviewAuthorizationRequired(
-        "Document rejection requires the authenticated human ADMIN context; "
-        "that context is not propagated to the Document Agent yet, so no rejection occurred."
+    bearer_token = get_human_bearer_token()
+    if not bearer_token:
+        raise DocumentReviewAuthorizationRequired(
+            "Document rejection requires an authenticated human ADMIN context; "
+            "no rejection occurred."
+        )
+    return await HumanAuthenticatedBackendClient(bearer_token).post(
+        f"/document-review/{review_id}/reject",
+        json={"rejectionReason": rejection_reason},
     )
 
 

@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from strands import Agent
 
+from request_context import human_auth_scope
+
 from agents.document_agent.agent import document_agent_tool
 from agents.insights_agent.agent import insights_agent_tool
 from agents.supervisor.gate import is_in_scope
@@ -72,7 +74,7 @@ def build_supervisor_agent() -> Agent:
     )
 
 
-def handle_query(query: str) -> str:
+def handle_query(query: str, human_bearer_token: str | None = None) -> str:
     """Entry point a caller (e.g. an AgentCore Runtime handler) would use.
 
     Applies the scope gate (layer 2 of the three-layer defense) BEFORE the
@@ -94,7 +96,8 @@ def handle_query(query: str) -> str:
         )
 
     agent = build_supervisor_agent()
-    result = agent(query)
+    with human_auth_scope(human_bearer_token):
+        result = agent(query)
     return str(result)
 
 

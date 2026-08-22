@@ -108,8 +108,17 @@ from agents.document_agent.tools import (
     resolve_document_product,
     resolve_document_supplier,
 )
-from backend_client import BackendClient, NotFound, ServiceUnavailable, get_backend_client
+from backend_client import (
+    BackendClient,
+    Forbidden,
+    HumanAuthenticatedBackendClient,
+    NotFound,
+    ServiceUnavailable,
+    Unauthorized,
+    get_backend_client,
+)
 from config.settings import settings
+from request_context import human_auth_scope
 from tests._helpers import backend_reachable, live_model_configured
 
 UNKNOWN_DOCUMENT_ID = "doc_totally_made_up_id"
@@ -268,11 +277,138 @@ def test_structured_handoff_preserves_exact_resolved_ids_and_quantities() -> Non
     }
 
 
-def test_review_decisions_fail_closed_without_admin_context() -> None:
+def test_review_decisions_fail_closed_without_admin_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructed = {"count": 0}
+
+    def forbidden_constructor(*args, **kwargs):
+        constructed["count"] += 1
+        raise AssertionError("human backend client must not be constructed")
+
+    monkeypatch.setattr(
+        document_tools_module,
+        "HumanAuthenticatedBackendClient",
+        forbidden_constructor,
+    )
     with pytest.raises(DocumentReviewAuthorizationRequired, match="no approval occurred"):
         asyncio.run(approve_document_review(document_id="501", items=[{"productId": 103, "quantity": 1}]))
     with pytest.raises(DocumentReviewAuthorizationRequired, match="no rejection occurred"):
         asyncio.run(reject_document_review(document_id="501", rejection_reason="Duplicate"))
+    assert constructed["count"] == 0
+
+
+def _patch_human_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
+    monkeypatch.setattr(
+        document_tools_module,
+        "HumanAuthenticatedBackendClient",
+        lambda token: HumanAuthenticatedBackendClient(
+            token,
+            base_url="http://backend.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+
+def test_review_decisions_use_human_bearer_token_and_real_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            (request.url.path, request.headers["Authorization"], json.loads(request.content))
+        )
+        if request.url.path == "/document-review/501/approve":
+            return httpx.Response(200, json={"id": 501, "status": "APPROVED"})
+        if request.url.path == "/document-review/502/reject":
+            return httpx.Response(200, json={"id": 502, "status": "REJECTED"})
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_human_client(monkeypatch, handler)
+    with human_auth_scope("human-admin-jwt"):
+        approved = asyncio.run(
+            approve_document_review(
+                document_id="501",
+                items=[{"productId": 103, "quantity": 2}],
+                supplier_id=41,
+                destination_warehouse_id=2,
+            )
+        )
+        rejected = asyncio.run(
+            reject_document_review(document_id="502", rejection_reason="Duplicate")
+        )
+
+    assert approved["status"] == "APPROVED"
+    assert rejected["status"] == "REJECTED"
+    assert requests == [
+        (
+            "/document-review/501/approve",
+            "Bearer human-admin-jwt",
+            {
+                "items": [{"productId": 103, "quantity": 2}],
+                "supplierId": 41,
+                "destinationWarehouseId": 2,
+            },
+        ),
+        (
+            "/document-review/502/reject",
+            "Bearer human-admin-jwt",
+            {"rejectionReason": "Duplicate"},
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [(401, Unauthorized), (403, Forbidden)],
+)
+def test_review_authorization_failures_propagate_without_fake_success(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    error_type: type[Exception],
+) -> None:
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        return httpx.Response(status, json={"message": "not authorized"})
+
+    _patch_human_client(monkeypatch, handler)
+    with human_auth_scope("invalid-or-employee-jwt"):
+        with pytest.raises(error_type):
+            asyncio.run(
+                approve_document_review(
+                    document_id="501",
+                    items=[{"productId": 103, "quantity": 1}],
+                )
+            )
+    assert calls["count"] == 1
+
+
+def test_human_auth_is_request_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    authorizations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authorizations.append(request.headers["Authorization"])
+        return httpx.Response(200, json={"ok": True})
+
+    _patch_human_client(monkeypatch, handler)
+    for token, review_id in (("request-a", "501"), ("request-b", "502")):
+        with human_auth_scope(token):
+            asyncio.run(reject_document_review(review_id, "Duplicate"))
+    with pytest.raises(DocumentReviewAuthorizationRequired):
+        asyncio.run(reject_document_review("503", "Duplicate"))
+
+    assert authorizations == ["Bearer request-a", "Bearer request-b"]
+
+
+def test_human_jwt_is_not_llm_visible() -> None:
+    for review_tool in (approve_document_review, reject_document_review):
+        parameters = inspect.signature(review_tool).parameters
+        assert not any("token" in name.lower() or "jwt" in name.lower() for name in parameters)
+    assert "JWT" not in DOCUMENT_SYSTEM_PROMPT
+    assert "bearer" not in DOCUMENT_SYSTEM_PROMPT.lower()
 
 
 def test_core_read_tools_use_authoritative_document_review_endpoints(
@@ -284,6 +420,7 @@ def test_core_read_tools_use_authoritative_document_review_endpoints(
         requested.append((request.url.path, request.url.params.get("query", "")))
         if request.url.path == "/auth/login":
             return httpx.Response(200, json={"access_token": _fake_jwt()})
+        assert request.headers["Authorization"] != "Bearer human-admin-jwt"
         if request.url.path == "/document-review/pending":
             return httpx.Response(200, json=[{"id": 501, "status": "PENDING_REVIEW"}])
         if request.url.path == "/document-review/501":
@@ -296,10 +433,11 @@ def test_core_read_tools_use_authoritative_document_review_endpoints(
 
     _patch_backend_client(monkeypatch, handler)
 
-    assert asyncio.run(get_pending_document_reviews())["reviews"][0]["id"] == 501
-    assert asyncio.run(get_document_review(document_id="501"))["id"] == 501
-    product = asyncio.run(resolve_document_product("501", "27in Monitor", 12))
-    supplier = asyncio.run(resolve_document_supplier("501", "TechSource"))
+    with human_auth_scope("human-admin-jwt"):
+        assert asyncio.run(get_pending_document_reviews())["reviews"][0]["id"] == 501
+        assert asyncio.run(get_document_review(document_id="501"))["id"] == 501
+        product = asyncio.run(resolve_document_product("501", "27in Monitor", 12))
+        supplier = asyncio.run(resolve_document_supplier("501", "TechSource"))
 
     assert product["status"] == "RESOLVED" and product["productId"] == 103
     assert product["requestedQuantity"] == 12

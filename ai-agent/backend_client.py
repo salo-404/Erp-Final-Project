@@ -16,10 +16,10 @@ reuses the same cached login token instead of each one logging in
 separately - see BackendClient's own docstring below for why a fresh
 BackendClient() is still sometimes appropriate (tests, isolated scripts).
 
-Security note: the access token and the service account password are never
-logged, printed, or included in any exception message, log line, or stack
-trace anywhere in this module. Every raised error carries only an HTTP
-status code and the backend's own error message text.
+Security note: service and caller-provided access tokens and the service
+account password are never logged, printed, or included in an exception.
+Every raised error carries only an HTTP status code and the backend's own
+error message text.
 """
 
 from __future__ import annotations
@@ -318,6 +318,58 @@ class BackendClient:
         if response.status_code >= 400:
             raise _error_for_status(response.status_code, _extract_error_message(response))
 
+        if response.status_code == 204 or not response.content:
+            return None
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ServiceUnavailable(response.status_code, "Response was not valid JSON.") from exc
+
+
+class HumanAuthenticatedBackendClient:
+    """Non-caching client for one propagated human bearer token.
+
+    This client never logs in, never knows service-account credentials, and
+    never retries a 401 as another identity. Construct it inside the current
+    request scope only for endpoints that intentionally act as the human user.
+    """
+
+    def __init__(
+        self,
+        bearer_token: str,
+        base_url: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
+        transport: Optional[httpx.AsyncBaseTransport] = None,
+    ) -> None:
+        if not bearer_token:
+            raise ValueError("bearer_token must not be empty")
+        self._bearer_token = bearer_token
+        self._base_url = base_url if base_url is not None else settings.backend_url
+        self._timeout = timeout_seconds or settings.backend_request_timeout_seconds
+        self._transport = transport
+
+    async def post(self, path: str, json: Optional[dict[str, Any]] = None) -> Any:
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+            ) as client:
+                response = await client.post(
+                    path,
+                    json=json,
+                    headers={"Authorization": f"Bearer {self._bearer_token}"},
+                )
+        except httpx.TimeoutException as exc:
+            raise ServiceUnavailable(0, f"Request to {path} timed out.") from exc
+        except httpx.HTTPError as exc:
+            raise ServiceUnavailable(
+                0,
+                f"Could not reach the backend: {exc.__class__.__name__}",
+            ) from exc
+
+        if response.status_code >= 400:
+            raise _error_for_status(response.status_code, _extract_error_message(response))
         if response.status_code == 204 or not response.content:
             return None
         try:

@@ -100,6 +100,8 @@ def test_supervisor_prompt_has_explicit_specialist_routing_boundaries() -> None:
     assert "Insights can evaluate full-order AVAILABLE stock and recommend a fulfillment warehouse" in prompt
     assert "NO ability to choose a fulfillment warehouse" not in prompt
     assert 'NEVER ask it to "choose a warehouse"' not in prompt
+    assert "The Supervisor never executes a write action" in prompt
+    assert "unless the specialist returned explicit confirmation" in prompt
 
 
 def test_supervisor_prompt_excludes_removed_tools_and_fourth_agent() -> None:

@@ -27,6 +27,7 @@ from backend_client import (
     BackendClient,
     Conflict,
     Forbidden,
+    HumanAuthenticatedBackendClient,
     NotFound,
     ServiceUnavailable,
     Unauthorized,
@@ -269,6 +270,42 @@ def test_get_backend_client_returns_a_shared_singleton() -> None:
     first = get_backend_client()
     second = get_backend_client()
     assert first is second
+
+
+def test_human_client_uses_only_supplied_bearer_and_never_logs_in() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        assert request.headers["Authorization"] == "Bearer human-jwt"
+        return httpx.Response(200, json={"ok": True})
+
+    client = HumanAuthenticatedBackendClient(
+        "human-jwt",
+        base_url="http://backend.test",
+        transport=httpx.MockTransport(handler),
+    )
+    assert _run(client.post("/document-review/501/approve", json={"items": []})) == {
+        "ok": True
+    }
+    assert paths == ["/document-review/501/approve"]
+
+
+def test_human_client_does_not_retry_unauthorized_as_another_identity() -> None:
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        return httpx.Response(401, json={"message": "expired"})
+
+    client = HumanAuthenticatedBackendClient(
+        "expired-human-jwt",
+        base_url="http://backend.test",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(Unauthorized):
+        _run(client.post("/document-review/501/reject", json={"rejectionReason": "x"}))
+    assert calls["count"] == 1
 
 
 def test_same_client_instance_works_across_separate_event_loops() -> None:
