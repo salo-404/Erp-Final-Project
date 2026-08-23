@@ -1,7 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
-import { ApiError } from "../lib/api-client";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import loginHero from "../assets/login-hero.png";
 
@@ -31,6 +30,16 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // Set when Cognito reports the account's password is a temporary one
+  // (CognitoAdminService.createUser() always issues one) — the same
+  // credential form then asks for a permanent replacement instead of
+  // retrying the original sign-in.
+  const [newPasswordChallenge, setNewPasswordChallenge] = useState<{
+    completeNewPassword: (newPassword: string) => Promise<void>;
+  } | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
+
   if (status === "loading") {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-[var(--color-bg)]">
@@ -49,11 +58,35 @@ export function LoginPage() {
     setError(null);
     setSubmitting(true);
     try {
-      await login(email, password);
+      const outcome = await login(email, password);
+      if (outcome.status === "newPasswordRequired") {
+        setNewPasswordChallenge({ completeNewPassword: outcome.completeNewPassword });
+        return;
+      }
       const redirectTo = (location.state as { from?: string } | null)?.from ?? "/";
       navigate(redirectTo, { replace: true });
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Unable to sign in. Please try again.");
+      setError(err instanceof Error ? err.message : "Unable to sign in. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleSetNewPassword(event: FormEvent) {
+    event.preventDefault();
+    if (!newPasswordChallenge) return;
+    if (newPassword !== newPasswordConfirm) {
+      setError("Passwords don't match.");
+      return;
+    }
+    setError(null);
+    setSubmitting(true);
+    try {
+      await newPasswordChallenge.completeNewPassword(newPassword);
+      const redirectTo = (location.state as { from?: string } | null)?.from ?? "/";
+      navigate(redirectTo, { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to set a new password. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -102,70 +135,144 @@ export function LoginPage() {
             <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 19 }}>NEXORA</div>
           </div>
 
-          <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 30, marginBottom: 8 }}>
-            Sign in to Nexora
-          </div>
-          <div style={{ fontSize: 13.5, color: "var(--color-text-secondary)", marginBottom: 32 }}>
-            Warehouse &amp; logistics operations, in one place.
-          </div>
+          {newPasswordChallenge ? (
+            <>
+              <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 30, marginBottom: 8 }}>
+                Set a new password
+              </div>
+              <div style={{ fontSize: 13.5, color: "var(--color-text-secondary)", marginBottom: 32 }}>
+                Your account was created with a temporary password. Choose a permanent one to continue.
+              </div>
 
-          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div>
-              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>Work email</div>
-              <input
-                type="email"
-                required
-                autoComplete="email"
-                placeholder="you@company.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                style={inputStyle}
-              />
-            </div>
+              <form onSubmit={handleSetNewPassword} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
+                    New password
+                  </div>
+                  <input
+                    type="password"
+                    required
+                    minLength={8}
+                    autoComplete="new-password"
+                    placeholder="••••••••"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    style={inputStyle}
+                  />
+                </div>
 
-            <div>
-              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>Password</div>
-              <input
-                type="password"
-                required
-                minLength={8}
-                autoComplete="current-password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                style={inputStyle}
-              />
-            </div>
+                <div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
+                    Confirm new password
+                  </div>
+                  <input
+                    type="password"
+                    required
+                    minLength={8}
+                    autoComplete="new-password"
+                    placeholder="••••••••"
+                    value={newPasswordConfirm}
+                    onChange={(e) => setNewPasswordConfirm(e.target.value)}
+                    style={inputStyle}
+                  />
+                </div>
 
-            <button
-              type="submit"
-              disabled={submitting}
-              style={{
-                marginTop: 6,
-                background: "var(--color-accent)",
-                color: "var(--color-on-accent)",
-                textAlign: "center",
-                padding: 12,
-                borderRadius: 7,
-                fontFamily: "var(--font-heading)",
-                fontWeight: 600,
-                fontSize: 14,
-                cursor: submitting ? "default" : "pointer",
-                border: "none",
-                opacity: submitting ? 0.7 : 1,
-              }}
-            >
-              {submitting ? "Signing in..." : "Sign in"}
-            </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  style={{
+                    marginTop: 6,
+                    background: "var(--color-accent)",
+                    color: "var(--color-on-accent)",
+                    textAlign: "center",
+                    padding: 12,
+                    borderRadius: 7,
+                    fontFamily: "var(--font-heading)",
+                    fontWeight: 600,
+                    fontSize: 14,
+                    cursor: submitting ? "default" : "pointer",
+                    border: "none",
+                    opacity: submitting ? 0.7 : 1,
+                  }}
+                >
+                  {submitting ? "Saving..." : "Set password and sign in"}
+                </button>
 
-            {error && (
-              <div style={{ fontSize: 12.5, color: "var(--color-danger)", textAlign: "center" }}>{error}</div>
-            )}
+                {error && (
+                  <div style={{ fontSize: 12.5, color: "var(--color-danger)", textAlign: "center" }}>{error}</div>
+                )}
+              </form>
+            </>
+          ) : (
+            <>
+              <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 30, marginBottom: 8 }}>
+                Sign in to Nexora
+              </div>
+              <div style={{ fontSize: 13.5, color: "var(--color-text-secondary)", marginBottom: 32 }}>
+                Warehouse &amp; logistics operations, in one place.
+              </div>
 
-            <div style={{ fontSize: 11.5, color: "var(--color-text-muted)", textAlign: "center", marginTop: 4 }}>
-              Protected routes · SSO available for enterprise accounts
-            </div>
-          </form>
+              <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
+                    Work email
+                  </div>
+                  <input
+                    type="email"
+                    required
+                    autoComplete="email"
+                    placeholder="you@company.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>Password</div>
+                  <input
+                    type="password"
+                    required
+                    minLength={8}
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  style={{
+                    marginTop: 6,
+                    background: "var(--color-accent)",
+                    color: "var(--color-on-accent)",
+                    textAlign: "center",
+                    padding: 12,
+                    borderRadius: 7,
+                    fontFamily: "var(--font-heading)",
+                    fontWeight: 600,
+                    fontSize: 14,
+                    cursor: submitting ? "default" : "pointer",
+                    border: "none",
+                    opacity: submitting ? 0.7 : 1,
+                  }}
+                >
+                  {submitting ? "Signing in..." : "Sign in"}
+                </button>
+
+                {error && (
+                  <div style={{ fontSize: 12.5, color: "var(--color-danger)", textAlign: "center" }}>{error}</div>
+                )}
+
+                <div style={{ fontSize: 11.5, color: "var(--color-text-muted)", textAlign: "center", marginTop: 4 }}>
+                  Protected routes · SSO available for enterprise accounts
+                </div>
+              </form>
+            </>
+          )}
         </div>
       </div>
 

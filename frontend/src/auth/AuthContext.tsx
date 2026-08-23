@@ -7,10 +7,14 @@ const USER_STORAGE_KEY = "nexora.user";
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 
+export type LoginOutcome =
+  | { status: "success" }
+  | { status: "newPasswordRequired"; completeNewPassword: (newPassword: string) => Promise<void> };
+
 interface AuthContextValue {
   status: AuthStatus;
   user: User | null;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<LoginOutcome>;
   logout: () => void;
 }
 
@@ -71,13 +75,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const response = await loginRequest(email, password);
-    setStoredToken(response.access_token);
-    writeCachedUser(response.user);
-    setUser(response.user);
+  // Resolves either sign-in outcome into an authenticated session: stores
+  // the Cognito access token, then reconciles it against /auth/me the same
+  // way the on-load re-validation above does (id/email/role are backend-
+  // authoritative; name comes from the ID token since /auth/me doesn't
+  // return it).
+  const finishLogin = useCallback(async (accessToken: string, cognitoName: string | null) => {
+    setStoredToken(accessToken);
+    const identity = await fetchCurrentIdentity();
+    const resolved: User = {
+      id: identity.id,
+      email: identity.email,
+      role: identity.role,
+      name: cognitoName ?? identity.email,
+      createdAt: "",
+      updatedAt: "",
+    };
+    writeCachedUser(resolved);
+    setUser(resolved);
     setStatus("authenticated");
   }, []);
+
+  const login = useCallback(
+    async (email: string, password: string): Promise<LoginOutcome> => {
+      const result = await loginRequest(email, password);
+      if (result.status === "success") {
+        await finishLogin(result.accessToken, result.name);
+        return { status: "success" };
+      }
+      return {
+        status: "newPasswordRequired",
+        completeNewPassword: async (newPassword: string) => {
+          const completed = await result.completeNewPassword(newPassword);
+          await finishLogin(completed.accessToken, completed.name);
+        },
+      };
+    },
+    [finishLogin],
+  );
 
   const logout = useCallback(() => {
     setStoredToken(null);

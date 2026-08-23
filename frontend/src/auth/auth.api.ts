@@ -1,12 +1,13 @@
 import { apiRequest } from "../lib/api-client";
-import type { AuthenticatedIdentity, LoginResponse } from "../types/api";
+import { cognitoSignIn, type CognitoSignInResult } from "./cognito";
+import type { AuthenticatedIdentity } from "../types/api";
 
-export function login(email: string, password: string): Promise<LoginResponse> {
-  return apiRequest<LoginResponse>("/auth/login", {
-    method: "POST",
-    body: { email, password },
-    auth: false,
-  });
+// Sign-in now goes directly to Cognito (backend/src/auth/auth.controller.ts
+// no longer has a /login route — CognitoTokenVerifier validates the access
+// token this returns). Callers get back either a ready access token or a
+// newPasswordRequired challenge (temp passwords from CognitoAdminService.createUser()).
+export function login(email: string, password: string): Promise<CognitoSignInResult> {
+  return cognitoSignIn(email, password);
 }
 
 export function fetchCurrentIdentity(): Promise<AuthenticatedIdentity> {

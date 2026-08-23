@@ -11,13 +11,7 @@ export interface User {
   updatedAt: string;
 }
 
-// POST /auth/login response shape (backend/src/auth/auth.controller.ts).
-export interface LoginResponse {
-  access_token: string;
-  user: User;
-}
-
-// GET /auth/me returns only what JwtStrategy.validate() puts on the request — no `name`.
+// GET /auth/me returns only what CognitoTokenVerifier + JwtAuthGuard put on the request — no `name`.
 export interface AuthenticatedIdentity {
   id: number;
   email: string;
