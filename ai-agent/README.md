@@ -157,13 +157,36 @@ using [`BedrockAgentCoreApp`](https://pypi.org/project/bedrock-agentcore/)
 (Option A / SDK Integration from Strands' official AgentCore deployment
 guide), so it's what AgentCore Runtime actually runs in AWS.
 
-It does not add any new agent behavior - same Supervisor, same gate, same
-specialists. The only things this file adds are: building the Supervisor
-**once** at module load (not per HTTP request - see the module docstring
-for why the scope gate still runs per-request despite that), an
-`@app.entrypoint` function that reads a JSON body's `"prompt"` field and
-returns `{"result": "..."}`, and the `if __name__ == "__main__": app.run()`
-that starts the AgentCore HTTP server on port 8080.
+It does not add a fourth agent or change routing: the same Supervisor, gate,
+and two specialists are used. The entrypoint validates the human bearer with
+backend `/auth/me` on every invocation, treats AgentCore's
+`X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` as the authoritative
+conversation ID, and requires the canonical
+`erp-user-{ERP_USER_ID}-{32-character-lowercase-UUID-hex}` format. The encoded
+user ID is only a non-secret ownership namespace: the exact Cognito bearer and
+backend `/auth/me` response remain authoritative. The namespace must match the
+returned ERP user ID before the local session registry, gate, or Supervisor is
+used. The entrypoint then lazily creates one mutable Supervisor per active
+session, reuses it for same-session continuity, and serializes only invocations
+for that session. Different sessions use different Supervisor instances and
+independent locks. The registry repeats the owner check as defense-in-depth.
+
+The registry is in-process, bounded to 256 entries, and removes inactive
+sessions after one idle hour. It preserves history while that entry remains in
+the active runtime. After eviction or complete runtime/microVM termination,
+Supervisor history and locks are gone. A later invocation revalidates the
+session's stateless owner namespace: the correct user can resume the logical
+session with fresh history, while a different authenticated ERP user is still
+rejected. Durable conversation recovery would require external session storage
+and is deliberately outside the current scope.
+
+For a new frontend conversation, use the authenticated Cognito session to call
+backend `/auth/me`, generate a fresh UUID, construct
+`erp-user-{user.id}-{uuid.hex}`, and send it in
+`X-Amzn-Bedrock-AgentCore-Runtime-Session-Id`. Reuse that exact header for
+follow-ups and generate a new UUID for a new conversation. Never reuse another
+logged-in user's session ID. Payload fields such as `userId`, `sessionId`, and
+`conversationId` are not identity or session authorities.
 
 **Model-agnostic, independent of Bedrock permissions.** `build_supervisor_agent()`
 already resolves its model through `settings.build_model("supervisor")` -
@@ -185,6 +208,9 @@ service works before attempting a real `agentcore launch`:
 python agentcore_entrypoint.py
 ```
 
+Use a current human Cognito access token for the authenticated invocation;
+never commit or print it.
+
 ```bash
 # Terminal 2 - health check
 curl http://localhost:8080/ping
@@ -192,6 +218,8 @@ curl http://localhost:8080/ping
 # Terminal 2 - a real query
 curl -X POST http://localhost:8080/invocations \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $HUMAN_TOKEN" \
+  -H "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: erp-user-7-7f3d91b7d15d40dfa96b8f02086b7dad" \
   -d '{"prompt": "Which products are at risk of stocking out?"}'
 ```
 
@@ -201,6 +229,9 @@ from `scripts/chat_locally.py`, just over HTTP instead of a REPL. An
 out-of-scope or prompt-injection-shaped prompt still gets declined by the
 gate here too, before it ever reaches a specialist - the whole point of
 this file is that it's a thin transport shell, not a different code path.
+Replace `7` with the ERP user ID returned by `/auth/me` and the sample suffix
+with a freshly generated UUID hex value. Reuse the same runtime-session header
+for follow-ups in one conversation; generate a new UUID for a new conversation.
 `scripts/test_agentcore_local.py` automates exactly this sequence (start
 the server, hit `/ping`, hit `/invocations` with both an in-scope and an
 out-of-scope prompt, print the results) if you'd rather run one command
