@@ -12,6 +12,7 @@ FORBIDDEN_KEYWORDS = {
     "UPDATE",
     "DELETE",
     "MERGE",
+    "UPSERT",
     "CREATE",
     "ALTER",
     "DROP",
@@ -21,6 +22,7 @@ FORBIDDEN_KEYWORDS = {
     "REVOKE",
     "CALL",
     "DO",
+    "EXECUTE",
     "VACUUM",
     "ANALYZE",
     "REFRESH",
@@ -84,6 +86,17 @@ def _source_columns(source: exp.Expression | Scope) -> set[str]:
     return set()
 
 
+def _resolve_source(scope: Scope, qualifier: str) -> exp.Expression | Scope | None:
+    """Resolve a local or correlated outer-query source alias."""
+    current_scope: Scope | None = scope
+    while current_scope is not None:
+        source = current_scope.sources.get(qualifier)
+        if source is not None:
+            return source
+        current_scope = current_scope.parent
+    return None
+
+
 def _validate_schema_columns(statement: exp.Expression) -> None:
     """Validate physical columns while preserving aliases and derived outputs."""
     for scope in traverse_scope(statement):
@@ -94,7 +107,7 @@ def _validate_schema_columns(statement: exp.Expression) -> None:
             qualifier = column.table
 
             if qualifier:
-                source = scope.sources.get(qualifier)
+                source = _resolve_source(scope, qualifier)
                 if source is None:
                     raise SchemaValidationError(
                         f"Unknown table or derived-table alias: {qualifier}"
@@ -203,6 +216,7 @@ def validate_sql(sql: str) -> str:
         exp.Alter,
         exp.Command,
         exp.Merge,
+        exp.Into,
     )
 
     for node in statement.walk():

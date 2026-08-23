@@ -349,6 +349,14 @@ describe('DocumentReviewService.upload', () => {
       'quantity must be a positive integer',
     ],
     [
+      { transactionType: 'INCOMING', items: [{ product: 'Widget', quantity: 0 }] },
+      'quantity must be a positive integer',
+    ],
+    [
+      { transactionType: 'INCOMING', items: [{ product: 'Widget', quantity: -1 }] },
+      'quantity must be a positive integer',
+    ],
+    [
       { transactionType: 'INCOMING', items: [{ product: 'Widget', quantity: 1, price: Number.POSITIVE_INFINITY }] },
       'price must be a finite non-negative number',
     ],

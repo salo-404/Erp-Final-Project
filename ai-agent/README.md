@@ -295,8 +295,10 @@ once you add a key to `.env`.
 This scaffold currently runs on **OpenAI (`gpt-5.4-mini`)** for local
 development, so it's fully testable without AWS access. A fully offline
 **Ollama** option is also available for local dev with no external API
-calls at all. The target **production** model is **Amazon Nova Pro on
-Bedrock**.
+calls at all. Production uses direct in-region Bedrock models in `eu-west-1`:
+GPT-OSS 120B for the Supervisor, GPT-OSS 20B for Insights, Document, scope
+gate, and narration, Ministral 3 8B for SQL generation, and Titan Text
+Embeddings V2 at 512 dimensions for retrieval.
 
 `config/settings.py` has exactly one function that decides which provider
 gets instantiated - `settings.build_model(agent_name)` - and all three
@@ -307,10 +309,8 @@ zero agent/tool/schema code edits**:
 
 1. Set `MODEL_PROVIDER=bedrock` in `.env` (or `openai` / `ollama` for local
    dev - see `.env.example`).
-2. Fill in `BEDROCK_MODEL_ID` (and/or `SUPERVISOR_MODEL_ID` /
-   `INSIGHTS_MODEL_ID` / `DOCUMENT_MODEL_ID` per-agent overrides) with a
-   verified Bedrock inference profile ID for Amazon Nova Pro in your
-   account/region, and confirm `AWS_REGION` is correct.
+2. Use the role-specific direct model IDs documented in `.env.example`, and
+   confirm `AWS_REGION=eu-west-1`.
 3. That's it - `build_model()` will construct `BedrockModel` (instead of
    `OpenAIModel`/`OllamaModel`) for every agent the next time it's built.
 
@@ -318,8 +318,32 @@ Whichever provider isn't active just goes unused - e.g. `OPENAI_API_KEY`
 and `OLLAMA_HOST` are simply ignored once `MODEL_PROVIDER=bedrock`; nothing
 needs to be unset.
 
-**After switching, still do a short validation pass against the real Nova
-Pro model** - the code path doesn't change, but prompt behavior (how
+### SQL-RAG database credentials and deployment sequence
+
+`AI_DATABASE_URL` is the AgentCore/runtime SELECT-only credential. Its role
+needs SELECT on the eight allowed operational ERP tables and on
+`QueryExample` for internal pgvector retrieval. `QueryExample` is still
+excluded from the generated-SQL allowlist, so database-role permission does
+not make it queryable by model-generated SQL.
+
+`QUERY_EXAMPLE_WRITE_DATABASE_URL` is maintenance/bootstrap-only. Give its
+role only enough permission to SELECT `QueryExample` and UPDATE
+`QueryExample.embedding`; never provide it to AgentCore and never use it as a
+fallback for `AI_DATABASE_URL`.
+
+Fresh deployment order:
+
+1. Use a migration/admin credential and create the `vector` extension if the
+   migration cannot create it itself.
+2. Run `prisma migrate deploy`.
+3. Seed QueryExamples.
+4. Set `QUERY_EXAMPLE_WRITE_DATABASE_URL`, run
+   `python scripts/generate_query_embeddings.py`, and verify every intended
+   embedding is non-null and exactly 512-dimensional.
+5. Run the application with the SELECT-only `AI_DATABASE_URL` role.
+
+**After switching, still do a short validation pass against the real GPT-OSS
+models** - the code path doesn't change, but prompt behavior (how
 literally a model follows the `agents/*/prompts.py` instructions, tool-call
 triggering, output verbosity) can differ meaningfully between model
 families even with an identical system prompt. Re-run the standalone agents
@@ -332,10 +356,8 @@ before trusting it in production.
 **`SUPERVISOR_MODEL_ID` / `build_model("supervisor")` is the Supervisor's
 main routing/response model only** - the one that reads a query, decides
 which specialist tool(s) to call, and composes the final answer. It is a
-separate concern from the future gate/classification model in
-`agents/supervisor/gate.py` (a lightweight pre-model scope check) - `gate.py`
-has no model of its own yet and remains its own TODO, untouched by this
-provider switching.
+separate concern from the gate/classification model in
+`agents/supervisor/gate.py`, which uses the cheaper GPT-OSS 20B role default.
 
 ## Security posture (Supervisor)
 

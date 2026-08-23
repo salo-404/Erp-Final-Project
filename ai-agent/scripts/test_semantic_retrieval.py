@@ -1,5 +1,5 @@
 from retrieval.embedding_service import embed_text
-from retrieval.query_example_repository import find_similar_examples
+from retrieval.query_example_repository import TOP_K, find_similar_examples
 
 
 TEST_QUESTIONS = [
@@ -16,13 +16,13 @@ TEST_QUESTIONS = [
 ]
 
 
-def print_results(question: str, limit: int):
+def print_results(question: str):
     embedding = embed_text(question)
-    examples = find_similar_examples(embedding, limit=limit)
+    examples = find_similar_examples(embedding, limit=TOP_K)
 
     print("=" * 90)
     print(f"QUESTION: {question}")
-    print(f"TOP {limit}")
+    print(f"TOP {TOP_K}")
     print("-" * 90)
 
     for index, example in enumerate(examples, start=1):
@@ -35,8 +35,7 @@ def print_results(question: str, limit: int):
 
 def main():
     for question in TEST_QUESTIONS:
-        print_results(question, 3)
-        print_results(question, 5)
+        print_results(question)
 
 
 if __name__ == "__main__":

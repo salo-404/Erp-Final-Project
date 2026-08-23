@@ -2,22 +2,18 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "InvokeNovaProInferenceProfile",
+      "Sid": "InvokeConfiguredFoundationModels",
       "Effect": "Allow",
       "Action": [
         "bedrock:InvokeModel",
         "bedrock:InvokeModelWithResponseStream"
       ],
-      "Resource": "arn:aws:bedrock:eu-west-1:839513672240:inference-profile/eu.amazon.nova-pro-v1:0"
-    },
-    {
-      "Sid": "InvokeNovaProUnderlyingFoundationModel",
-      "Effect": "Allow",
-      "Action": [
-        "bedrock:InvokeModel",
-        "bedrock:InvokeModelWithResponseStream"
-      ],
-      "Resource": "arn:aws:bedrock:eu-west-1::foundation-model/amazon.nova-pro-v1:0"
+      "Resource": [
+        "arn:aws:bedrock:eu-west-1::foundation-model/openai.gpt-oss-120b-1:0",
+        "arn:aws:bedrock:eu-west-1::foundation-model/openai.gpt-oss-20b-1:0",
+        "arn:aws:bedrock:eu-west-1::foundation-model/mistral.ministral-3-8b-instruct",
+        "arn:aws:bedrock:eu-west-1::foundation-model/amazon.titan-embed-text-v2:0"
+      ]
     }
   ]
 }

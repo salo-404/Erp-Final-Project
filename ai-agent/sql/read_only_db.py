@@ -17,7 +17,9 @@ def execute_query(sql: str) -> list[dict]:
     This function assumes sql_guard.validate_sql() was called first.
     """
 
-    with psycopg.connect(DATABASE_URL) as conn:
+    database_url = settings.require_ai_database_url()
+
+    with psycopg.connect(database_url) as conn:
         conn.execute("SET TRANSACTION READ ONLY")
         conn.execute(
             f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"

@@ -4,6 +4,7 @@ from config.settings import settings
 
 
 DATABASE_URL = settings.ai_database_url
+TOP_K = 3
 
 
 def vector_to_pgvector(embedding: list[float]) -> str:
@@ -12,11 +13,12 @@ def vector_to_pgvector(embedding: list[float]) -> str:
 
 def find_similar_examples(
     embedding: list[float],
-    limit: int = 5,
+    limit: int = TOP_K,
 ) -> list[dict]:
     vector = vector_to_pgvector(embedding)
+    database_url = settings.require_ai_database_url()
 
-    with psycopg.connect(DATABASE_URL) as conn:
+    with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
