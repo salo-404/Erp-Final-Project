@@ -1,16 +1,14 @@
 """Smoke tests for the Insights agent.
 
-Most of these tests call the @tool-decorated functions directly (Strands
-tools are still plain, directly-callable Python functions - see
-agents/insights_agent/tools.py) rather than invoking the full Agent, so they
-run without any credentials or network access. They also verify the
-standalone agent (module + tools) builds independently of the Supervisor.
+Most tests call the @tool-decorated functions directly against an
+`httpx.MockTransport`, so they validate the real backend contracts without
+network access. They also verify that the standalone agent builds independently
+of the Supervisor.
 
 Two additional tests actually call a real model (test_insights_agent_live_openai_smoke
 via the OpenAI provider specifically, test_insights_agent_reports_tool_error_instead_of_fabricating
 via whichever provider is configured) - see tests/_helpers.py for the skip
-conditions. Neither touches a real backend - the tools they exercise stay
-fully mocked.
+conditions. Neither touches a live backend.
 """
 
 from __future__ import annotations
@@ -67,6 +65,7 @@ def test_insights_agent_builds_standalone() -> None:
     """The Insights agent must construct without any Supervisor dependency."""
     agent = build_insights_agent()
     assert agent.name == "insights_agent"
+    assert agent.callback_handler.__name__ == "null_callback_handler"
     assert len(INSIGHTS_TOOLS) == 11
 
 

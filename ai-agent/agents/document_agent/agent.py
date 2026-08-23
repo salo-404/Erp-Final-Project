@@ -52,8 +52,8 @@ def build_document_agent() -> Agent:
     """Construct a standalone Document Agent instance.
 
     Isolated from the Supervisor and Insights agent - can be built and run
-    on its own for local testing. The model provider (OpenAI for local dev,
-    Bedrock for production) is decided entirely by settings.build_model() -
+    on its own for local testing. The model provider is decided entirely by
+    settings.build_model() -
     see config/settings.py - so switching providers never touches this
     function.
     """
@@ -62,6 +62,7 @@ def build_document_agent() -> Agent:
         model=model,
         system_prompt=DOCUMENT_SYSTEM_PROMPT,
         tools=DOCUMENT_TOOLS,
+        callback_handler=None,
         name="document_agent",
         description="Document processing specialist for uploaded invoices and orders.",
     )

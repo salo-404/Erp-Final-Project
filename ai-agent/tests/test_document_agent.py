@@ -1,17 +1,11 @@
-"""Smoke tests for the Document agent - both the invoice and order branches.
+"""Document agent runtime, backend-contract, and compatibility-helper tests.
 
-ALL SEVEN document_agent tools are wired to the real backend now
-(2026-08-22, detect_duplicate_document was the last one):
-extract_document(), match_products(), find_supplier(), match_invoice_to_po(),
-detect_discrepancy(), choose_fulfillment_warehouse(), and
-detect_duplicate_document() (GET /document-review/:id,
-GET /document-review/pending, GET /products, GET /suppliers,
-GET /inventory-transactions, POST /warehouse-routing/eligible-warehouses,
-POST /path-optimizer/nearest-warehouse - see backend_client.py).
-tools/mocks/document_mock_data.py (every tool's old mocked implementation)
-was deleted entirely as dead code once its last real caller here was
-wired. Every wired tool's own tests use httpx.MockTransport (see
-_patch_backend_client below), same pattern as tests/test_insights_agent.py.
+The exact seven runtime tools are the PendingDocumentReview lookup/resolution,
+human decision, and duplicate-check functions in DOCUMENT_TOOLS. Historical
+direct-call helpers remain outside that registry for regression coverage. All
+backend contract tests use httpx.MockTransport unless explicitly marked as
+live integration tests.
+
 match_products()/find_supplier() carry pure-logic tests for
 _classify_fuzzy_match() (the rapidfuzz classification core) and
 live-backend regression tests, including the real "Office" ambiguous tie
@@ -209,6 +203,7 @@ def test_document_agent_builds_standalone() -> None:
     """The Document agent must construct without any Supervisor dependency."""
     agent = build_document_agent()
     assert agent.name == "document_agent"
+    assert agent.callback_handler.__name__ == "null_callback_handler"
     assert len(DOCUMENT_TOOLS) == 7
 
 
@@ -724,11 +719,10 @@ def test_extract_document_propagates_typed_backend_error(monkeypatch: pytest.Mon
 )
 def test_extract_document_live_against_real_backend() -> None:
     """FETCH PATH ONLY - does not exercise the real upload->extraction
-    pipeline (POST /document-review/upload). That requires
-    RIBAL_AGENT_URL, which is unconfigured in local dev (backend/.env has
-    it set to a placeholder, "unused-local-dev") - genuinely out of scope
-    for this tool per the task, which only fetches an already-extracted
-    row via GET /document-review/:id.
+    pipeline (POST /document-review/upload). Upload extraction now runs
+    upstream in NestJS through private S3 + Textract AnalyzeExpense; this
+    compatibility helper only fetches an already-extracted row via
+    GET /document-review/:id.
 
     Instead, this discovers a real id via GET /document-review/pending
     (rather than hardcoding one) and fetches it through extract_document()

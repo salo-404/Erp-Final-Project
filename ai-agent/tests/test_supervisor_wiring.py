@@ -5,8 +5,8 @@ checks, scope-gate interaction, structured handoff coverage, and an optional
 live-model flow. It does not introduce a duplicate deterministic router.
 
 Also covers settings.build_model("supervisor") across all three supported
-MODEL_PROVIDER values (openai/ollama/bedrock). None of these need real
-credentials - every strands Model class only validates
+MODEL_PROVIDER values (openai/ollama/bedrock) using an explicit test model ID.
+None of these need real credentials - every strands Model class only validates
 credentials/connectivity on the first real call, never at construction -
 so this exercises provider selection under all three without requiring
 whichever provider isn't currently active in the environment.
@@ -151,6 +151,7 @@ def test_supervisor_prompt_excludes_removed_tools_and_fourth_agent() -> None:
 def test_supervisor_agent_builds_and_registers_both_specialist_tools() -> None:
     agent = build_supervisor_agent()
     assert agent.name == "supervisor"
+    assert agent.callback_handler.__name__ == "null_callback_handler"
 
     registered_tool_names = set(agent.tool_names)
     assert "insights_agent_tool" in registered_tool_names
@@ -200,9 +201,25 @@ def test_build_model_supports_supervisor_under_every_provider(
     or the shared settings singleton (whose field defaults are resolved
     once at import time - see config/settings.py).
     """
-    provider_settings = replace(settings, model_provider=provider)
+    provider_settings = replace(
+        settings,
+        model_provider=provider,
+        supervisor_model_id="explicit-test-model",
+    )
     model = provider_settings.build_model("supervisor")
     assert type(model).__name__ == expected_model_class
+
+
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+def test_local_provider_has_no_implicit_stale_model_fallback(provider: str) -> None:
+    provider_settings = replace(
+        settings,
+        model_provider=provider,
+        supervisor_model_id="",
+    )
+
+    with pytest.raises(ValueError, match="SUPERVISOR_MODEL_ID must be configured"):
+        provider_settings.build_model("supervisor")
 
 
 def test_supervisor_still_builds_standalone_under_the_active_provider() -> None:

@@ -66,6 +66,7 @@ def build_supervisor_agent(session_manager: object | None = None) -> Agent:
         model=model,
         system_prompt=SUPERVISOR_SYSTEM_PROMPT,
         tools=SUPERVISOR_TOOLS,
+        callback_handler=None,
         name="supervisor",
         description="Top-level ERP assistant that routes to the Insights and Document specialists.",
         session_manager=session_manager,

@@ -9,17 +9,11 @@ store a secret key directly beyond passing it through from the environment.
 
 Provider switching
 -------------------
-MODEL_PROVIDER selects which model backend build_model() constructs:
-
-  - "openai"  (current default) - for local development without AWS access.
-    Uses OPENAI_API_KEY + per-agent *_MODEL_ID settings (defaulting to
-    "gpt-5.4-mini").
-  - "ollama"  - for fully offline/local development against a local Ollama
-    server. Uses OLLAMA_HOST + per-agent *_MODEL_ID settings (defaulting to
-    "llama3.1").
-  - "bedrock" - the target production provider. Uses the existing
-    aws_region / bedrock_model_id / per-agent *_MODEL_ID settings, resolved
-    via boto3's default credential chain.
+MODEL_PROVIDER selects which model backend build_model() constructs. Bedrock
+is the deployment default and uses the locked role-specific IDs below. OpenAI
+and Ollama remain explicit local-development options, but they have no implicit
+model fallback: every role's *_MODEL_ID must be set to a provider-compatible
+ID before that provider can be invoked.
 
 build_model() is the single place that decides which provider to
 instantiate - agents never construct a Model directly, so switching
@@ -56,11 +50,6 @@ load_dotenv()
 ModelProvider = Literal["openai", "ollama", "bedrock"]
 AgentName = Literal["insights", "document", "supervisor", "gate", "narration"]
 
-# Per-provider default model IDs for local dev (used only when the
-# corresponding *_MODEL_ID env var is unset - an explicit env var always
-# wins, for any provider).
-_DEFAULT_OPENAI_MODEL_ID = "gpt-5.4-mini"
-_DEFAULT_OLLAMA_MODEL_ID = "llama3.1"
 _DEFAULT_BEDROCK_SUPERVISOR_MODEL_ID = "openai.gpt-oss-120b-1:0"
 _DEFAULT_BEDROCK_AGENT_MODEL_ID = "openai.gpt-oss-20b-1:0"
 _DEFAULT_BEDROCK_SQL_MODEL_ID = "mistral.ministral-3-8b-instruct"
@@ -81,16 +70,8 @@ def _environment_flag(name: str, default: bool = False) -> bool:
 
 
 def _default_model_id_for_provider(provider: str, bedrock_fallback: str) -> str:
-    """Pick the right default model ID for whichever provider is active.
-
-    Shared by every per-agent *_model_id field below so all three agents
-    follow the exact same per-provider default pattern.
-    """
-    if provider == "openai":
-        return _DEFAULT_OPENAI_MODEL_ID
-    if provider == "ollama":
-        return _DEFAULT_OLLAMA_MODEL_ID
-    return bedrock_fallback
+    """Use locked defaults only for Bedrock; local providers are explicit."""
+    return bedrock_fallback if provider == "bedrock" else ""
 
 
 @dataclass(frozen=True)
@@ -98,10 +79,9 @@ class Settings:
     # ------------------------------------------------------------------
     # Provider selection
     # ------------------------------------------------------------------
-    # "openai" for local dev without AWS access (current default), "ollama"
-    # for fully offline local dev, or "bedrock" for the target production
-    # provider. See build_model().
-    model_provider: str = os.getenv("MODEL_PROVIDER", "openai").strip().lower()
+    # Bedrock is the deployment/default provider. OpenAI and Ollama are
+    # explicit local-development options and require explicit role model IDs.
+    model_provider: str = os.getenv("MODEL_PROVIDER", "bedrock").strip().lower()
 
     # ------------------------------------------------------------------
     # OpenAI (used when model_provider == "openai")
@@ -142,13 +122,9 @@ class Settings:
     )
 
     # ------------------------------------------------------------------
-    # Per-agent model IDs, used by build_model() for ALL THREE providers:
-    #   - model_provider == "openai"  -> defaults to _DEFAULT_OPENAI_MODEL_ID
-    #   - model_provider == "ollama"  -> defaults to _DEFAULT_OLLAMA_MODEL_ID
-    #   - model_provider == "bedrock" -> explicit role defaults below
-    # An explicit *_MODEL_ID env var always wins, regardless of provider -
-    # set it to a real Bedrock inference profile ID when switching to
-    # Bedrock.
+    # Per-role model IDs. Bedrock gets the locked defaults below. OpenAI and
+    # Ollama deliberately get no fallback, preventing a stale local model ID
+    # from becoming an accidental runtime choice.
     # ------------------------------------------------------------------
 
     # The Supervisor's main routing/response model (reads the user query,
@@ -215,9 +191,10 @@ class Settings:
     # NestJS backend - see backend_client.py. Entirely separate from
     # model_provider above: this is about calling the ERP backend's REST
     # API for real data, not about which LLM answers a query. Also
-    # separate from any END-USER auth - the AI layer authenticates as its
-    # own least-privilege EMPLOYEE service account (see
-    # backend/prisma/seed.ts), never as the human asking the question.
+    # Normal read tools authenticate as the least-privilege EMPLOYEE service
+    # user. Human document approval/rejection is deliberately separate and
+    # forwards the exact authenticated human bearer; it never falls back to
+    # this service identity.
     # ------------------------------------------------------------------
     backend_url: str = os.getenv("BACKEND_URL", "http://localhost:3000")
     cognito_user_pool_id: str = os.getenv("COGNITO_USER_POOL_ID", "")
@@ -317,6 +294,12 @@ class Settings:
                 "(expected 'insights', 'document', 'supervisor', 'gate', or 'narration')"
             )
         model_id = model_ids[agent_name]
+        if not model_id:
+            environment_name = f"{agent_name.upper()}_MODEL_ID"
+            raise ValueError(
+                f"{environment_name} must be configured when "
+                f"MODEL_PROVIDER={self.model_provider!r}"
+            )
 
         if self.model_provider == "openai":
             # Imported lazily so the optional `openai` dependency is only

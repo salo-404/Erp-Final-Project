@@ -7,9 +7,9 @@ reject_document_review, and detect_duplicate_document.
 
 Legacy helpers including extract_document, match_products, find_supplier,
 match_invoice_to_po, detect_discrepancy, and choose_fulfillment_warehouse
-remain temporarily for direct regression-test compatibility. They are not
-active runtime tools and will be handled in the later stale/dead-code cleanup
-phase.
+are intentionally retained for direct regression-test compatibility. They are
+not registered with the Document runtime and are not an alternate extraction
+or conversational tool path.
 """
 
 from __future__ import annotations

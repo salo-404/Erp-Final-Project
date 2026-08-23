@@ -1,5 +1,6 @@
 import io
 import importlib
+import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -34,6 +35,11 @@ def test_final_bedrock_model_map_and_dimensions() -> None:
     assert settings_module.settings.embedding_dimensions == 512
     assert "claude" not in settings_module._DEFAULT_BEDROCK_AGENT_MODEL_ID.lower()
     assert "claude" not in settings_module._DEFAULT_BEDROCK_SUPERVISOR_MODEL_ID.lower()
+    assert not hasattr(settings_module, "_DEFAULT_OPENAI_MODEL_ID")
+    assert not hasattr(settings_module, "_DEFAULT_OLLAMA_MODEL_ID")
+    assert 'os.getenv("MODEL_PROVIDER", "bedrock")' in inspect.getsource(
+        settings_module.Settings
+    )
 
     assert settings_module._default_model_id_for_provider(
         "bedrock", settings_module._DEFAULT_BEDROCK_SUPERVISOR_MODEL_ID
@@ -42,6 +48,8 @@ def test_final_bedrock_model_map_and_dimensions() -> None:
         assert settings_module._default_model_id_for_provider(
             "bedrock", settings_module._DEFAULT_BEDROCK_AGENT_MODEL_ID
         ) == "openai.gpt-oss-20b-1:0", role
+    assert settings_module._default_model_id_for_provider("openai", "unused") == ""
+    assert settings_module._default_model_id_for_provider("ollama", "unused") == ""
 
 
 def test_checked_in_bedrock_runtime_config_has_no_stale_model() -> None:
