@@ -1,4 +1,5 @@
 import { AgentMark } from "./AgentMark";
+import { AgentMarkdown } from "./AgentMarkdown";
 import { ResponseRenderer } from "./ResponseRenderer";
 import { StreamingCursor, StreamingStatus } from "./StreamingStatus";
 import type { AgentMessage, AgentStreamStatus } from "../../types/agent";
@@ -46,9 +47,9 @@ function AgentBubble({ message, compact }: { message: AgentMessage; compact?: bo
           boxShadow: "0 1px 4px rgba(0,0,0,0.06)",
         }}
       >
-        <p style={{ fontSize: compact ? 12.5 : 13.5, color: "var(--color-text)", lineHeight: 1.55, margin: 0, whiteSpace: "pre-wrap" }}>
-          {message.text}
-        </p>
+        <div style={{ fontSize: compact ? 12.5 : 13.5 }}>
+          <AgentMarkdown text={message.text} />
+        </div>
         {message.blocks && message.blocks.length > 0 && <ResponseRenderer blocks={message.blocks} />}
       </div>
     </div>
@@ -73,10 +74,10 @@ function StreamingBubble({ status, text, compact }: { status: AgentStreamStatus 
         {text.length === 0 && status ? (
           <StreamingStatus status={status} />
         ) : (
-          <p style={{ fontSize: compact ? 12.5 : 13.5, color: "var(--color-text)", lineHeight: 1.55, margin: 0, whiteSpace: "pre-wrap" }}>
-            {text}
+          <div style={{ fontSize: compact ? 12.5 : 13.5 }}>
+            <AgentMarkdown text={text} />
             <StreamingCursor />
-          </p>
+          </div>
         )}
       </div>
     </div>
