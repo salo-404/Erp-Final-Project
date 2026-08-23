@@ -1,17 +1,11 @@
-"""Smoke tests for the Document agent - both the invoice and order branches.
+"""Document agent runtime, backend-contract, and compatibility-helper tests.
 
-ALL SEVEN document_agent tools are wired to the real backend now
-(2026-08-22, detect_duplicate_document was the last one):
-extract_document(), match_products(), find_supplier(), match_invoice_to_po(),
-detect_discrepancy(), choose_fulfillment_warehouse(), and
-detect_duplicate_document() (GET /document-review/:id,
-GET /document-review/pending, GET /products, GET /suppliers,
-GET /inventory-transactions, POST /warehouse-routing/eligible-warehouses,
-POST /path-optimizer/nearest-warehouse - see backend_client.py).
-tools/mocks/document_mock_data.py (every tool's old mocked implementation)
-was deleted entirely as dead code once its last real caller here was
-wired. Every wired tool's own tests use httpx.MockTransport (see
-_patch_backend_client below), same pattern as tests/test_insights_agent.py.
+The exact seven runtime tools are the PendingDocumentReview lookup/resolution,
+human decision, and duplicate-check functions in DOCUMENT_TOOLS. Historical
+direct-call helpers remain outside that registry for regression coverage. All
+backend contract tests use httpx.MockTransport unless explicitly marked as
+live integration tests.
+
 match_products()/find_supplier() carry pure-logic tests for
 _classify_fuzzy_match() (the rapidfuzz classification core) and
 live-backend regression tests, including the real "Office" ambiguous tie
@@ -65,6 +59,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import time
 
@@ -72,8 +67,10 @@ import httpx
 import pytest
 
 from agents.document_agent import tools as document_tools_module
-from agents.document_agent.agent import DOCUMENT_TOOLS, build_document_agent
+from agents.document_agent.agent import DOCUMENT_TOOLS, _extract_matched_data, build_document_agent
+from agents.document_agent.prompts import DOCUMENT_SYSTEM_PROMPT
 from agents.document_agent.tools import (
+    DocumentReviewAuthorizationRequired,
     _NEAREST_WAREHOUSE_PATH,
     _WAREHOUSE_ELIGIBLE_PATH,
     _classify_fuzzy_match,
@@ -91,16 +88,31 @@ from agents.document_agent.tools import (
     _sum_extracted_items_value,
     _sum_po_items_value,
     _totals_close,
+    approve_document_review,
     choose_fulfillment_warehouse,
     detect_discrepancy,
     detect_duplicate_document,
     extract_document,
     find_supplier,
+    get_document_review,
+    get_pending_document_reviews,
     match_invoice_to_po,
     match_products,
+    reject_document_review,
+    resolve_document_product,
+    resolve_document_supplier,
 )
-from backend_client import BackendClient, NotFound, ServiceUnavailable, get_backend_client
+from backend_client import (
+    BackendClient,
+    Forbidden,
+    HumanAuthenticatedBackendClient,
+    NotFound,
+    ServiceUnavailable,
+    Unauthorized,
+    get_backend_client,
+)
 from config.settings import settings
+from request_context import human_auth_scope
 from tests._helpers import backend_reachable, live_model_configured
 
 UNKNOWN_DOCUMENT_ID = "doc_totally_made_up_id"
@@ -167,6 +179,10 @@ def _fake_jwt() -> str:
     return f"{header}.{payload}.fake-signature"
 
 
+async def _service_token_provider() -> str:
+    return _fake_jwt()
+
+
 def _patch_backend_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
     """Point extract_document() at a BackendClient backed by
     httpx.MockTransport instead of the real network - same pattern as
@@ -177,8 +193,7 @@ def _patch_backend_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
     """
     test_client = BackendClient(
         base_url="http://backend.test",
-        email="ai-agent@internal.local",
-        password="irrelevant-mocked",
+        service_token_provider=_service_token_provider,
         transport=httpx.MockTransport(handler),
     )
     monkeypatch.setattr(document_tools_module, "get_backend_client", lambda: test_client)
@@ -188,7 +203,355 @@ def test_document_agent_builds_standalone() -> None:
     """The Document agent must construct without any Supervisor dependency."""
     agent = build_document_agent()
     assert agent.name == "document_agent"
+    assert agent.callback_handler.__name__ == "null_callback_handler"
     assert len(DOCUMENT_TOOLS) == 7
+
+
+def test_document_runtime_registry_is_exact() -> None:
+    assert DOCUMENT_TOOLS == [
+        get_pending_document_reviews,
+        get_document_review,
+        resolve_document_product,
+        resolve_document_supplier,
+        approve_document_review,
+        reject_document_review,
+        detect_duplicate_document,
+    ]
+    for inactive_tool in (
+        extract_document,
+        match_products,
+        find_supplier,
+        match_invoice_to_po,
+        detect_discrepancy,
+        choose_fulfillment_warehouse,
+    ):
+        assert inactive_tool not in DOCUMENT_TOOLS
+
+
+def test_document_runtime_has_no_mock_dependency() -> None:
+    assert "tools.mocks" not in inspect.getsource(document_tools_module)
+
+
+def test_document_prompt_locks_current_ownership_and_safety() -> None:
+    prompt = " ".join(DOCUMENT_SYSTEM_PROMPT.split())
+    assert "Raw file extraction happens before you are called" in prompt
+    assert "is not one of your tools" in prompt
+    assert "Never mutate inventory directly" in prompt
+    assert "Never invent or guess" in prompt
+    assert "authenticated human ADMIN" in prompt
+    assert "Never claim a decision occurred unless the backend tool explicitly confirms it" in prompt
+    assert "Do not invent or refer to a separate PurchaseOrder model" in prompt
+    assert "currently PENDING reviews" in prompt
+    assert "Never call its fuzzy/item-overlap evidence proof of an exact duplicate" in prompt
+    assert "unauthorized, forbidden, not-found, conflict, validation" in prompt
+    assert "Never fabricate a successful match" in prompt
+    for inactive_tool_name in (
+        "extract_document",
+        "match_products",
+        "find_supplier",
+        "match_invoice_to_po",
+        "choose_fulfillment_warehouse",
+        "detect_discrepancy",
+    ):
+        assert inactive_tool_name not in DOCUMENT_SYSTEM_PROMPT
+
+
+def test_structured_handoff_preserves_exact_resolved_ids_and_quantities() -> None:
+    messages = [
+        {"content": [
+            {"toolUse": {"toolUseId": "r1", "name": "resolve_document_product", "input": {
+                "document_id": "501", "product_name": "27in Monitor",
+            }}},
+            {"toolUse": {"toolUseId": "r2", "name": "resolve_document_product", "input": {
+                "document_id": "501", "product_name": "Mechanical Keyboard",
+            }}},
+        ]},
+        {"content": [
+            {"toolResult": {"toolUseId": "r1", "content": [{"text": json.dumps({
+                "documentId": "501", "productNameRaw": "27in Monitor",
+                "requestedQuantity": 12, "status": "RESOLVED", "productId": 103,
+            })}]}},
+            {"toolResult": {"toolUseId": "r2", "content": [{"text": json.dumps({
+                "documentId": "501", "productNameRaw": "Mechanical Keyboard",
+                "requestedQuantity": 25, "status": "RESOLVED", "productId": 108,
+            })}]}},
+        ]},
+    ]
+
+    assert _extract_matched_data(messages) == {
+        "document_id": "501",
+        "product_ids": [103, 108],
+        "requested_quantities": [
+            {"product_id": 103, "quantity": 12},
+            {"product_id": 108, "quantity": 25},
+        ],
+    }
+
+
+def test_structured_handoff_ignores_unresolved_cross_document_and_invalid_quantities() -> None:
+    messages = [
+        {"content": [
+            {"toolUse": {"toolUseId": "ok", "name": "resolve_document_product", "input": {
+                "document_id": "501", "product_name": "27in Monitor",
+            }}},
+            {"toolUse": {"toolUseId": "bad-status", "name": "resolve_document_product", "input": {
+                "document_id": "501", "product_name": "Keyboard",
+            }}},
+            {"toolUse": {"toolUseId": "wrong-doc", "name": "resolve_document_product", "input": {
+                "document_id": "501", "product_name": "Mouse",
+            }}},
+            {"toolUse": {"toolUseId": "wrong-review", "name": "get_document_review", "input": {
+                "document_id": "501",
+            }}},
+        ]},
+        {"content": [
+            {"toolResult": {"toolUseId": "ok", "content": [{"text": json.dumps({
+                "documentId": "501", "productNameRaw": "27in Monitor",
+                "requestedQuantity": 3, "status": "RESOLVED", "productId": 103,
+            })}]}},
+            {"toolResult": {"toolUseId": "bad-status", "content": [{"text": json.dumps({
+                "documentId": "501", "productNameRaw": "Keyboard",
+                "requestedQuantity": 2, "status": "AMBIGUOUS", "productId": 108,
+            })}]}},
+            {"toolResult": {"toolUseId": "wrong-doc", "content": [{"text": json.dumps({
+                "documentId": "999", "productNameRaw": "Mouse",
+                "requestedQuantity": 4, "status": "RESOLVED", "productId": 110,
+            })}]}},
+            {"toolResult": {"toolUseId": "wrong-review", "content": [{"text": json.dumps({
+                "id": 999,
+                "extractedItems": [{"product": "27in Monitor", "quantity": 999}],
+            })}]}},
+        ]},
+    ]
+
+    assert _extract_matched_data(messages) == {
+        "document_id": "501",
+        "product_ids": [103],
+        "requested_quantities": [{"product_id": 103, "quantity": 3}],
+    }
+
+
+def test_structured_handoff_fails_closed_for_mixed_document_turn() -> None:
+    messages = [{"content": [
+        {"toolUse": {"toolUseId": "a", "name": "get_document_review", "input": {
+            "document_id": "501",
+        }}},
+        {"toolUse": {"toolUseId": "b", "name": "get_document_review", "input": {
+            "document_id": "502",
+        }}},
+    ]}]
+
+    assert _extract_matched_data(messages) is None
+
+
+def test_review_decisions_fail_closed_without_admin_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructed = {"count": 0}
+
+    def forbidden_constructor(*args, **kwargs):
+        constructed["count"] += 1
+        raise AssertionError("human backend client must not be constructed")
+
+    monkeypatch.setattr(
+        document_tools_module,
+        "HumanAuthenticatedBackendClient",
+        forbidden_constructor,
+    )
+    with pytest.raises(DocumentReviewAuthorizationRequired, match="no approval occurred"):
+        asyncio.run(approve_document_review(document_id="501", items=[{"productId": 103, "quantity": 1}]))
+    with pytest.raises(DocumentReviewAuthorizationRequired, match="no rejection occurred"):
+        asyncio.run(reject_document_review(document_id="501", rejection_reason="Duplicate"))
+    assert constructed["count"] == 0
+
+
+def _patch_human_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
+    monkeypatch.setattr(
+        document_tools_module,
+        "HumanAuthenticatedBackendClient",
+        lambda token: HumanAuthenticatedBackendClient(
+            token,
+            base_url="http://backend.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+
+def test_review_decisions_use_human_bearer_token_and_real_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            (request.url.path, request.headers["Authorization"], json.loads(request.content))
+        )
+        if request.url.path == "/document-review/501/approve":
+            return httpx.Response(200, json={"id": 501, "status": "APPROVED"})
+        if request.url.path == "/document-review/502/reject":
+            return httpx.Response(200, json={"id": 502, "status": "REJECTED"})
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_human_client(monkeypatch, handler)
+    with human_auth_scope("human-admin-jwt"):
+        approved = asyncio.run(
+            approve_document_review(
+                document_id="501",
+                items=[{"productId": 103, "quantity": 2}],
+                supplier_id=41,
+                destination_warehouse_id=2,
+            )
+        )
+        rejected = asyncio.run(
+            reject_document_review(document_id="502", rejection_reason="Duplicate")
+        )
+
+    assert approved["status"] == "APPROVED"
+    assert rejected["status"] == "REJECTED"
+    assert requests == [
+        (
+            "/document-review/501/approve",
+            "Bearer human-admin-jwt",
+            {
+                "items": [{"productId": 103, "quantity": 2}],
+                "supplierId": 41,
+                "destinationWarehouseId": 2,
+            },
+        ),
+        (
+            "/document-review/502/reject",
+            "Bearer human-admin-jwt",
+            {"rejectionReason": "Duplicate"},
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [(401, Unauthorized), (403, Forbidden)],
+)
+def test_review_authorization_failures_propagate_without_fake_success(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    error_type: type[Exception],
+) -> None:
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        return httpx.Response(status, json={"message": "not authorized"})
+
+    _patch_human_client(monkeypatch, handler)
+    with human_auth_scope("invalid-or-employee-jwt"):
+        with pytest.raises(error_type):
+            asyncio.run(
+                approve_document_review(
+                    document_id="501",
+                    items=[{"productId": 103, "quantity": 1}],
+                )
+            )
+    assert calls["count"] == 1
+
+
+def test_human_auth_is_request_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    authorizations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authorizations.append(request.headers["Authorization"])
+        review_id = int(request.url.path.split("/")[2])
+        return httpx.Response(200, json={"id": review_id, "status": "REJECTED"})
+
+    _patch_human_client(monkeypatch, handler)
+    for token, review_id in (("request-a", "501"), ("request-b", "502")):
+        with human_auth_scope(token):
+            asyncio.run(reject_document_review(review_id, "Duplicate"))
+    with pytest.raises(DocumentReviewAuthorizationRequired):
+        asyncio.run(reject_document_review("503", "Duplicate"))
+
+    assert authorizations == ["Bearer request-a", "Bearer request-b"]
+
+
+def test_human_jwt_is_not_llm_visible() -> None:
+    for review_tool in (approve_document_review, reject_document_review):
+        parameters = inspect.signature(review_tool).parameters
+        assert not any("token" in name.lower() or "jwt" in name.lower() for name in parameters)
+    assert "JWT" not in DOCUMENT_SYSTEM_PROMPT
+    assert "bearer" not in DOCUMENT_SYSTEM_PROMPT.lower()
+
+
+def test_core_read_tools_use_authoritative_document_review_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append((request.url.path, request.url.params.get("query", "")))
+        assert request.headers["Authorization"] != "Bearer human-admin-jwt"
+        if request.url.path == "/document-review/pending":
+            return httpx.Response(200, json=[{"id": 501, "status": "PENDING_REVIEW"}])
+        if request.url.path == "/document-review/501":
+            return httpx.Response(200, json={
+                "id": 501,
+                "status": "PENDING_REVIEW",
+                "extractedItems": [{"product": "27in Monitor", "quantity": 12, "price": 199.99}],
+            })
+        if request.url.path == "/document-review/resolve-product":
+            return httpx.Response(200, json=[{"productId": 103, "name": "27in Monitor", "score": 1}])
+        if request.url.path == "/document-review/resolve-supplier":
+            return httpx.Response(200, json=[{"supplierId": 41, "name": "TechSource", "score": 1}])
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+
+    with human_auth_scope("human-admin-jwt"):
+        assert asyncio.run(get_pending_document_reviews())["reviews"][0]["id"] == 501
+        assert asyncio.run(get_document_review(document_id="501"))["id"] == 501
+        product = asyncio.run(resolve_document_product("501", "27in Monitor"))
+        supplier = asyncio.run(resolve_document_supplier("501", "TechSource"))
+
+    assert product["status"] == "RESOLVED" and product["productId"] == 103
+    assert product["requestedQuantity"] == 12
+    assert supplier["status"] == "RESOLVED" and supplier["supplierId"] == 41
+    assert ("/document-review/resolve-product", "27in Monitor") in requested
+    assert ("/document-review/resolve-supplier", "TechSource") in requested
+
+
+@pytest.mark.parametrize(
+    ("resolver", "resolver_path", "resolver_args"),
+    [
+        (
+            resolve_document_product,
+            "/document-review/resolve-product",
+            ("999", "27in Monitor"),
+        ),
+        (
+            resolve_document_supplier,
+            "/document-review/resolve-supplier",
+            ("999", "TechSource"),
+        ),
+    ],
+)
+def test_document_resolvers_stop_when_numeric_review_does_not_exist(
+    monkeypatch: pytest.MonkeyPatch,
+    resolver,
+    resolver_path: str,
+    resolver_args: tuple,
+) -> None:
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path == "/document-review/999":
+            return httpx.Response(404, json={"message": "Review not found"})
+        raise AssertionError(f"resolver must not be called after 404: {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+
+    with pytest.raises(NotFound, match="Review not found"):
+        asyncio.run(resolver(*resolver_args))
+
+    assert "/document-review/999" in requested_paths
+    assert resolver_path not in requested_paths
 
 
 def test_map_extracted_items_handles_missing_price() -> None:
@@ -227,8 +590,6 @@ def test_extract_document_invoice_wired_end_to_end_against_mocked_backend(
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/501":
             return httpx.Response(
                 200,
@@ -288,8 +649,6 @@ def test_extract_document_order_wired_handles_missing_price_line_item(
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/777":
             return httpx.Response(
                 200,
@@ -335,8 +694,6 @@ def test_extract_document_order_wired_handles_missing_price_line_item(
 
 def test_extract_document_propagates_not_found_for_unknown_id(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(404, json={"message": "PendingDocumentReview 999999 not found"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -347,8 +704,6 @@ def test_extract_document_propagates_not_found_for_unknown_id(monkeypatch: pytes
 
 def test_extract_document_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "document review service timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -364,11 +719,10 @@ def test_extract_document_propagates_typed_backend_error(monkeypatch: pytest.Mon
 )
 def test_extract_document_live_against_real_backend() -> None:
     """FETCH PATH ONLY - does not exercise the real upload->extraction
-    pipeline (POST /document-review/upload). That requires
-    RIBAL_AGENT_URL, which is unconfigured in local dev (backend/.env has
-    it set to a placeholder, "unused-local-dev") - genuinely out of scope
-    for this tool per the task, which only fetches an already-extracted
-    row via GET /document-review/:id.
+    pipeline (POST /document-review/upload). Upload extraction now runs
+    upstream in NestJS through private S3 + Textract AnalyzeExpense; this
+    compatibility helper only fetches an already-extracted row via
+    GET /document-review/:id.
 
     Instead, this discovers a real id via GET /document-review/pending
     (rather than hardcoding one) and fetches it through extract_document()
@@ -419,8 +773,6 @@ def _patch_catalog_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/suppliers":
@@ -467,8 +819,6 @@ def test_invoice_branch_downstream_chain(monkeypatch: pytest.MonkeyPatch) -> Non
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/suppliers":
@@ -565,8 +915,6 @@ def test_order_branch_downstream_chain(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/801":
@@ -790,14 +1138,9 @@ def test_match_names_to_catalog_matches_match_products_behavior_exactly(monkeypa
 
     test_client = BackendClient(
         base_url="http://backend.test",
-        email="ai-agent@internal.local",
-        password="irrelevant-mocked",
+        service_token_provider=_service_token_provider,
         transport=httpx.MockTransport(
-            lambda request: (
-                httpx.Response(200, json={"access_token": _fake_jwt()})
-                if request.url.path == "/auth/login"
-                else httpx.Response(200, json=_REAL_PRODUCT_ROWS)
-            )
+            lambda request: httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         ),
     )
     classifications = asyncio.run(_match_names_to_catalog(test_client, raw_names))
@@ -831,8 +1174,6 @@ def test_find_supplier_wired_end_to_end_against_mocked_backend(monkeypatch: pyte
 
 def test_match_products_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "product catalog service timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -843,8 +1184,6 @@ def test_match_products_propagates_typed_backend_error(monkeypatch: pytest.Monke
 
 def test_find_supplier_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "supplier catalog service timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -865,8 +1204,6 @@ def test_find_supplier_propagates_typed_backend_error(monkeypatch: pytest.Monkey
 
 def _document_review_handler(document_id: str, extracted_items: list[dict]):
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == f"/document-review/{document_id}":
             return httpx.Response(200, json={"extractedItems": extracted_items})
         raise AssertionError(f"unexpected path {request.url.path}")
@@ -876,8 +1213,6 @@ def _document_review_handler(document_id: str, extracted_items: list[dict]):
 
 def test_match_invoice_to_po_no_match_when_supplier_has_no_open_pos(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/701":
             return httpx.Response(
                 200, json={"extractedItems": [{"product": "Laptop Pro 14", "quantity": 5, "price": 820}]}
@@ -898,8 +1233,6 @@ def test_match_invoice_to_po_no_match_when_supplier_has_no_open_pos(monkeypatch:
 
 def test_match_invoice_to_po_no_match_when_totals_diverge(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/702":
             return httpx.Response(
                 200, json={"extractedItems": [{"product": "Laptop Pro 14", "quantity": 5, "price": 820}]}
@@ -935,8 +1268,6 @@ def test_match_invoice_to_po_multiple_candidates(monkeypatch: pytest.MonkeyPatch
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/703":
             return httpx.Response(
                 200, json={"extractedItems": [{"product": "Laptop Pro 14", "quantity": 10, "price": 1000}]}
@@ -1001,8 +1332,6 @@ def test_match_invoice_to_po_rejects_non_numeric_document_id() -> None:
 
 def test_match_invoice_to_po_propagates_not_found_for_unknown_document(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(404, json={"message": "PendingDocumentReview 999999 not found"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1013,8 +1342,6 @@ def test_match_invoice_to_po_propagates_not_found_for_unknown_document(monkeypat
 
 def test_match_invoice_to_po_propagates_typed_backend_error_from_po_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/705":
             return httpx.Response(
                 200, json={"extractedItems": [{"product": "Laptop Pro 14", "quantity": 5, "price": 820}]}
@@ -1051,8 +1378,6 @@ def test_detect_discrepancy_covers_every_line_item_discrepancy_type(monkeypatch:
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/706":
             return httpx.Response(
                 200,
@@ -1120,8 +1445,6 @@ def test_detect_discrepancy_flags_supplier_mismatch_independently(monkeypatch: p
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/707":
             return httpx.Response(
                 200, json={"extractedItems": [{"product": "Laptop Pro 14", "quantity": 5, "price": 820}]}
@@ -1153,8 +1476,6 @@ def test_detect_discrepancy_rejects_non_numeric_document_id() -> None:
 
 def test_detect_discrepancy_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(503, json={"message": "document review service timed out"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1316,8 +1637,6 @@ def test_select_fulfillment_warehouse_empty_input_returns_no_winner() -> None:
 
 def test_choose_fulfillment_warehouse_no_eligible_warehouse(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/802":
@@ -1353,8 +1672,6 @@ def test_choose_fulfillment_warehouse_insufficient_data_when_nothing_resolves(mo
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/803":
@@ -1394,8 +1711,6 @@ def test_choose_fulfillment_warehouse_reports_unresolved_items_but_still_recomme
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/804":
@@ -1450,8 +1765,6 @@ def test_choose_fulfillment_warehouse_falls_back_when_nearest_warehouse_call_fai
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/805":
@@ -1491,8 +1804,6 @@ def test_choose_fulfillment_warehouse_propagates_not_found_for_unknown_document(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(404, json={"message": "PendingDocumentReview 999999 not found"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1510,8 +1821,6 @@ def test_choose_fulfillment_warehouse_propagates_typed_backend_error_from_eligib
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/806":
@@ -1676,8 +1985,6 @@ def test_detect_duplicate_document_finds_and_ranks_real_candidates(monkeypatch: 
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
         if request.url.path == "/document-review/860":
@@ -1689,7 +1996,10 @@ def test_detect_duplicate_document_finds_and_ranks_real_candidates(monkeypatch: 
     _patch_backend_client(monkeypatch, handler)
 
     result = asyncio.run(detect_duplicate_document(document_id="860"))
-    assert result["isDuplicate"] is True
+    assert result["status"] == "POTENTIAL_DUPLICATE_REVIEW"
+    assert result["isPotentialDuplicate"] is True
+    assert result["scope"] == "PENDING_REVIEWS_ONLY"
+    assert "not exact file identity" in result["evidenceLimitations"]
     assert [m["documentReviewId"] for m in result["matches"]] == [862, 864]
 
     strongest = result["matches"][0]
@@ -1705,14 +2015,12 @@ def test_detect_duplicate_document_finds_and_ranks_real_candidates(monkeypatch: 
 
 def test_detect_duplicate_document_no_candidates_in_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     """The candidate pool is empty once the target excludes itself -
-    isDuplicate is False immediately, WITHOUT ever calling GET /products
+    isPotentialDuplicate is False immediately, WITHOUT ever calling GET /products
     (not stubbed below, so an unexpected call there fails this test
     loudly rather than silently passing).
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/865":
             return httpx.Response(
                 200,
@@ -1741,7 +2049,9 @@ def test_detect_duplicate_document_no_candidates_in_pool(monkeypatch: pytest.Mon
     _patch_backend_client(monkeypatch, handler)
 
     result = asyncio.run(detect_duplicate_document(document_id="865"))
-    assert result["isDuplicate"] is False
+    assert result["status"] == "NO_SIMILAR_PENDING_REVIEW"
+    assert result["isPotentialDuplicate"] is False
+    assert result["scope"] == "PENDING_REVIEWS_ONLY"
     assert result["matches"] == []
 
 
@@ -1752,8 +2062,6 @@ def test_detect_duplicate_document_rejects_non_numeric_document_id() -> None:
 
 def test_detect_duplicate_document_propagates_not_found_for_unknown_document(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         return httpx.Response(404, json={"message": "PendingDocumentReview 999999 not found"})
 
     _patch_backend_client(monkeypatch, handler)
@@ -1766,8 +2074,6 @@ def test_detect_duplicate_document_propagates_typed_backend_error_from_pending_f
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/document-review/866":
             return httpx.Response(
                 200,
@@ -2024,7 +2330,7 @@ def test_detect_duplicate_document_live_no_duplicate_against_real_backend() -> N
 
     result = asyncio.run(detect_duplicate_document(document_id=document_id))
     assert result["documentId"] == document_id
-    assert result["isDuplicate"] is False, (
+    assert result["isPotentialDuplicate"] is False, (
         f"Expected no duplicate - real seed data has only one PENDING_REVIEW document at a time, "
         f"so the candidate pool should be empty once it excludes itself. Got: {result!r}"
     )
@@ -2093,8 +2399,6 @@ def test_document_agent_reports_tool_error_instead_of_fabricating(monkeypatch: p
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/auth/login":
-            return httpx.Response(200, json={"access_token": _fake_jwt()})
         if request.url.path == "/products":
             calls["n"] += 1
             if calls["n"] == 1:

@@ -10,19 +10,18 @@ Before any of that, handle_query() runs the scope gate (agents/supervisor/gate.p
 queries before the Supervisor agent is even constructed, so they never
 reach a specialist tool at all.
 
-TODO: Real routing logic BEYOND the gate is not implemented. Today the
-Supervisor's system prompt (agents/supervisor/prompts.py) describes the
-two specialists in prose and relies entirely on the underlying model's own
-tool-selection to pick insights_agent_tool vs. document_agent_tool vs.
-both, once a query has already passed the gate. There is no explicit
-router beyond that and no disambiguation step for requests that could
-plausibly belong to either agent. See tests/test_supervisor_wiring.py for
-the wiring proof and tests/test_gate.py for the gate's own tests.
+Routing after the gate is intentionally model-driven: the Supervisor prompt
+and the two specialist tool descriptions direct the model to Insights,
+Document, or a sequential Document-to-Insights workflow. There is deliberately
+no duplicate keyword router. See tests/test_supervisor_wiring.py for the
+routing contract and tests/test_gate.py for the gate's tests.
 """
 
 from __future__ import annotations
 
 from strands import Agent
+
+from request_context import human_auth_scope
 
 from agents.document_agent.agent import document_agent_tool
 from agents.insights_agent.agent import insights_agent_tool
@@ -37,7 +36,7 @@ SUPERVISOR_TOOLS = [
 ]
 
 
-def build_supervisor_agent() -> Agent:
+def build_supervisor_agent(session_manager: object | None = None) -> Agent:
     """Construct the top-level Supervisor Agent.
 
     Architecture is LOCKED at exactly 3 agents: this Supervisor plus the
@@ -67,12 +66,14 @@ def build_supervisor_agent() -> Agent:
         model=model,
         system_prompt=SUPERVISOR_SYSTEM_PROMPT,
         tools=SUPERVISOR_TOOLS,
+        callback_handler=None,
         name="supervisor",
         description="Top-level ERP assistant that routes to the Insights and Document specialists.",
+        session_manager=session_manager,
     )
 
 
-def handle_query(query: str) -> str:
+def handle_query(query: str, human_bearer_token: str | None = None) -> str:
     """Entry point a caller (e.g. an AgentCore Runtime handler) would use.
 
     Applies the scope gate (layer 2 of the three-layer defense) BEFORE the
@@ -80,10 +81,10 @@ def handle_query(query: str) -> str:
     reaches the Supervisor's own model call, and therefore never reaches
     insights_agent_tool or document_agent_tool either.
 
-    TODO: this is intentionally minimal - no conversation/session state,
-    no streaming, no error handling beyond the gate check. Real deployment
-    wiring (AgentCore Runtime entry point, request/response shape) is not
-    implemented yet.
+    This local entry point is intentionally minimal: conversation/session
+    state and streaming are separate concerns. AgentCore deployment uses
+    agentcore_entrypoint.py; routing itself remains the Supervisor model's
+    responsibility after the gate passes.
     """
     allowed, reason = is_in_scope(query)
     if not allowed:
@@ -94,7 +95,8 @@ def handle_query(query: str) -> str:
         )
 
     agent = build_supervisor_agent()
-    result = agent(query)
+    with human_auth_scope(human_bearer_token):
+        result = agent(query)
     return str(result)
 
 

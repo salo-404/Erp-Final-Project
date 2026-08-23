@@ -7,7 +7,7 @@ from config.settings import settings
 
 AWS_REGION = settings.aws_region
 MODEL_ID = settings.bedrock_embedding_model_id
-EMBEDDING_DIMENSIONS = 512
+EMBEDDING_DIMENSIONS = settings.embedding_dimensions
 
 
 def embed_text(text: str) -> list[float]:

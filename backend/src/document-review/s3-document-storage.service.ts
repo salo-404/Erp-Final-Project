@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import {
   GetObjectCommand,
+  DeleteObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -12,10 +13,9 @@ import {
 } from './document-review.service';
 
 /**
- * How long a presigned GET URL stays valid. Handed to the extraction
- * provider (Ribal Agent) immediately after upload for a synchronous fetch —
- * kept short since nothing else should ever need to read the document
- * through this URL.
+ * How long a presigned GET URL stays valid. Used only by the authenticated
+ * viewing endpoint when a user needs temporary access, and kept short since
+ * extraction reads the private S3 object directly by key.
  */
 const PRESIGNED_URL_EXPIRY_SECONDS = 300;
 
@@ -111,6 +111,12 @@ export class S3DocumentStorageService implements DocumentStorageProvider {
         `Failed to generate a presigned URL for S3 object "${key}": ${(error as Error).message}`,
       );
     }
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.client.send(
+      new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
   }
 
   /**

@@ -1916,10 +1916,10 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
         productId: 1,
         warehouseId: 10,
         onHand: 5,
-        lastMovementAt: null,
-        daysSinceLastMovement: null,
-        lastOutgoingMovementAt: null,
-        daysSinceLastOutgoingMovement: null,
+        lastMovementAt: new Date('2026-05-30T00:00:00.000Z'),
+        daysSinceLastMovement: 2,
+        lastOutgoingMovementAt: new Date('2026-01-01T00:00:00.000Z'),
+        daysSinceLastOutgoingMovement: 151,
       },
     ]);
     jest.spyOn(service, 'getConsumptionAnomalies').mockResolvedValue([
@@ -2008,6 +2008,11 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
     // The OK stockout-risk entry (productId 4) must never surface as an alert.
     expect(result.some((a) => a.data.productId === 4)).toBe(false);
     expect(result.every((a) => a.referenceDate === NOW)).toBe(true);
+    const deadStockAlert = result.find((a) => a.category === 'DEAD_STOCK');
+    expect(deadStockAlert?.message).toContain(
+      'no customer OUTGOING movement in 151 days',
+    );
+    expect(deadStockAlert?.message).not.toContain('2 days');
   });
 
   it('confirmed rule: AT_RISK stockout entries are CRITICAL, not WARNING', async () => {

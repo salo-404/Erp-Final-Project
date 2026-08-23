@@ -14,7 +14,6 @@ describe('StockInsightsModule wiring', () => {
   beforeEach(() => {
     process.env.AWS_REGION = 'eu-west-1';
     process.env.AWS_S3_BUCKET = 'test-bucket';
-    process.env.RIBAL_AGENT_URL = 'http://localhost:9000/ribal/extract';
   });
 
   afterEach(() => {

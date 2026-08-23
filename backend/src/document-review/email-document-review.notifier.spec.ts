@@ -53,12 +53,27 @@ describe('EmailDocumentReviewNotifier', () => {
     expect(sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({ to: 'admin2@example.com' }),
     );
+    const bodies = sendEmail.mock.calls.map(
+      ([message]: [{ body: string }]) => message.body,
+    );
+    expect(bodies.every((body) => !body.includes(EVENT.documentUrl))).toBe(true);
+    expect(bodies.every((body) => body.includes('review #1'))).toBe(true);
   });
 
   it('does nothing (no error) when there are no ADMIN users', async () => {
     const { prisma } = createMockPrisma([]);
     const { service: emailService, sendEmail } = createMockEmailService();
 
+    const notifier = new EmailDocumentReviewNotifier(prisma, emailService);
+
+    await expect(notifier.notifyNewInvoice(EVENT)).resolves.toBeUndefined();
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('never fails the persisted upload when ADMIN recipient lookup fails', async () => {
+    const { prisma, findMany } = createMockPrisma([]);
+    findMany.mockRejectedValue(new Error('database unavailable'));
+    const { service: emailService, sendEmail } = createMockEmailService();
     const notifier = new EmailDocumentReviewNotifier(prisma, emailService);
 
     await expect(notifier.notifyNewInvoice(EVENT)).resolves.toBeUndefined();

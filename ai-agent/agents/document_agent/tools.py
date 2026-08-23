@@ -1,55 +1,15 @@
 """Document processing tools for the Strands Agent.
 
-Every function is decorated with @tool. ALL SEVEN tools are wired to the
-real backend now (2026-08-22): extract_document(), match_products(),
-find_supplier(), match_invoice_to_po(), detect_discrepancy(),
-choose_fulfillment_warehouse(), and detect_duplicate_document()
-(GET /document-review/:id, GET /document-review/pending, GET /products,
-GET /suppliers, GET /inventory-transactions,
-POST /warehouse-routing/eligible-warehouses,
-POST /path-optimizer/nearest-warehouse - see backend_client.py). No tool
-in this file calls into a mock module any more - tools/mocks/
-document_mock_data.py (the mock-era version of every tool below,
-including DocumentNotFoundError) was deleted entirely as dead code during
-the pre-handoff cleanup pass (2026-08-22), once its last caller here was
-wired to the real backend.
+The active runtime registry lives in ``agents/document_agent/agent.py`` and
+contains exactly: get_pending_document_reviews, get_document_review,
+resolve_document_product, resolve_document_supplier, approve_document_review,
+reject_document_review, and detect_duplicate_document.
 
-match_products()/find_supplier() do not validate document_id at all -
-matching runs against the REAL, always-current product/supplier catalog
-instead of a per-document fixture, so there is no "known document" concept
-for these two to check against. document_id is still required and still
-echoed back for traceability, but is otherwise unused by these two tools.
-Every other tool DOES still look up document_id for real - they fetch the
-actual document itself, same as extract_document() - so an unrecognized
-id 404s for real for all of them, never a fabricated placeholder response.
-
-_match_names_to_catalog() is a shared internal helper (not a @tool itself)
-factored out of match_products()'s own fetch+classify logic - match_products(),
-detect_discrepancy(), choose_fulfillment_warehouse(), and
-detect_duplicate_document() all call it, so raw product-name matching
-against the real catalog happens in exactly one place, with exactly one
-set of validated thresholds (_MATCH_THRESHOLD/_AMBIGUOUS_FLOOR/
-_AMBIGUOUS_GAP), never duplicated or re-tuned per caller.
-
-extract_document() is the entry point. It does NOT take a doc_type input -
-real extraction already happened server-side at upload time (POST
-/document-review/upload, outside this tool's responsibility), so the
-document's type is already decided and stored as the real transactionType;
-this tool only fetches that row and derives docType from it
-(INCOMING -> "invoice", OUTGOING -> "order"). The agent reads docType from
-extract_document()'s response and routes to exactly one of two branches
-based on it - it never guesses or chooses the type itself. See
-agents/document_agent/prompts.py for the branching rules the agent must
-follow after extraction.
-
-Every tool below requires `document_id` as its first argument. This is a
-deliberate fix for a real bug: these tools used to accept no document
-reference (or an unvalidated one) and would return a plausible-looking
-mocked result even when called with no real document in play, which reads
-as a confident, fabricated answer. Every tool that still looks up
-document_id (all but match_products/find_supplier - see above) now
-enforces this for real: an unrecognized document_id 404s as a real
-NotFound backend error, never a fabricated placeholder response.
+Legacy helpers including extract_document, match_products, find_supplier,
+match_invoice_to_po, detect_discrepancy, and choose_fulfillment_warehouse
+are intentionally retained for direct regression-test compatibility. They are
+not registered with the Document runtime and are not an alternate extraction
+or conversational tool path.
 """
 
 from __future__ import annotations
@@ -60,16 +20,31 @@ from typing import Optional
 from rapidfuzz import fuzz, utils
 from strands import tool
 
-from backend_client import BackendClient, BackendError, get_backend_client
+from backend_client import (
+    BackendClient,
+    BackendError,
+    HumanAuthenticatedBackendClient,
+    get_backend_client,
+)
+from request_context import get_human_bearer_token
 from tools.schemas.document_schema import (
     ChooseFulfillmentWarehouseResponse,
     DetectDiscrepancyResponse,
     DetectDuplicateDocumentResponse,
+    DocumentReviewDecisionResponse,
+    DocumentReviewRecord,
     ExtractDocumentResponse,
     FindSupplierResponse,
     MatchInvoiceToPoResponse,
     MatchProductsResponse,
+    PendingDocumentReviewsResponse,
+    ResolveDocumentProductResponse,
+    ResolveDocumentSupplierResponse,
 )
+
+
+class DocumentReviewAuthorizationRequired(RuntimeError):
+    """Raised when an ADMIN-authenticated review decision cannot be made."""
 
 # Classification thresholds for _classify_fuzzy_match(), validated against
 # the real product/supplier catalog before adopting (see the wiring
@@ -120,6 +95,159 @@ def _map_extracted_items(raw_items: list[dict]) -> list[dict]:
         }
         for item in raw_items
     ]
+
+
+def _numeric_review_id(document_id: str) -> int:
+    try:
+        return int(document_id)
+    except ValueError as exc:
+        raise ValueError(
+            f"document_id must be a real numeric PendingDocumentReview id, got {document_id!r}"
+        ) from exc
+
+
+@tool
+async def get_pending_document_reviews() -> dict:
+    """Return real PendingDocumentReview rows still awaiting human review."""
+    client = get_backend_client()
+    reviews = await client.get("/document-review/pending")
+    return PendingDocumentReviewsResponse.model_validate(
+        {"reviews": reviews}
+    ).model_dump(mode="json")
+
+
+@tool
+async def get_document_review(document_id: str) -> dict:
+    """Fetch one real document-review record; raw extraction already occurred upstream."""
+    client = get_backend_client()
+    review = await client.get(f"/document-review/{_numeric_review_id(document_id)}")
+    return DocumentReviewRecord.model_validate(review).model_dump(mode="json")
+
+
+@tool
+async def resolve_document_product(
+    document_id: str,
+    product_name: str,
+) -> dict:
+    """Get authoritative backend Product suggestions for one extracted line item.
+
+    A product is marked RESOLVED only for one unique exact backend match.
+    Partial/multiple suggestions remain advisory and require human resolution.
+    requestedQuantity is derived from the stored review's extractedItems;
+    it is never accepted from the model or caller.
+    """
+    review_id = _numeric_review_id(document_id)
+    client = get_backend_client()
+    review = DocumentReviewRecord.model_validate(
+        await client.get(f"/document-review/{review_id}")
+    )
+    suggestions = await client.get(
+        "/document-review/resolve-product",
+        params={"query": product_name},
+    )
+    exact = [suggestion for suggestion in suggestions if suggestion.get("score") == 1]
+    resolved = exact[0] if len(exact) == 1 else None
+    matching_items = [
+        item for item in review.extractedItems if item.product == product_name
+    ]
+    requested_quantity = (
+        matching_items[0].quantity if len(matching_items) == 1 else None
+    )
+    return ResolveDocumentProductResponse.model_validate(
+        {
+            "documentId": document_id,
+            "productNameRaw": product_name,
+            "requestedQuantity": requested_quantity,
+            "status": "RESOLVED" if resolved else ("AMBIGUOUS" if suggestions else "NOT_FOUND"),
+            "productId": resolved["productId"] if resolved else None,
+            "suggestions": suggestions,
+        }
+    ).model_dump(mode="json")
+
+
+@tool
+async def resolve_document_supplier(document_id: str, supplier_name: str) -> dict:
+    """Get authoritative backend Supplier suggestions for an extracted supplier name."""
+    review_id = _numeric_review_id(document_id)
+    client = get_backend_client()
+    DocumentReviewRecord.model_validate(
+        await client.get(f"/document-review/{review_id}")
+    )
+    suggestions = await client.get(
+        "/document-review/resolve-supplier",
+        params={"query": supplier_name},
+    )
+    exact = [suggestion for suggestion in suggestions if suggestion.get("score") == 1]
+    resolved = exact[0] if len(exact) == 1 else None
+    return ResolveDocumentSupplierResponse.model_validate(
+        {
+            "documentId": document_id,
+            "supplierNameRaw": supplier_name,
+            "status": "RESOLVED" if resolved else ("AMBIGUOUS" if suggestions else "NOT_FOUND"),
+            "supplierId": resolved["supplierId"] if resolved else None,
+            "suggestions": suggestions,
+        }
+    ).model_dump(mode="json")
+
+
+@tool
+async def approve_document_review(
+    document_id: str,
+    items: list[dict],
+    expected_date: Optional[str] = None,
+    supplier_id: Optional[int] = None,
+    destination_warehouse_id: Optional[int] = None,
+    source_warehouse_id: Optional[int] = None,
+    party_name: Optional[str] = None,
+    delivery_country: Optional[str] = None,
+    delivery_region: Optional[str] = None,
+    delivery_address: Optional[str] = None,
+) -> dict:
+    """Approve a review as the authenticated human; the backend enforces ADMIN."""
+    review_id = _numeric_review_id(document_id)
+    bearer_token = get_human_bearer_token()
+    if not bearer_token:
+        raise DocumentReviewAuthorizationRequired(
+            "Document approval requires an authenticated human ADMIN context; "
+            "no approval occurred."
+        )
+
+    body = {"items": items}
+    optional_fields = {
+        "expectedDate": expected_date,
+        "supplierId": supplier_id,
+        "destinationWarehouseId": destination_warehouse_id,
+        "sourceWarehouseId": source_warehouse_id,
+        "partyName": party_name,
+        "deliveryCountry": delivery_country,
+        "deliveryRegion": delivery_region,
+        "deliveryAddress": delivery_address,
+    }
+    body.update({key: value for key, value in optional_fields.items() if value is not None})
+    result = await HumanAuthenticatedBackendClient(bearer_token).post(
+        f"/document-review/{review_id}/approve",
+        json=body,
+    )
+    return DocumentReviewDecisionResponse.model_validate(result).model_dump(mode="json")
+
+
+@tool
+async def reject_document_review(document_id: str, rejection_reason: str) -> dict:
+    """Reject a review as the authenticated human; the backend enforces ADMIN."""
+    review_id = _numeric_review_id(document_id)
+    if not rejection_reason.strip():
+        raise ValueError("rejection_reason must not be empty")
+    bearer_token = get_human_bearer_token()
+    if not bearer_token:
+        raise DocumentReviewAuthorizationRequired(
+            "Document rejection requires an authenticated human ADMIN context; "
+            "no rejection occurred."
+        )
+    result = await HumanAuthenticatedBackendClient(bearer_token).post(
+        f"/document-review/{review_id}/reject",
+        json={"rejectionReason": rejection_reason},
+    )
+    return DocumentReviewDecisionResponse.model_validate(result).model_dump(mode="json")
 
 
 @tool
@@ -976,13 +1104,14 @@ def _duplicate_signals(*, same_identity: bool, dates_close: bool, totals_close: 
 
 @tool
 async def detect_duplicate_document(document_id: str) -> dict:
-    """Check whether THIS EXACT DOCUMENT has already been submitted/processed before (a re-upload, resent attachment, etc.).
+    """Find similar currently-pending reviews for human duplicate assessment.
 
-    This is about document identity, not content: it answers "have we seen
-    this document before", never "does this document's data match what we
-    expected" - that second question is detect_discrepancy()'s job, not
-    this tool's. Used by BOTH the invoice and order branches, typically as
-    a final check before reporting a result.
+    This cannot establish exact document identity: the backend exposes no
+    document hash, stable invoice number, or list-all review-history
+    endpoint. It compares extracted content only and is scoped to rows from
+    GET /document-review/pending. A positive result is therefore a
+    POTENTIAL duplicate for human review, never proof and never an automatic
+    reason to reject or block the document.
 
     Real logic (2026-08-22, see the wiring investigation): fetches the
     target document (GET /document-review/:id, same call extract_document
@@ -1019,7 +1148,8 @@ async def detect_duplicate_document(document_id: str) -> dict:
             real, same as extract_document().
 
     Returns:
-        A dict with `isDuplicate` and a `matches` list (possibly empty) -
+        A dict with advisory `status`, `isPotentialDuplicate`, explicit
+        `scope`/`evidenceLimitations`, and a `matches` list (possibly empty) -
         each entry has `documentReviewId`, `matchedOn` (which real signals
         agreed), the candidate's own real `extractedIdentityName`/
         `extractedDate`/`totalValue` for direct human comparison, and a
@@ -1050,7 +1180,17 @@ async def detect_duplicate_document(document_id: str) -> dict:
 
     if not candidates:
         return DetectDuplicateDocumentResponse.model_validate(
-            {"documentId": document_id, "isDuplicate": False, "matches": []}
+            {
+                "documentId": document_id,
+                "status": "NO_SIMILAR_PENDING_REVIEW",
+                "isPotentialDuplicate": False,
+                "scope": "PENDING_REVIEWS_ONLY",
+                "evidenceLimitations": (
+                    "No exact file hash or stable invoice identifier is available, and processed "
+                    "APPROVED/REJECTED review history is not enumerable through the backend API."
+                ),
+                "matches": [],
+            }
         ).model_dump(mode="json")
 
     target_items = _map_extracted_items(target["extractedItems"])
@@ -1105,7 +1245,21 @@ async def detect_duplicate_document(document_id: str) -> dict:
     matches.sort(key=lambda match: len(match["matchedOn"]), reverse=True)
 
     return DetectDuplicateDocumentResponse.model_validate(
-        {"documentId": document_id, "isDuplicate": len(matches) > 0, "matches": matches}
+        {
+            "documentId": document_id,
+            "status": (
+                "POTENTIAL_DUPLICATE_REVIEW"
+                if matches
+                else "NO_SIMILAR_PENDING_REVIEW"
+            ),
+            "isPotentialDuplicate": bool(matches),
+            "scope": "PENDING_REVIEWS_ONLY",
+            "evidenceLimitations": (
+                "Similarity is based on extracted identity/date/value/items, not exact file "
+                "identity. Only currently pending reviews can be enumerated."
+            ),
+            "matches": matches,
+        }
     ).model_dump(mode="json")
 
 

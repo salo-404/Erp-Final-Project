@@ -25,6 +25,7 @@ from agents.insights_agent.tools import (
     get_restock_recommendations,
     get_stockout_risk,
     get_transfer_recommendations,
+    recommend_fulfillment_warehouse,
 )
 from config.settings import settings
 from tools.query_database import query_database
@@ -39,6 +40,7 @@ INSIGHTS_TOOLS = [
     get_consumption_anomalies,
     compare_suppliers,
     get_open_purchase_orders,
+    recommend_fulfillment_warehouse,
     query_database,
 ]
 
@@ -47,8 +49,8 @@ def build_insights_agent() -> Agent:
     """Construct a standalone Insights Agent instance.
 
     Isolated from the Supervisor and Document agent - can be built and run
-    on its own for local testing. The model provider (OpenAI for local dev,
-    Bedrock for production) is decided entirely by settings.build_model() -
+    on its own for local testing. The model provider is decided entirely by
+    settings.build_model() -
     see config/settings.py - so switching providers never touches this
     function.
     """
@@ -57,6 +59,7 @@ def build_insights_agent() -> Agent:
         model=model,
         system_prompt=INSIGHTS_SYSTEM_PROMPT,
         tools=INSIGHTS_TOOLS,
+        callback_handler=None,
         name="insights_agent",
         description="Inventory analytics and procurement specialist (stock, risk, suppliers, purchase orders).",
     )

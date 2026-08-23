@@ -12,7 +12,7 @@ interface RequestWithUser {
 }
 
 /**
- * The authenticated identity attached by JwtAuthGuard (via JwtStrategy.validate()).
+ * The database-backed identity attached after Cognito verification by JwtAuthGuard.
  * Only usable on routes that already run JwtAuthGuard — pulling `req.user`
  * this way is how every route that needs "who is making this request"
  * (e.g. adjustInventory's requestedBy, document review's reviewedById)

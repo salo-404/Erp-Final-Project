@@ -113,9 +113,36 @@ def test_cte_containing_disallowed_real_table_fails() -> None:
         validate_sql(sql)
 
 
+def test_writable_cte_is_rejected() -> None:
+    sql = (
+        'WITH changed AS (UPDATE "Product" SET "name" = \'unsafe\' RETURNING "id") '
+        'SELECT * FROM changed'
+    )
+
+    with pytest.raises(ValueError):
+        validate_sql(sql)
+
+
+def test_select_into_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        validate_sql('SELECT "id" INTO temporary_products FROM "Product"')
+
+
 def test_query_example_remains_forbidden() -> None:
     with pytest.raises(ValueError, match="Table is not allowed: QueryExample"):
         validate_sql('SELECT * FROM "QueryExample"')
+
+
+@pytest.mark.parametrize("table", ["User", "_prisma_migrations"])
+def test_internal_or_auth_tables_are_rejected(table: str) -> None:
+    with pytest.raises(ValueError, match=rf"Table is not allowed: {re.escape(table)}"):
+        validate_sql(f'SELECT * FROM "{table}"')
+
+
+@pytest.mark.parametrize("schema", ["pg_catalog", "information_schema"])
+def test_system_schemas_are_rejected(schema: str) -> None:
+    with pytest.raises(ValueError, match="System schema is not allowed"):
+        validate_sql(f'SELECT * FROM {schema}.tables')
 
 
 def test_schema_qualified_table_remains_forbidden() -> None:
@@ -141,6 +168,8 @@ def test_select_side_effect_functions_are_blocked(function_call: str) -> None:
         'UPDATE "Product" SET "name" = \'unsafe\'',
         'DELETE FROM "Product"',
         'DROP TABLE "Product"',
+        'EXECUTE unsafe_plan',
+        'UPSERT INTO "Product" ("id", "name") VALUES (1, \'unsafe\')',
     ],
 )
 def test_write_statements_remain_blocked(sql: str) -> None:

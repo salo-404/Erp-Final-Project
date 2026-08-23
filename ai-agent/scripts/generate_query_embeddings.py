@@ -4,9 +4,6 @@ from config.settings import settings
 from retrieval.embedding_service import embed_text
 
 
-DATABASE_URL = settings.ai_database_url
-
-
 def vector_to_pgvector(embedding: list[float]) -> str:
     return "[" + ",".join(str(value) for value in embedding) + "]"
 
@@ -14,7 +11,9 @@ def vector_to_pgvector(embedding: list[float]) -> str:
 def main() -> None:
     print("Loading QueryExample rows...")
 
-    with psycopg.connect(DATABASE_URL) as conn:
+    database_url = settings.require_query_example_write_database_url()
+
+    with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """

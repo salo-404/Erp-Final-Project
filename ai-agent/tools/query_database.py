@@ -1,7 +1,7 @@
 from strands import tool
 
 from retrieval.embedding_service import embed_text
-from retrieval.query_example_repository import find_similar_examples
+from retrieval.query_example_repository import TOP_K, find_similar_examples
 from sql.sql_generator import generate_sql
 from sql.sql_guard import IdentifierQuotingError, SchemaValidationError, validate_sql
 from sql.read_only_db import execute_query
@@ -27,7 +27,7 @@ def query_database(question: str) -> dict:
     # 2. Retrieve the 3 closest verified question -> SQL examples.
     examples = find_similar_examples(
         embedding,
-        limit=3,
+        limit=TOP_K,
     )
 
     if not examples:

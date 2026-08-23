@@ -1,4 +1,3 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import {
   Controller,
   Get,
@@ -6,174 +5,186 @@ import {
   UseGuards,
   ValidationPipe,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { Test } from '@nestjs/testing';
 import request from 'supertest';
-
-import { AppModule } from '../src/app.module';
+import { UserRole } from '../generated/prisma/enums';
+import { AuthController } from '../src/auth/auth.controller';
+import { CognitoTokenVerifier } from '../src/auth/cognito-token-verifier.service';
+import { Roles } from '../src/common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../src/common/guards/jwt-auth.guard';
 import { RolesGuard } from '../src/common/guards/roles.guard';
-import { Roles } from '../src/common/decorators/roles.decorator';
-import { UserRole } from '../generated/prisma/client';
+import { PrismaService } from '../src/prisma/prisma.service';
+import { UsersController } from '../src/users/users.controller';
+import { UsersService } from '../src/users/users.service';
+import { EmailController } from '../src/integrations/email/email.controller';
+import { EmailService } from '../src/integrations/email/email.service';
+import { CalendarController } from '../src/integrations/calendar/calendar.controller';
+import { CalendarService } from '../src/integrations/calendar/calendar.service';
 
-@Controller('test-roles')
+@Controller('test-role')
 @UseGuards(JwtAuthGuard, RolesGuard)
-class TestRolesController {
-  @Get('employee')
-  @Roles(UserRole.EMPLOYEE)
-  employeeOnly() {
-    return {
-      ok: true,
-      endpoint: 'employee',
-    };
-  }
-
+class TestRoleController {
   @Get('admin')
   @Roles(UserRole.ADMIN)
   adminOnly() {
-    return {
-      ok: true,
-      endpoint: 'admin',
-    };
+    return { ok: true };
   }
 }
 
-describe('Auth + Roles (e2e)', () => {
+describe('Cognito authentication and database roles (e2e)', () => {
   let app: INestApplication;
 
-  let adminToken: string;
-  let employeeToken: string;
-
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-      controllers: [TestRolesController],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        forbidNonWhitelisted: true,
-        transform: true,
+    const verifier = {
+      verify: jest.fn(async (token: string) => {
+        if (token === 'invalid') throw new Error('bad signature');
+        return { sub: token };
       }),
-    );
+    };
+    const users = new Map([
+      ['admin-sub', { id: 1, email: 'admin@example.com', role: UserRole.ADMIN }],
+      ['employee-sub', { id: 2, email: 'employee@example.com', role: UserRole.EMPLOYEE }],
+    ]);
+    const prisma = {
+      user: { findUnique: jest.fn(({ where }) => users.get(where.cognitoSub) ?? null) },
+    };
 
+    const moduleRef = await Test.createTestingModule({
+      controllers: [
+        AuthController,
+        TestRoleController,
+        UsersController,
+        EmailController,
+        CalendarController,
+      ],
+      providers: [
+        JwtAuthGuard,
+        RolesGuard,
+        Reflector,
+        { provide: CognitoTokenVerifier, useValue: verifier },
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: UsersService,
+          useValue: {
+            create: jest.fn(async (dto) => ({ id: 3, ...dto })),
+            findAll: jest.fn(async () => [...users.values()]),
+            findOne: jest.fn(async (id: number) =>
+              [...users.values()].find((user) => user.id === id),
+            ),
+          },
+        },
+        {
+          provide: EmailService,
+          useValue: { sendEmail: jest.fn(async () => ({ sent: true })) },
+        },
+        {
+          provide: CalendarService,
+          useValue: {
+            getCalendarEvents: jest.fn(async () => []),
+            createCalendarEvent: jest.fn(async () => ({ id: 'event-1' })),
+            createShipmentReminder: jest.fn(async () => ({ id: 'reminder-1' })),
+          },
+        },
+      ],
+    }).compile();
+    app = moduleRef.createNestApplication();
+    app.useGlobalPipes(
+      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+    );
     await app.init();
   });
 
-  afterAll(async () => {
-    if (app) {
-      await app.close();
-    }
-  });
+  afterAll(async () => app.close());
 
-  it('logs in ADMIN successfully and returns a JWT', async () => {
-    const response = await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({
-        email: 'admin@minierp.com',
-        password: 'Password123!',
-      })
-      .expect(200);
+  it('removes the custom login route', () =>
+    request(app.getHttpServer()).post('/auth/login').send({}).expect(404));
 
-    expect(response.body.access_token).toBeDefined();
+  it('returns the mapped ERP profile from /auth/me', () =>
+    request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Authorization', 'Bearer admin-sub')
+      .expect(200)
+      .expect({ id: 1, email: 'admin@example.com', role: UserRole.ADMIN }));
 
-    expect(response.body.user).toBeDefined();
-    expect(response.body.user.email).toBe('admin@minierp.com');
-    expect(response.body.user.role).toBe('ADMIN');
+  it('allows a mapped ADMIN through ADMIN authorization', () =>
+    request(app.getHttpServer())
+      .get('/test-role/admin')
+      .set('Authorization', 'Bearer admin-sub')
+      .expect(200));
 
-    // Password hashes must never be returned to frontend clients.
-    expect(response.body.user.passwordHash).toBeUndefined();
+  it('rejects a mapped EMPLOYEE from ADMIN authorization', () =>
+    request(app.getHttpServer())
+      .get('/test-role/admin')
+      .set('Authorization', 'Bearer employee-sub')
+      .expect(403));
 
-    adminToken = response.body.access_token;
-  });
-
-  it('logs in EMPLOYEE successfully and returns a JWT', async () => {
-    const response = await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({
-        email: 'employee@minierp.com',
-        password: 'Password123!',
-      })
-      .expect(200);
-
-    expect(response.body.access_token).toBeDefined();
-
-    expect(response.body.user.email).toBe('employee@minierp.com');
-    expect(response.body.user.role).toBe('EMPLOYEE');
-
-    expect(response.body.user.passwordHash).toBeUndefined();
-
-    employeeToken = response.body.access_token;
-  });
-
-  it('rejects incorrect credentials', async () => {
+  it('rejects invalid and unmapped Cognito tokens', async () => {
     await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({
-        email: 'admin@minierp.com',
-        password: 'wrong-password',
-      })
+      .get('/auth/me')
+      .set('Authorization', 'Bearer invalid')
+      .expect(401);
+    await request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Authorization', 'Bearer unmapped-sub')
       .expect(401);
   });
 
-  it('rejects protected route without JWT', async () => {
-    await request(app.getHttpServer()).get('/auth/me').expect(401);
-  });
-
-  it('returns authenticated ADMIN identity from JWT', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/auth/me')
-      .set('Authorization', `Bearer ${adminToken}`)
-      .expect(200);
-
-    expect(response.body.id).toBeDefined();
-    expect(response.body.email).toBe('admin@minierp.com');
-    expect(response.body.role).toBe('ADMIN');
-  });
-
-  it('returns authenticated EMPLOYEE identity from JWT', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/auth/me')
-      .set('Authorization', `Bearer ${employeeToken}`)
-      .expect(200);
-
-    expect(response.body.id).toBeDefined();
-    expect(response.body.email).toBe('employee@minierp.com');
-    expect(response.body.role).toBe('EMPLOYEE');
-  });
-
-  it('allows EMPLOYEE into EMPLOYEE endpoint', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/test-roles/employee')
-      .set('Authorization', `Bearer ${employeeToken}`)
-      .expect(200);
-
-    expect(response.body.ok).toBe(true);
-  });
-
-  it('allows ADMIN into EMPLOYEE endpoint', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/test-roles/employee')
-      .set('Authorization', `Bearer ${adminToken}`)
-      .expect(200);
-
-    expect(response.body.ok).toBe(true);
-  });
-
-  it('allows ADMIN into ADMIN-only endpoint', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/test-roles/admin')
-      .set('Authorization', `Bearer ${adminToken}`)
-      .expect(200);
-
-    expect(response.body.ok).toBe(true);
-  });
-
-  it('blocks EMPLOYEE from ADMIN-only endpoint', async () => {
+  it('POST /users requires no password and rejects the retired password field', async () => {
+    const payload = { name: 'Provisioned', email: 'new@example.com', role: UserRole.EMPLOYEE };
     await request(app.getHttpServer())
-      .get('/test-roles/admin')
-      .set('Authorization', `Bearer ${employeeToken}`)
-      .expect(403);
+      .post('/users')
+      .set('Authorization', 'Bearer admin-sub')
+      .send(payload)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post('/users')
+      .set('Authorization', 'Bearer admin-sub')
+      .send({ ...payload, password: 'retired-password' })
+      .expect(400);
   });
+
+  it('allows only ADMIN users to list the user directory', async () => {
+    await request(app.getHttpServer())
+      .get('/users')
+      .set('Authorization', 'Bearer admin-sub')
+      .expect(200);
+    await request(app.getHttpServer())
+      .get('/users')
+      .set('Authorization', 'Bearer employee-sub')
+      .expect(403);
+    await request(app.getHttpServer()).get('/users').expect(401);
+  });
+
+  it('allows only ADMIN users to read one directory user', async () => {
+    await request(app.getHttpServer())
+      .get('/users/1')
+      .set('Authorization', 'Bearer admin-sub')
+      .expect(200);
+    await request(app.getHttpServer())
+      .get('/users/1')
+      .set('Authorization', 'Bearer employee-sub')
+      .expect(403);
+    await request(app.getHttpServer()).get('/users/1').expect(401);
+  });
+
+  it.each([
+    ['post', '/integrations/email/send', { to: 'x@example.com', subject: 'x', body: 'x' }],
+    ['post', '/integrations/calendar/event', { summary: 'x', startDateTime: '2026-08-23T10:00:00.000Z', endDateTime: '2026-08-23T11:00:00.000Z' }],
+    ['post', '/integrations/calendar/shipment-reminder', { transactionId: 1 }],
+  ] as const)(
+    'restricts %s %s to ADMIN while preserving authentication',
+    async (method, path, payload) => {
+      await request(app.getHttpServer())[method](path)
+        .set('Authorization', 'Bearer admin-sub')
+        .send(payload)
+        .expect((status) => expect(status.status).not.toBe(401))
+        .expect((status) => expect(status.status).not.toBe(403));
+      await request(app.getHttpServer())[method](path)
+        .set('Authorization', 'Bearer employee-sub')
+        .send(payload)
+        .expect(403);
+      await request(app.getHttpServer())[method](path).send(payload).expect(401);
+    },
+  );
 });

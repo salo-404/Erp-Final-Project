@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -62,12 +63,13 @@ export interface DocumentStorageProvider {
   }): Promise<UploadedDocument>;
 
   /**
-   * A short-lived, temporary URL the extraction provider can fetch the
-   * document from directly — the document bytes are never sent to the
-   * extraction provider in-process. The bucket itself stays private; only
-   * this one-time URL grants temporary read access to one object.
+   * A short-lived URL used only by the authenticated document-viewing
+   * endpoint. Extraction reads the private S3 object directly by key.
    */
   getPresignedUrl(key: string): Promise<string>;
+
+  /** Best-effort compensation for an object created by a failed upload flow. */
+  delete(key: string): Promise<void>;
 }
 
 export interface ExtractedDocumentItem {
@@ -94,16 +96,113 @@ export interface ExtractedDocumentData {
   items: ExtractedDocumentItem[];
 }
 
+export function validateExtractedDocumentData(
+  value: unknown,
+): ExtractedDocumentData {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BadRequestException(
+      'Invalid extraction response: expected an object',
+    );
+  }
+  const data = value as Record<string, unknown>;
+  if (
+    data.transactionType !== InventoryTransactionType.INCOMING &&
+    data.transactionType !== InventoryTransactionType.OUTGOING
+  ) {
+    throw new BadRequestException(
+      'Invalid extraction response: transactionType must be INCOMING or OUTGOING',
+    );
+  }
+  if (!Array.isArray(data.items)) {
+    throw new BadRequestException(
+      'Invalid extraction response: items must be an array',
+    );
+  }
+
+  const items = data.items.map((value, index): ExtractedDocumentItem => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadRequestException(
+        `Invalid extraction response: item ${index} must be an object`,
+      );
+    }
+    const item = value as Record<string, unknown>;
+    if (typeof item.product !== 'string' || !item.product.trim()) {
+      throw new BadRequestException(
+        `Invalid extraction response: item ${index} product must be a non-empty string`,
+      );
+    }
+    if (
+      typeof item.quantity !== 'number' ||
+      !Number.isFinite(item.quantity) ||
+      !Number.isInteger(item.quantity) ||
+      item.quantity <= 0
+    ) {
+      throw new BadRequestException(
+        `Invalid extraction response: item ${index} quantity must be a positive integer`,
+      );
+    }
+    if (
+      item.price !== undefined &&
+      (typeof item.price !== 'number' ||
+        !Number.isFinite(item.price) ||
+        item.price < 0)
+    ) {
+      throw new BadRequestException(
+        `Invalid extraction response: item ${index} price must be a finite non-negative number`,
+      );
+    }
+    return {
+      product: item.product,
+      quantity: item.quantity,
+      ...(item.price === undefined ? {} : { price: item.price }),
+    };
+  });
+
+  const optionalString = (field: string): string | undefined => {
+    const fieldValue = data[field];
+    if (fieldValue !== undefined && typeof fieldValue !== 'string') {
+      throw new BadRequestException(
+        `Invalid extraction response: ${field} must be a string`,
+      );
+    }
+    return fieldValue as string | undefined;
+  };
+  let date: Date | undefined;
+  if (data.date !== undefined) {
+    if (!(typeof data.date === 'string' || data.date instanceof Date)) {
+      throw new BadRequestException(
+        'Invalid extraction response: date must be an ISO date string',
+      );
+    }
+    date = data.date instanceof Date ? data.date : new Date(data.date);
+    if (!Number.isFinite(date.getTime())) {
+      throw new BadRequestException(
+        'Invalid extraction response: date must be a valid date',
+      );
+    }
+  }
+
+  return {
+    transactionType: data.transactionType,
+    partyName: optionalString('partyName'),
+    supplierName: optionalString('supplierName'),
+    date,
+    warehouseName: optionalString('warehouseName'),
+    deliveryCountry: optionalString('deliveryCountry'),
+    deliveryRegion: optionalString('deliveryRegion'),
+    deliveryAddress: optionalString('deliveryAddress'),
+    items,
+  };
+}
+
 /**
- * Port for the AI/document-extraction layer (Ribal Agent). Never called
- * from anywhere but upload(). Takes a temporary presigned URL rather than
- * the raw file bytes — the extraction provider fetches the document
- * directly from S3, so this service never sends the Buffer to it.
+ * Port for the extraction layer. upload() passes the already-private S3
+ * object key, never raw bytes, a presigned URL, or a caller-supplied type.
  */
 export interface DocumentExtractionProvider {
   extract(input: {
     mimeType: string;
-    documentUrl: string;
+    documentKey: string;
   }): Promise<ExtractedDocumentData>;
 }
 
@@ -127,11 +226,8 @@ export interface DocumentReviewNotifier {
 
 /**
  * DI tokens for the three provider interfaces above — interfaces have no
- * runtime identity, so NestJS can't resolve them by type alone the way it
- * does for a concrete class. DocumentReviewModule does NOT bind any of
- * these (no S3/AI-extraction/notification vendor has been chosen or
- * implemented yet — see the module's own doc comment); they must be bound
- * once real implementations exist.
+ * runtime identity, so DocumentReviewModule binds their implementations by
+ * these tokens.
  */
 export const DOCUMENT_STORAGE_PROVIDER = Symbol('DOCUMENT_STORAGE_PROVIDER');
 export const DOCUMENT_EXTRACTION_PROVIDER = Symbol(
@@ -192,6 +288,8 @@ type PendingDocumentReviewWithDetails = Prisma.PendingDocumentReviewGetPayload<{
 
 @Injectable()
 export class DocumentReviewService {
+  private readonly logger = new Logger(DocumentReviewService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventoryTransactionsService: InventoryTransactionsService,
@@ -205,11 +303,8 @@ export class DocumentReviewService {
 
   /**
    * Validates the file, stores it (S3 in production, via the injected
-   * provider), then runs it through the AI/document-extraction layer
-   * (Ribal Agent) — not by handing over the file bytes, but by generating a
-   * short-lived presigned URL the extraction provider fetches the document
-   * from directly: Browser -> S3 -> presigned URL -> extraction provider.
-   * The raw Buffer never leaves this process after the S3 upload. Creates a
+   * provider), then runs Textract AnalyzeExpense against the private S3
+   * object by key. The raw Buffer is sent only to S3. Creates a
    * PENDING_REVIEW row holding only that provisional data — nothing here is
    * trusted until a human calls approve(). Emits a new-invoice notification
    * event once the review row exists; the integration layer (not this
@@ -224,32 +319,41 @@ export class DocumentReviewService {
       content: input.content,
     });
 
-    const presignedUrl = await this.storageProvider.getPresignedUrl(
-      uploaded.key,
-    );
+    let review: PendingDocumentReview;
+    try {
+      const extracted = validateExtractedDocumentData(
+        await this.extractionProvider.extract({
+          mimeType: input.mimeType,
+          documentKey: uploaded.key,
+        }),
+      );
 
-    const extracted = await this.extractionProvider.extract({
-      mimeType: input.mimeType,
-      documentUrl: presignedUrl,
-    });
-    this.validateExtractedTransactionType(extracted.transactionType);
-
-    const review = await this.prisma.pendingDocumentReview.create({
-      data: {
-        documentUrl: uploaded.url,
-        documentKey: uploaded.key,
-        transactionType: extracted.transactionType,
-        extractedPartyName: extracted.partyName,
-        extractedSupplierName: extracted.supplierName,
-        extractedDate: extracted.date,
-        extractedWarehouseName: extracted.warehouseName,
-        extractedDeliveryCountry: extracted.deliveryCountry,
-        extractedDeliveryRegion: extracted.deliveryRegion,
-        extractedDeliveryAddress: extracted.deliveryAddress,
-        extractedItems: extracted.items as unknown as Prisma.InputJsonValue,
-        status: DocumentReviewStatus.PENDING_REVIEW,
-      },
-    });
+      review = await this.prisma.pendingDocumentReview.create({
+        data: {
+          documentUrl: uploaded.url,
+          documentKey: uploaded.key,
+          transactionType: extracted.transactionType,
+          extractedPartyName: extracted.partyName,
+          extractedSupplierName: extracted.supplierName,
+          extractedDate: extracted.date,
+          extractedWarehouseName: extracted.warehouseName,
+          extractedDeliveryCountry: extracted.deliveryCountry,
+          extractedDeliveryRegion: extracted.deliveryRegion,
+          extractedDeliveryAddress: extracted.deliveryAddress,
+          extractedItems: extracted.items as unknown as Prisma.InputJsonValue,
+          status: DocumentReviewStatus.PENDING_REVIEW,
+        },
+      });
+    } catch (error) {
+      try {
+        await this.storageProvider.delete(uploaded.key);
+      } catch {
+        this.logger.error(
+          'Failed to clean up a newly uploaded document after upload pipeline failure',
+        );
+      }
+      throw error;
+    }
 
     await this.notifier.notifyNewInvoice({
       reviewId: review.id,
@@ -546,19 +650,6 @@ export class DocumentReviewService {
     if (input.content.length > MAX_DOCUMENT_SIZE_BYTES) {
       throw new BadRequestException(
         `File exceeds the maximum allowed size of ${MAX_DOCUMENT_SIZE_BYTES} bytes`,
-      );
-    }
-  }
-
-  private validateExtractedTransactionType(
-    type: InventoryTransactionType,
-  ): void {
-    if (
-      type !== InventoryTransactionType.INCOMING &&
-      type !== InventoryTransactionType.OUTGOING
-    ) {
-      throw new BadRequestException(
-        `Document review only supports INCOMING or OUTGOING documents, got ${type}`,
       );
     }
   }

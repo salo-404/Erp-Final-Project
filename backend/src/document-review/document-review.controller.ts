@@ -12,7 +12,10 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { DocumentReviewService } from './document-review.service';
+import {
+  DocumentReviewService,
+  MAX_DOCUMENT_SIZE_BYTES,
+} from './document-review.service';
 import { ApproveDocumentReviewDto } from './dto/approve-document-review.dto';
 import { RejectDocumentReviewDto } from './dto/reject-document-review.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -28,7 +31,7 @@ export class DocumentReviewController {
   constructor(private readonly documentReviewService: DocumentReviewService) {}
 
   /**
-   * Browser -> NestJS -> S3 -> presigned URL -> extraction provider, all
+   * Browser -> NestJS -> private S3 -> Textract AnalyzeExpense, all
    * handled by DocumentReviewService.upload() (see that method's doc
    * comment). `FileInterceptor` with no storage option defaults to
    * multer's in-memory storage, so `file.buffer` is what gets forwarded as
@@ -37,7 +40,11 @@ export class DocumentReviewController {
    * the sensitive step, gated separately below.
    */
   @Post('upload')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_DOCUMENT_SIZE_BYTES },
+    }),
+  )
   upload(@UploadedFile() file?: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('file is required');

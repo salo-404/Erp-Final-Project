@@ -55,6 +55,12 @@ class StockoutRiskLevel(str, Enum):
     OUT_OF_STOCK = "OUT_OF_STOCK"
 
 
+class FulfillmentWarehouseStatus(str, Enum):
+    NO_ELIGIBLE_WAREHOUSE = "NO_ELIGIBLE_WAREHOUSE"
+    ELIGIBLE_WAREHOUSES_FOUND = "ELIGIBLE_WAREHOUSES_FOUND"
+    RECOMMENDED = "RECOMMENDED"
+
+
 class ConsumptionAnomalyDirection(str, Enum):
     """Matches the real backend's ConsumptionAnomalyDirection exactly (see
     backend/src/stock-insights/stock-insights.service.ts) - direct
@@ -111,6 +117,30 @@ class AvailableStockItem(BaseModel):
 class AvailableStockResponse(BaseModel):
     items: list[AvailableStockItem]
     asOf: datetime
+
+
+class FulfillmentWarehouseItem(BaseModel):
+    productId: int
+    onHand: int
+    reserved: int
+    available: int
+    requestedQuantity: int
+
+
+class FulfillmentWarehouseCandidate(BaseModel):
+    warehouseId: int
+    warehouseName: str
+    location: Optional[str] = None
+    items: list[FulfillmentWarehouseItem]
+    distanceKm: Optional[float] = None
+
+
+class FulfillmentWarehouseResponse(BaseModel):
+    status: FulfillmentWarehouseStatus
+    recommendedWarehouseId: Optional[int] = None
+    recommendedWarehouseName: Optional[str] = None
+    eligibleWarehouses: list[FulfillmentWarehouseCandidate]
+    geographyConsidered: bool
 
 
 # ---------------------------------------------------------------------------
@@ -176,18 +206,25 @@ class LowStockResponse(BaseModel):
 #   - Real field is predictedStockoutDate (this schema previously called it
 #     projectedStockoutDate - a naming mismatch from before this tool was
 #     wired against the verified real shape; renamed here to match).
-#   - Real field is avgDailyConsumption; kept as averageDailyConsumption
-#     here since that's just a naming style choice, not a missing-data
-#     problem - the value maps straight across.
+#   - Real field names, including avgDailyConsumption, are preserved so
+#     the adapter cannot silently drop or rename backend calculations.
 # ---------------------------------------------------------------------------
 
 
 class StockoutRiskItem(BaseModel):
     productId: int
     warehouseId: int
+    onHand: int
+    activeReserved: int
+    available: int
+    reorderThreshold: int
     riskLevel: StockoutRiskLevel
+    pendingIncomingQuantity: int
+    projectedAvailable: int
+    projectedRiskLevel: StockoutRiskLevel
+    avgDailyConsumption: float
+    daysOfSupply: Optional[float] = None
     predictedStockoutDate: Optional[datetime] = None
-    averageDailyConsumption: float
 
 
 class StockoutRiskResponse(BaseModel):
@@ -228,7 +265,15 @@ class StockoutRiskResponse(BaseModel):
 class RestockRecommendation(BaseModel):
     productId: int
     warehouseId: int
+    available: int
+    pendingIncomingQuantity: int
+    projectedAvailable: int
+    reorderThreshold: int
+    riskLevel: StockoutRiskLevel
+    projectedRiskLevel: StockoutRiskLevel
     recommendedQuantity: int = Field(..., description="Backend-calculated recommended reorder quantity.")
+    avgDailyConsumption: float
+    daysOfSupply: Optional[float] = None
     reason: RestockReason
     explanation: str = Field(..., description="Backend-generated human-readable explanation for this recommendation.")
 
@@ -247,13 +292,9 @@ class RestockRecommendationsResponse(BaseModel):
 # getTransferRecommendations():
 #   - No productName/sourceWarehouseName/destinationWarehouseName - same
 #     no-fabrication call as elsewhere in this file.
-#   - Field names already matched recommend_dead_stock_transfer's own
-#     naming convention (sourceWarehouseId/destinationWarehouseId/
-#     quantity) even before this endpoint was wired - no rename needed;
-#     the real backend's fromWarehouseId/toWarehouseId/transferQuantity
-#     are mapped onto these names in the tool itself (see
-#     agents/insights_agent/tools.py), consistent with how the AI layer
-#     already names a transfer everywhere else in this file.
+#   - The real backend names fromWarehouseId/toWarehouseId/transferQuantity
+#     and all backend-calculated post-transfer/source/destination fields are
+#     preserved verbatim.
 #   - No `reason` string exists on the real entry. Rather than drop it
 #     (this field carries real value for narration) or let the MODEL
 #     invent one (never allowed - see prompts.py rule 1), the tool
@@ -265,9 +306,16 @@ class RestockRecommendationsResponse(BaseModel):
 
 class TransferRecommendation(BaseModel):
     productId: int
-    sourceWarehouseId: int
-    destinationWarehouseId: int
-    quantity: int
+    fromWarehouseId: int
+    toWarehouseId: int
+    transferQuantity: int
+    fromWarehouseAvailableAfterTransfer: int
+    toWarehouseProjectedAvailableAfterTransfer: int
+    sourcePendingIncomingQuantity: int
+    sourceIsDeadStock: bool
+    destinationRiskLevel: StockoutRiskLevel
+    destinationAvgDailyConsumption: float
+    destinationDaysOfSupply: Optional[float] = None
     reason: str = Field(
         ...,
         description=(
@@ -411,6 +459,13 @@ class SupplierRecommendationStatus(str, Enum):
     NO_RECOMMENDATION = "no_recommendation"
 
 
+class SupplierComponentScores(BaseModel):
+    price: Optional[float]
+    onTimeDelivery: Optional[float]
+    cancellationPerformance: Optional[float]
+    productSupplyHistory: Optional[float]
+
+
 class SupplierScore(BaseModel):
     """Field names/shape match the real backend's RankedSupplier exactly
     (see backend/src/suppliers/supplier-intelligence.service.ts).
@@ -431,11 +486,21 @@ class SupplierScore(BaseModel):
 
     supplierId: int
     supplierName: str
+    productId: int
+    totalTransactions: int
+    completedTransactions: int
+    cancelledTransactions: int
+    cancellationRate: float
     unitCost: Optional[float] = Field(None, description="Real backend averagePrice; None when no priced items exist for this product from this supplier.")
+    pricedItemCount: int
     leadTimeDays: Optional[int] = Field(None, description="From Supplier.leadTimeDays (separate GET /suppliers call); None when not set on the supplier record.")
     reliabilityScore: Optional[float] = Field(
         None, ge=0, le=1, description="Real backend onTimeDeliveryRate; None when no transactions have both expectedDate and actualDate."
     )
+    evaluatedForOnTimeCount: int
+    purchaseFrequency: float
+    firstPurchaseDate: Optional[datetime] = None
+    lastPurchaseDate: Optional[datetime] = None
     overallScore: Optional[float] = Field(
         None,
         ge=0,
@@ -446,6 +511,13 @@ class SupplierScore(BaseModel):
     insufficientData: bool = Field(..., description="True when the backend could not compute a full score for this supplier.")
     insufficientDataReasons: list[str] = Field(
         default_factory=list, description="Human-readable reasons, real backend text - empty when insufficientData is false."
+    )
+    componentScores: SupplierComponentScores = Field(
+        ...,
+        description=(
+            "Backend normalized components: price, onTimeDelivery, "
+            "cancellationPerformance, and productSupplyHistory."
+        ),
     )
 
 
@@ -480,7 +552,10 @@ class OpenPurchaseOrder(BaseModel):
     status: PurchaseOrderStatus
     expectedDate: Optional[datetime] = None
     lineItemCount: int
-    totalValue: float
+    totalValue: Optional[float] = Field(
+        None,
+        description="quantity*price across priced items; null when no item has a recorded price.",
+    )
 
 
 class OpenPurchaseOrdersResponse(BaseModel):

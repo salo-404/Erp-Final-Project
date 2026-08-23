@@ -1065,9 +1065,9 @@ export class StockInsightsService {
         category: 'DEAD_STOCK',
         severity: 'INFO',
         message:
-          entry.lastMovementAt === null
-            ? `Product ${entry.productId} in warehouse ${entry.warehouseId} has ${entry.onHand} units on hand and has never had a stock movement`
-            : `Product ${entry.productId} in warehouse ${entry.warehouseId} has ${entry.onHand} units on hand with no movement in ${entry.daysSinceLastMovement} days`,
+          entry.lastOutgoingMovementAt === null
+            ? `Product ${entry.productId} in warehouse ${entry.warehouseId} has ${entry.onHand} units on hand and has never had a customer OUTGOING movement`
+            : `Product ${entry.productId} in warehouse ${entry.warehouseId} has ${entry.onHand} units on hand with no customer OUTGOING movement in ${entry.daysSinceLastOutgoingMovement} days`,
         data: entry as unknown as Record<string, unknown>,
         referenceDate,
       });
