@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from types import SimpleNamespace
 
@@ -12,9 +13,26 @@ from agents.insights_agent.agent import build_insights_agent
 from agents.supervisor import agent as supervisor_agent_module
 from backend_client import Forbidden, Unauthorized
 
+_ASYNC_INVOKE = entrypoint.invoke
+
+
+async def _collect_stream(payload: object, context: object) -> list[dict[str, str]]:
+    stream = await _ASYNC_INVOKE(payload, context)
+    return [event async for event in stream]
+
+
+def _sync_invoke(payload: object, context: object) -> dict[str, str]:
+    events = asyncio.run(_collect_stream(payload, context))
+    return {
+        "result": "".join(
+            event["text"] for event in events if event.get("type") == "text_delta"
+        )
+    }
+
 
 @pytest.fixture(autouse=True)
-def reset_session_registry() -> None:
+def reset_session_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(entrypoint, "invoke", _sync_invoke)
     with entrypoint._session_registry_lock:
         entrypoint._session_states.clear()
     yield
@@ -56,9 +74,9 @@ class _Agent:
     def __init__(self) -> None:
         self.prompts: list[str] = []
 
-    def __call__(self, prompt: str) -> str:
+    async def stream_async(self, prompt: str):
         self.prompts.append(prompt)
-        return f"answer:{prompt}"
+        yield {"data": f"answer:{prompt}", "delta": {"text": f"answer:{prompt}"}}
 
 
 def test_optional_local_mode_does_not_construct_memory(
@@ -117,7 +135,7 @@ def test_configured_memory_uses_short_term_actor_session_contract(
     assert config.actor_id == "7"
     assert config.session_id == _session(7)
     assert config.batch_size == 1
-    assert config.async_mode is False
+    assert config.async_mode is True
     assert config.retrieval_config is None
     assert config.default_metadata is None
     assert config.metadata_provider is None
@@ -146,7 +164,7 @@ def test_configured_memory_construction_failure_fails_closed(
         )
 
 
-def test_configured_memory_restoration_failure_does_not_fallback(
+def test_configured_memory_restoration_failure_streams_error_without_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"same-human": 7})
@@ -164,11 +182,11 @@ def test_configured_memory_restoration_failure_does_not_fallback(
 
     monkeypatch.setattr(entrypoint, "build_supervisor_agent", fail_restoration)
 
-    with pytest.raises(RuntimeError, match="Memory restoration failure"):
-        entrypoint.invoke(
-            {"prompt": "Resume"}, _context(_session(7), "same-human")
-        )
+    result = entrypoint.invoke(
+        {"prompt": "Resume"}, _context(_session(7), "same-human")
+    )
 
+    assert result == {"result": ""}
     assert entrypoint._session_states[_session(7)].supervisor_agent is None
 
 
@@ -324,10 +342,11 @@ def test_registry_reset_rebuilds_same_memory_identity_and_restores_history(
             self.manager = session_manager
             restored_histories.append(list(session_manager.history))
 
-        def __call__(self, prompt: str) -> str:
+        async def stream_async(self, prompt: str):
             prior = list(self.manager.history)
             self.manager.history.append(prompt)
-            return f"prior={prior}; current={prompt}"
+            text = f"prior={prior}; current={prompt}"
+            yield {"data": text, "delta": {"text": text}}
 
     def build_memory(*, actor_id: str, session_id: str) -> FakeMemoryManager:
         manager_keys.append((actor_id, session_id))
@@ -386,3 +405,5 @@ def test_specialists_do_not_accept_or_receive_session_manager() -> None:
     assert "session_manager" not in inspect.signature(build_document_agent).parameters
     assert "session_manager=" not in inspect.getsource(build_insights_agent)
     assert "session_manager=" not in inspect.getsource(build_document_agent)
+    assert "stream_async" not in inspect.getsource(build_insights_agent)
+    assert "stream_async" not in inspect.getsource(build_document_agent)

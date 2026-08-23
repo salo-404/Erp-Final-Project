@@ -14,9 +14,26 @@ from agentcore_session import build_runtime_session_id, parse_runtime_session_ow
 from backend_client import Forbidden, Unauthorized
 from request_context import get_human_bearer_token
 
+_ASYNC_INVOKE = entrypoint.invoke
+
+
+async def _collect_stream(payload: object, context: object) -> list[dict[str, str]]:
+    stream = await _ASYNC_INVOKE(payload, context)
+    return [event async for event in stream]
+
+
+def _sync_invoke(payload: object, context: object) -> dict[str, str]:
+    events = asyncio.run(_collect_stream(payload, context))
+    return {
+        "result": "".join(
+            event["text"] for event in events if event.get("type") == "text_delta"
+        )
+    }
+
 
 @pytest.fixture(autouse=True)
-def reset_session_registry() -> None:
+def reset_session_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(entrypoint, "invoke", _sync_invoke)
     with entrypoint._session_registry_lock:
         entrypoint._session_states.clear()
     yield
@@ -58,7 +75,7 @@ class RecordingAgent:
         self.active = 0
         self.max_active = 0
 
-    def __call__(self, prompt: str) -> str:
+    async def stream_async(self, prompt: str):
         with self._counter_lock:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
@@ -66,10 +83,10 @@ class RecordingAgent:
             self.prompts.append(prompt)
             self.bearers.append(get_human_bearer_token())
             if self.delay:
-                time.sleep(self.delay)
+                await asyncio.sleep(self.delay)
             if self.fail:
                 raise RuntimeError("supervisor failed")
-            return f"answer:{prompt}"
+            yield {"data": f"answer:{prompt}", "delta": {"text": f"answer:{prompt}"}}
         finally:
             with self._counter_lock:
                 self.active -= 1
@@ -460,7 +477,7 @@ def test_exact_human_bearer_is_scoped_and_resets_after_success(
     assert get_human_bearer_token() is None
 
 
-def test_human_bearer_resets_after_supervisor_exception(
+def test_human_bearer_resets_after_streaming_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"exact-human-token": 7})
@@ -471,12 +488,12 @@ def test_human_bearer_resets_after_supervisor_exception(
         lambda: RecordingAgent(fail=True),
     )
 
-    with pytest.raises(RuntimeError, match="supervisor failed"):
-        entrypoint.invoke(
-            {"prompt": "Approve review"},
-            _context(_session(7), "exact-human-token"),
-        )
+    result = entrypoint.invoke(
+        {"prompt": "Approve review"},
+        _context(_session(7), "exact-human-token"),
+    )
 
+    assert result == {"result": ""}
     assert get_human_bearer_token() is None
     assert entrypoint._session_states[_session(7)].active_invocations == 0
 
@@ -564,11 +581,11 @@ def test_different_sessions_are_not_serialized_by_one_global_invocation_lock(
     built: list[RecordingAgent] = []
 
     class BarrierAgent(RecordingAgent):
-        def __call__(self, prompt: str) -> str:
+        async def stream_async(self, prompt: str):
             self.prompts.append(prompt)
             self.bearers.append(get_human_bearer_token())
             barrier.wait(timeout=1)
-            return f"answer:{prompt}"
+            yield {"data": f"answer:{prompt}", "delta": {"text": f"answer:{prompt}"}}
 
     def build() -> RecordingAgent:
         agent = BarrierAgent()
@@ -604,11 +621,11 @@ def test_concurrent_different_sessions_do_not_leak_human_bearers(
     observations_lock = threading.Lock()
 
     class BearerAgent:
-        def __call__(self, prompt: str) -> str:
+        async def stream_async(self, prompt: str):
             barrier.wait(timeout=1)
             with observations_lock:
                 observations.append((prompt, get_human_bearer_token()))
-            return "ok"
+            yield {"data": "ok", "delta": {"text": "ok"}}
 
     monkeypatch.setattr(entrypoint, "build_supervisor_agent", BearerAgent)
 

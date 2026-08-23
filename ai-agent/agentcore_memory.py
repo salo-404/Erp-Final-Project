@@ -34,6 +34,7 @@ def build_agentcore_memory_session_manager(
             actor_id=actor_id,
             session_id=session_id,
             batch_size=1,
+            async_mode=True,
         )
         return AgentCoreMemorySessionManager(
             agentcore_memory_config=memory_config,

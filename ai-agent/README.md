@@ -226,16 +226,20 @@ never commit or print it.
 curl http://localhost:8080/ping
 
 # Terminal 2 - a real query
-curl -X POST http://localhost:8080/invocations \
+curl -N -X POST http://localhost:8080/invocations \
   -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
   -H "Authorization: Bearer $HUMAN_TOKEN" \
   -H "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: erp-user-7-7f3d91b7d15d40dfa96b8f02086b7dad" \
   -d '{"prompt": "Which products are at risk of stocking out?"}'
 ```
 
-You should get back `{"status":"Healthy",...}` from `/ping` and
-`{"result": "..."}` from `/invocations` - the same kind of answer you'd see
-from `scripts/chat_locally.py`, just over HTTP instead of a REPL. An
+You should get back `{"status":"Healthy",...}` from `/ping`. The invocation
+streams normalized SSE objects: `{"type":"text_delta","text":"..."}` for
+user-visible text, exactly one `{"type":"done"}` on success, or
+`{"type":"error","message":"The assistant could not complete this request."}`
+if an active stream fails. Raw reasoning, tool, SQL, Memory, and lifecycle
+events are never part of this public stream. An
 out-of-scope or prompt-injection-shaped prompt still gets declined by the
 gate here too, before it ever reaches a specialist - the whole point of
 this file is that it's a thin transport shell, not a different code path.

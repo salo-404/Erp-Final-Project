@@ -25,8 +25,9 @@ README.md "Deploying to AgentCore Runtime" for the full walkthrough):
 
     python agentcore_entrypoint.py
     # in another terminal:
-    curl -X POST http://localhost:8080/invocations \\
+    curl -N -X POST http://localhost:8080/invocations \\
         -H "Content-Type: application/json" \\
+        -H "Accept: text/event-stream" \\
         -H "Authorization: Bearer <human-cognito-access-token>" \\
         -H "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: erp-user-7-<uuid-hex>" \\
         -d '{"prompt": "Which products are at risk of stocking out?"}'
@@ -37,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -59,6 +61,8 @@ app = BedrockAgentCoreApp()
 # lost. Locks and live Supervisor instances remain intentionally in-process.
 _SESSION_IDLE_TTL_SECONDS = 60 * 60
 _MAX_CACHED_SESSIONS = 256
+_SESSION_LOCK_POLL_SECONDS = 0.01
+_STREAM_ERROR_MESSAGE = "The assistant could not complete this request."
 
 
 @dataclass
@@ -186,9 +190,37 @@ def _release_session_state(state: _SessionState) -> None:
         state.last_access = time.monotonic()
 
 
+async def _acquire_invocation_lock(lock: threading.Lock) -> None:
+    """Acquire a session lock without blocking the async worker or leaking on cancellation."""
+    while not lock.acquire(blocking=False):
+        await asyncio.sleep(_SESSION_LOCK_POLL_SECONDS)
+
+
+def _public_text_delta(event: object) -> dict[str, str] | None:
+    """Return the only public form of a safe Strands text-stream event."""
+    if not isinstance(event, dict):
+        return None
+    text = event.get("data")
+    if not isinstance(text, str) or not text:
+        return None
+    if "type" in event or event.get("reasoning") is True or any(
+        internal_key in event
+        for internal_key in (
+            "current_tool_use",
+            "tool_result",
+            "tool_stream_event",
+            "reasoningText",
+            "reasoningRedactedContent",
+            "reasoning_signature",
+        )
+    ):
+        return None
+    return {"type": "text_delta", "text": text}
+
+
 @app.entrypoint
-def invoke(payload: object, context: object) -> dict:
-    """AgentCore Runtime entrypoint - one HTTP invocation in, one JSON response out.
+async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, str]]:
+    """Validate one invocation and return its normalized public SSE event stream.
 
     Uses context.session_id as conversation affinity, verifies its owner
     namespace against the ERP identity returned by /auth/me, and lazily reuses
@@ -202,9 +234,8 @@ def invoke(payload: object, context: object) -> dict:
             when present, is scoped to this invocation as the human identity.
 
     Returns:
-        {"result": <the Supervisor's text response>} - either the
-        Supervisor's real answer, or the gate's decline message if the
-        prompt was out of scope.
+        An async iterator of safe ``text_delta``, ``done``, or ``error``
+        objects. BedrockAgentCoreApp serializes these objects as SSE.
 
     Raises:
         ValueError: If payload has no usable "prompt" string. The
@@ -223,22 +254,30 @@ def invoke(payload: object, context: object) -> dict:
     session_id = _runtime_session_id(context)
 
     bearer_token = _human_bearer_token(context)
-    profile = asyncio.run(_validate_human_erp_membership(bearer_token))
+    profile = await _validate_human_erp_membership(bearer_token)
     owner_erp_user_id = _erp_user_identity(profile)
     _validate_session_owner(session_id, owner_erp_user_id)
-    state = _acquire_session_state(session_id, owner_erp_user_id)
 
-    try:
-        with state.invocation_lock:
-            allowed, reason = is_in_scope(prompt)
+    async def stream_response() -> AsyncIterator[dict[str, str]]:
+        state = _acquire_session_state(session_id, owner_erp_user_id)
+        lock_acquired = False
+        agent_stream: object | None = None
+        try:
+            await _acquire_invocation_lock(state.invocation_lock)
+            lock_acquired = True
+
+            allowed, reason = await asyncio.to_thread(is_in_scope, prompt)
             if not allowed:
-                return {
-                    "result": (
+                yield {
+                    "type": "text_delta",
+                    "text": (
                         "I can only help with inventory, warehouses, orders, invoices, "
                         "stock, suppliers, and document processing for this ERP system "
                         f"({reason}). Let me know if you have a question in that area."
-                    )
+                    ),
                 }
+                yield {"type": "done"}
+                return
 
             if state.supervisor_agent is None:
                 memory_session_manager = build_agentcore_memory_session_manager(
@@ -253,10 +292,28 @@ def invoke(payload: object, context: object) -> dict:
                     )
 
             with human_auth_scope(bearer_token):
-                response = state.supervisor_agent(prompt)
-            return {"result": str(response)}
-    finally:
-        _release_session_state(state)
+                agent_stream = state.supervisor_agent.stream_async(prompt)
+                try:
+                    async for event in agent_stream:
+                        public_event = _public_text_delta(event)
+                        if public_event is not None:
+                            yield public_event
+                finally:
+                    close_stream = getattr(agent_stream, "aclose", None)
+                    if callable(close_stream):
+                        await close_stream()
+
+            yield {"type": "done"}
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            yield {"type": "error", "message": _STREAM_ERROR_MESSAGE}
+        finally:
+            if lock_acquired:
+                state.invocation_lock.release()
+            _release_session_state(state)
+
+    return stream_response()
 
 
 if __name__ == "__main__":
