@@ -2,6 +2,7 @@
 
 import { InventoryTransactionsService } from './inventory-transactions.service';
 import { PrismaService } from '../prisma/prisma.service';
+import type { S3DocumentStorageService } from '../document-review/s3-document-storage.service';
 import {
   ReservationsService,
   ReserveInput,
@@ -99,6 +100,7 @@ function buildService(tx: MockTx) {
     createMockPrisma(tx, prismaRoot),
     reservationsService,
     stockMovementsService,
+    {} as S3DocumentStorageService,
   );
   return { service, reserve, fulfill, release, recordMovement, prismaRoot };
 }
@@ -724,6 +726,7 @@ describe('InventoryTransactionsService.createTransfer', () => {
       prisma,
       reservationsService,
       stockMovementsService,
+      {} as S3DocumentStorageService,
     );
 
     await service.createTransfer(

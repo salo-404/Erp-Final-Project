@@ -26,6 +26,24 @@ export class WarehouseInventoryController {
     return this.warehouseInventoryService.getByWarehouse(warehouseId);
   }
 
+  @Get('warehouse/:warehouseId/available')
+  getWarehouseAvailability(
+    @Param('warehouseId', ParseIntPipe) warehouseId: number,
+  ) {
+    return this.warehouseInventoryService.getWarehouseAvailability(
+      warehouseId,
+    );
+  }
+
+  @Get('warehouse/:warehouseId/reserved')
+  getWarehouseReservedTotal(
+    @Param('warehouseId', ParseIntPipe) warehouseId: number,
+  ) {
+    return this.warehouseInventoryService.getWarehouseReservedTotal(
+      warehouseId,
+    );
+  }
+
   @Get('product/:productId')
   getByProduct(@Param('productId', ParseIntPipe) productId: number) {
     return this.warehouseInventoryService.getByProduct(productId);

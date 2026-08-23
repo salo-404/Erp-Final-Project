@@ -164,6 +164,12 @@ model InventoryTransaction {
 
   documentUrl String?
 
+  // Permanent reference to the S3 object backing documentUrl — used to
+  // regenerate a fresh presigned URL on demand. Nullable so existing rows
+  // (created before this field existed) don't need a backfill. Mirrors
+  // PendingDocumentReview.documentKey.
+  documentKey String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

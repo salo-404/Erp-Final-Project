@@ -89,6 +89,54 @@ export class WarehouseInventoryService {
     return lowStockProducts;
   }
 
+  /**
+   * Available stock per product in a warehouse, in one call — `getAvailable()`
+   * only computes this for a single (warehouseId, productId) pair, which
+   * doesn't scale to rendering a whole inventory table. Same
+   * onHand - activeReservations formula, just batched: one query for every
+   * WarehouseInventory row, one grouped aggregate for every product's active
+   * reservations, merged in memory.
+   */
+  async getWarehouseAvailability(warehouseId: number) {
+    const inventories = await this.prisma.warehouseInventory.findMany({
+      where: { warehouseId },
+      orderBy: { productId: 'asc' },
+    });
+
+    const reservations = await this.prisma.reservation.groupBy({
+      by: ['productId'],
+      where: { warehouseId, status: 'ACTIVE' },
+      _sum: { quantity: true },
+    });
+
+    const reservedByProduct = new Map(
+      reservations.map((r) => [r.productId, r._sum.quantity ?? 0]),
+    );
+
+    return inventories.map((inv) => {
+      const reserved = reservedByProduct.get(inv.productId) ?? 0;
+      return {
+        productId: inv.productId,
+        onHand: inv.onHand,
+        reserved,
+        available: inv.onHand - reserved,
+      };
+    });
+  }
+
+  /** Total active reservations across every product in a warehouse. */
+  async getWarehouseReservedTotal(warehouseId: number) {
+    const result = await this.prisma.reservation.aggregate({
+      where: { warehouseId, status: 'ACTIVE' },
+      _sum: { quantity: true },
+    });
+
+    return {
+      warehouseId,
+      totalReserved: result._sum.quantity ?? 0,
+    };
+  }
+
   async getWarehouseCapacity(warehouseId: number) {
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { id: warehouseId },

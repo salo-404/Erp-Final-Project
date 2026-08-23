@@ -16,31 +16,19 @@ import {
   InventoryTransactionsService,
   TransactionItemInput,
 } from '../inventory-transactions/inventory-transactions.service';
+import {
+  ALLOWED_DOCUMENT_MIME_TYPES,
+  MAX_DOCUMENT_SIZE_BYTES,
+  type AllowedDocumentMimeType,
+} from './document-validation.constants';
 
-/**
- * File-type/size validation happens here regardless of which storage backend
- * is behind DocumentStorageProvider — "PDF, Word (.doc/.docx), JPG, JPEG, PNG"
- * per the task requirements, expressed as the MIME types a browser/multer
- * upload would actually report for each.
- */
-export const ALLOWED_DOCUMENT_MIME_TYPES = [
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'image/jpeg',
-  'image/png',
-] as const;
-
-export type AllowedDocumentMimeType =
-  (typeof ALLOWED_DOCUMENT_MIME_TYPES)[number];
-
-/**
- * Not specified anywhere in the schema/docs — a reasonable, explicit default
- * for an invoice/document scan. Callers needing a different limit should
- * override at the controller/integration layer rather than this being
- * silently hard-coded deeper than here.
- */
-export const MAX_DOCUMENT_SIZE_BYTES = 15 * 1024 * 1024;
+// Re-exported for backward compatibility — moved to
+// document-validation.constants.ts (2026-08-22) so
+// InventoryTransactionsService's attachDocument() can reuse the same rules
+// without creating a circular dependency with this file (which already
+// imports InventoryTransactionsService above).
+export { ALLOWED_DOCUMENT_MIME_TYPES, MAX_DOCUMENT_SIZE_BYTES };
+export type { AllowedDocumentMimeType };
 
 export interface UploadDocumentInput {
   filename: string;

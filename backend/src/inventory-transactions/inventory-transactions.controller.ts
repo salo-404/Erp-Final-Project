@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -7,8 +8,11 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { InventoryTransactionsService } from './inventory-transactions.service';
 import { CreateIncomingDto } from './dto/create-incoming.dto';
 import { CreateOutgoingDto } from './dto/create-outgoing.dto';
@@ -114,5 +118,32 @@ export class InventoryTransactionsController {
   @Post(':id/cancel')
   cancel(@Param('id', ParseIntPipe) id: number) {
     return this.inventoryTransactionsService.cancel(id);
+  }
+
+  /**
+   * Attaches a document (e.g. a delivered customer order's invoice) to an
+   * existing transaction, regardless of status — unlike update() above,
+   * which only works on PENDING transactions. Same upload path/validation
+   * as DocumentReviewController.upload(), no AI extraction/review step.
+   */
+  @Post(':id/document')
+  @UseInterceptors(FileInterceptor('file'))
+  attachDocument(
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (!file) {
+      throw new BadRequestException('file is required');
+    }
+    return this.inventoryTransactionsService.attachDocument(id, {
+      filename: file.originalname,
+      mimeType: file.mimetype,
+      content: file.buffer,
+    });
+  }
+
+  @Get(':id/document/presigned-url')
+  getDocumentPresignedUrl(@Param('id', ParseIntPipe) id: number) {
+    return this.inventoryTransactionsService.getDocumentPresignedUrl(id);
   }
 }

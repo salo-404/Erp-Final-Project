@@ -14,6 +14,18 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { ReservationsService } from '../reservations/reservations.service';
 import { StockMovementsService } from '../stock-movements/stock-movements.service';
+import { S3DocumentStorageService } from '../document-review/s3-document-storage.service';
+import {
+  ALLOWED_DOCUMENT_MIME_TYPES,
+  MAX_DOCUMENT_SIZE_BYTES,
+  type AllowedDocumentMimeType,
+} from '../document-review/document-validation.constants';
+
+export interface AttachDocumentInput {
+  filename: string;
+  mimeType: string;
+  content: Buffer;
+}
 
 export interface TransactionItemInput {
   productId: number;
@@ -120,7 +132,75 @@ export class InventoryTransactionsService {
     private readonly prisma: PrismaService,
     private readonly reservationsService: ReservationsService,
     private readonly stockMovementsService: StockMovementsService,
+    private readonly documentStorage: S3DocumentStorageService,
   ) {}
+
+  /**
+   * Attaches a document (e.g. a delivered customer order's invoice) to an
+   * already-existing transaction — regardless of status, unlike update()
+   * which is PENDING-only. Reuses the exact same S3 upload path and
+   * MIME/size validation as DocumentReviewService.upload(), just without
+   * the AI-extraction/review pipeline: this is a direct "attach a file to
+   * a record that already exists," not a new transaction proposal.
+   */
+  async attachDocument(
+    id: number,
+    input: AttachDocumentInput,
+  ): Promise<InventoryTransactionWithItems> {
+    await this.findOneTransaction(id);
+    this.validateDocumentFile(input);
+
+    const uploaded = await this.documentStorage.upload({
+      filename: input.filename,
+      mimeType: input.mimeType,
+      content: input.content,
+    });
+
+    return this.prisma.inventoryTransaction.update({
+      where: { id },
+      data: { documentUrl: uploaded.url, documentKey: uploaded.key },
+      include: { items: true },
+    });
+  }
+
+  /** Presigned URL for a transaction's attached document — mirrors DocumentReviewService.getDocumentPresignedUrl(). */
+  async getDocumentPresignedUrl(id: number): Promise<{ url: string }> {
+    const transaction = await this.prisma.inventoryTransaction.findUnique({
+      where: { id },
+      select: { documentKey: true },
+    });
+    if (!transaction) {
+      throw new NotFoundException(`InventoryTransaction ${id} not found`);
+    }
+    if (!transaction.documentKey) {
+      throw new NotFoundException(
+        `InventoryTransaction ${id} has no stored S3 object key`,
+      );
+    }
+
+    const url = await this.documentStorage.getPresignedUrl(
+      transaction.documentKey,
+    );
+    return { url };
+  }
+
+  private validateDocumentFile(input: AttachDocumentInput): void {
+    if (
+      !ALLOWED_DOCUMENT_MIME_TYPES.includes(
+        input.mimeType as AllowedDocumentMimeType,
+      )
+    ) {
+      throw new BadRequestException(`Unsupported file type: ${input.mimeType}`);
+    }
+    if (input.content.length === 0) {
+      throw new BadRequestException('Uploaded file is empty');
+    }
+    if (input.content.length > MAX_DOCUMENT_SIZE_BYTES) {
+      throw new BadRequestException(
+        `File exceeds the maximum allowed size of ${MAX_DOCUMENT_SIZE_BYTES} bytes`,
+      );
+    }
+  }
 
   /**
    * Creates a PENDING INCOMING transaction and its items. Stock is never
