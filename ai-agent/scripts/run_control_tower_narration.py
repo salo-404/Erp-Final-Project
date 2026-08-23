@@ -5,8 +5,8 @@ against the mock alert set and eyeball the output. Same spirit as
 scripts/chat_locally.py for the Supervisor's live chat path, but this is
 the batch narration path instead - Control Tower is not a chat entry point
 and this script doesn't behave like one (no REPL, no back-and-forth): it
-fetches the mock alert set once, narrates all of them, and prints the
-results.
+fetches the authenticated backend alert feed once, validates it, narrates
+all alerts, and prints the results.
 
 Usage (from the ai-agent/ directory):
 
@@ -15,6 +15,7 @@ Usage (from the ai-agent/ directory):
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import time
 from pathlib import Path
@@ -27,20 +28,20 @@ if str(_AI_AGENT_ROOT) not in sys.path:
     sys.path.insert(0, str(_AI_AGENT_ROOT))
 
 from config.settings import settings  # noqa: E402
-from narration.control_tower import narrate_all_alerts  # noqa: E402
-from tools.mocks.control_tower_mock_data import get_mock_control_tower_alerts  # noqa: E402
+from narration.control_tower import fetch_control_tower_alerts, narrate_all_alerts  # noqa: E402
 
 
 def main() -> None:
-    alerts = get_mock_control_tower_alerts()
-    print(f"Narrating {len(alerts)} mock alerts (MODEL_PROVIDER={settings.model_provider!r})...\n")
+    alerts = asyncio.run(fetch_control_tower_alerts())
+    print(f"Narrating {len(alerts)} backend alerts (MODEL_PROVIDER={settings.model_provider!r})...\n")
 
     start = time.monotonic()
     narrated = narrate_all_alerts(alerts)
     elapsed = time.monotonic() - start
 
     for item in narrated:
-        print(f"[{item.severity.value.upper()}] {item.category.value} (alert {item.id})")
+        print(f"[{item.severity.value}] {item.category.value} ({item.referenceDate.isoformat()})")
+        print(f"  Backend message: {item.message}")
         print(f"  Narrative:       {item.narrative}")
         print(f"  Proposed action: {item.proposed_action}")
         print()
