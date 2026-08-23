@@ -77,10 +77,11 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
     free-text prose.
 
     document_id comes from document-specific tool input. product_ids come
-    only from RESOLVED resolve_document_product() results (plus the existing
-    fulfillment advisory input). requested_quantities come from the resolver's
-    echoed requested_quantity or from get_document_review() extractedItems,
-    so downstream fulfillment compares requested against available stock.
+    only from RESOLVED resolve_document_product() results. Requested
+    quantities come from those resolver results after the resolver derived
+    them from get_document_review()'s stored extractedItems, or directly from
+    a get_document_review() tool result. Model-supplied quantities are never
+    trusted for this handoff.
 
     Returns:
         {"document_id": str, "product_ids": list[int], "requested_quantities":
@@ -88,7 +89,9 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
         tool was actually called this turn (nothing to report).
     """
     tool_names_by_id: dict[str, str] = {}
+    tool_inputs_by_id: dict[str, dict] = {}
     document_id: str | None = None
+    seen_document_ids: set[str] = set()
     product_ids: list[int] = []
     seen_product_ids: set[int] = set()
     quantity_by_raw_name: dict[str, int] = {}
@@ -99,8 +102,7 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
             seen_product_ids.add(value)
             product_ids.append(value)
 
-    # Pass 1: map tool calls, capture the real document id, and retain any
-    # already-resolved IDs passed to the fulfillment advisory.
+    # Pass 1: map tool calls and capture the real document id.
     for message in messages:
         for block in message.get("content", []):
             tool_use = block.get("toolUse")
@@ -112,15 +114,15 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
             tool_input = tool_use.get("input") or {}
             if tool_use_id:
                 tool_names_by_id[tool_use_id] = name
+                tool_inputs_by_id[tool_use_id] = tool_input
 
-            if document_id is None and isinstance(tool_input.get("document_id"), str):
-                document_id = tool_input["document_id"]
+            input_document_id = tool_input.get("document_id")
+            if isinstance(input_document_id, str):
+                seen_document_ids.add(input_document_id)
+                if document_id is None:
+                    document_id = input_document_id
 
-            if name == "choose_fulfillment_warehouse":
-                for product_id in tool_input.get("product_ids") or []:
-                    _add_product_id(product_id)
-
-    if document_id is None:
+    if document_id is None or len(seen_document_ids) != 1:
         return None
 
     # Pass 2: pull exact IDs only from authoritative resolver results and
@@ -130,8 +132,11 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
             tool_result = block.get("toolResult")
             if not tool_result:
                 continue
-            result_tool_name = tool_names_by_id.get(tool_result.get("toolUseId"))
+            result_tool_use_id = tool_result.get("toolUseId")
+            result_tool_name = tool_names_by_id.get(result_tool_use_id)
             if result_tool_name not in ("resolve_document_product", "get_document_review"):
+                continue
+            if tool_inputs_by_id.get(result_tool_use_id, {}).get("document_id") != document_id:
                 continue
 
             for content_item in tool_result.get("content") or []:
@@ -144,19 +149,34 @@ def _extract_matched_data(messages: list[dict]) -> dict | None:
                     continue
 
                 if result_tool_name == "resolve_document_product":
+                    if (
+                        payload.get("status") != "RESOLVED"
+                        or payload.get("documentId") != document_id
+                    ):
+                        continue
                     product_id = payload.get("productId")
                     raw_name = payload.get("productNameRaw")
                     _add_product_id(product_id)
                     if isinstance(raw_name, str) and isinstance(product_id, int):
                         product_id_by_raw_name[raw_name] = product_id
                     quantity = payload.get("requestedQuantity")
-                    if isinstance(raw_name, str) and isinstance(quantity, int):
+                    if (
+                        isinstance(raw_name, str)
+                        and isinstance(quantity, int)
+                        and quantity > 0
+                    ):
                         quantity_by_raw_name[raw_name] = quantity
                 elif result_tool_name == "get_document_review":
+                    if str(payload.get("id")) != document_id:
+                        continue
                     for item in payload.get("extractedItems") or []:
                         raw_name = item.get("product")
                         quantity = item.get("quantity")
-                        if isinstance(raw_name, str) and isinstance(quantity, int):
+                        if (
+                            isinstance(raw_name, str)
+                            and isinstance(quantity, int)
+                            and quantity > 0
+                        ):
                             quantity_by_raw_name[raw_name] = quantity
 
     requested_quantities = [

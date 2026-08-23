@@ -246,16 +246,29 @@ def test_document_prompt_locks_current_ownership_and_safety() -> None:
     assert "authenticated human ADMIN" in prompt
     assert "Never claim a decision occurred unless the backend tool explicitly confirms it" in prompt
     assert "Do not invent or refer to a separate PurchaseOrder model" in prompt
+    assert "currently PENDING reviews" in prompt
+    assert "Never call its fuzzy/item-overlap evidence proof of an exact duplicate" in prompt
+    assert "unauthorized, forbidden, not-found, conflict, validation" in prompt
+    assert "Never fabricate a successful match" in prompt
+    for inactive_tool_name in (
+        "extract_document",
+        "match_products",
+        "find_supplier",
+        "match_invoice_to_po",
+        "choose_fulfillment_warehouse",
+        "detect_discrepancy",
+    ):
+        assert inactive_tool_name not in DOCUMENT_SYSTEM_PROMPT
 
 
 def test_structured_handoff_preserves_exact_resolved_ids_and_quantities() -> None:
     messages = [
         {"content": [
             {"toolUse": {"toolUseId": "r1", "name": "resolve_document_product", "input": {
-                "document_id": "501", "product_name": "27in Monitor", "requested_quantity": 12,
+                "document_id": "501", "product_name": "27in Monitor",
             }}},
             {"toolUse": {"toolUseId": "r2", "name": "resolve_document_product", "input": {
-                "document_id": "501", "product_name": "Mechanical Keyboard", "requested_quantity": 25,
+                "document_id": "501", "product_name": "Mechanical Keyboard",
             }}},
         ]},
         {"content": [
@@ -278,6 +291,62 @@ def test_structured_handoff_preserves_exact_resolved_ids_and_quantities() -> Non
             {"product_id": 108, "quantity": 25},
         ],
     }
+
+
+def test_structured_handoff_ignores_unresolved_cross_document_and_invalid_quantities() -> None:
+    messages = [
+        {"content": [
+            {"toolUse": {"toolUseId": "ok", "name": "resolve_document_product", "input": {
+                "document_id": "501", "product_name": "27in Monitor",
+            }}},
+            {"toolUse": {"toolUseId": "bad-status", "name": "resolve_document_product", "input": {
+                "document_id": "501", "product_name": "Keyboard",
+            }}},
+            {"toolUse": {"toolUseId": "wrong-doc", "name": "resolve_document_product", "input": {
+                "document_id": "501", "product_name": "Mouse",
+            }}},
+            {"toolUse": {"toolUseId": "wrong-review", "name": "get_document_review", "input": {
+                "document_id": "501",
+            }}},
+        ]},
+        {"content": [
+            {"toolResult": {"toolUseId": "ok", "content": [{"text": json.dumps({
+                "documentId": "501", "productNameRaw": "27in Monitor",
+                "requestedQuantity": 3, "status": "RESOLVED", "productId": 103,
+            })}]}},
+            {"toolResult": {"toolUseId": "bad-status", "content": [{"text": json.dumps({
+                "documentId": "501", "productNameRaw": "Keyboard",
+                "requestedQuantity": 2, "status": "AMBIGUOUS", "productId": 108,
+            })}]}},
+            {"toolResult": {"toolUseId": "wrong-doc", "content": [{"text": json.dumps({
+                "documentId": "999", "productNameRaw": "Mouse",
+                "requestedQuantity": 4, "status": "RESOLVED", "productId": 110,
+            })}]}},
+            {"toolResult": {"toolUseId": "wrong-review", "content": [{"text": json.dumps({
+                "id": 999,
+                "extractedItems": [{"product": "27in Monitor", "quantity": 999}],
+            })}]}},
+        ]},
+    ]
+
+    assert _extract_matched_data(messages) == {
+        "document_id": "501",
+        "product_ids": [103],
+        "requested_quantities": [{"product_id": 103, "quantity": 3}],
+    }
+
+
+def test_structured_handoff_fails_closed_for_mixed_document_turn() -> None:
+    messages = [{"content": [
+        {"toolUse": {"toolUseId": "a", "name": "get_document_review", "input": {
+            "document_id": "501",
+        }}},
+        {"toolUse": {"toolUseId": "b", "name": "get_document_review", "input": {
+            "document_id": "502",
+        }}},
+    ]}]
+
+    assert _extract_matched_data(messages) is None
 
 
 def test_review_decisions_fail_closed_without_admin_context(
@@ -394,7 +463,8 @@ def test_human_auth_is_request_isolated(monkeypatch: pytest.MonkeyPatch) -> None
 
     def handler(request: httpx.Request) -> httpx.Response:
         authorizations.append(request.headers["Authorization"])
-        return httpx.Response(200, json={"ok": True})
+        review_id = int(request.url.path.split("/")[2])
+        return httpx.Response(200, json={"id": review_id, "status": "REJECTED"})
 
     _patch_human_client(monkeypatch, handler)
     for token, review_id in (("request-a", "501"), ("request-b", "502")):
@@ -425,7 +495,11 @@ def test_core_read_tools_use_authoritative_document_review_endpoints(
         if request.url.path == "/document-review/pending":
             return httpx.Response(200, json=[{"id": 501, "status": "PENDING_REVIEW"}])
         if request.url.path == "/document-review/501":
-            return httpx.Response(200, json={"id": 501, "status": "PENDING_REVIEW", "extractedItems": []})
+            return httpx.Response(200, json={
+                "id": 501,
+                "status": "PENDING_REVIEW",
+                "extractedItems": [{"product": "27in Monitor", "quantity": 12, "price": 199.99}],
+            })
         if request.url.path == "/document-review/resolve-product":
             return httpx.Response(200, json=[{"productId": 103, "name": "27in Monitor", "score": 1}])
         if request.url.path == "/document-review/resolve-supplier":
@@ -437,7 +511,7 @@ def test_core_read_tools_use_authoritative_document_review_endpoints(
     with human_auth_scope("human-admin-jwt"):
         assert asyncio.run(get_pending_document_reviews())["reviews"][0]["id"] == 501
         assert asyncio.run(get_document_review(document_id="501"))["id"] == 501
-        product = asyncio.run(resolve_document_product("501", "27in Monitor", 12))
+        product = asyncio.run(resolve_document_product("501", "27in Monitor"))
         supplier = asyncio.run(resolve_document_supplier("501", "TechSource"))
 
     assert product["status"] == "RESOLVED" and product["productId"] == 103
@@ -453,7 +527,7 @@ def test_core_read_tools_use_authoritative_document_review_endpoints(
         (
             resolve_document_product,
             "/document-review/resolve-product",
-            ("999", "27in Monitor", 12),
+            ("999", "27in Monitor"),
         ),
         (
             resolve_document_supplier,
@@ -1928,7 +2002,10 @@ def test_detect_duplicate_document_finds_and_ranks_real_candidates(monkeypatch: 
     _patch_backend_client(monkeypatch, handler)
 
     result = asyncio.run(detect_duplicate_document(document_id="860"))
-    assert result["isDuplicate"] is True
+    assert result["status"] == "POTENTIAL_DUPLICATE_REVIEW"
+    assert result["isPotentialDuplicate"] is True
+    assert result["scope"] == "PENDING_REVIEWS_ONLY"
+    assert "not exact file identity" in result["evidenceLimitations"]
     assert [m["documentReviewId"] for m in result["matches"]] == [862, 864]
 
     strongest = result["matches"][0]
@@ -1944,7 +2021,7 @@ def test_detect_duplicate_document_finds_and_ranks_real_candidates(monkeypatch: 
 
 def test_detect_duplicate_document_no_candidates_in_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     """The candidate pool is empty once the target excludes itself -
-    isDuplicate is False immediately, WITHOUT ever calling GET /products
+    isPotentialDuplicate is False immediately, WITHOUT ever calling GET /products
     (not stubbed below, so an unexpected call there fails this test
     loudly rather than silently passing).
     """
@@ -1978,7 +2055,9 @@ def test_detect_duplicate_document_no_candidates_in_pool(monkeypatch: pytest.Mon
     _patch_backend_client(monkeypatch, handler)
 
     result = asyncio.run(detect_duplicate_document(document_id="865"))
-    assert result["isDuplicate"] is False
+    assert result["status"] == "NO_SIMILAR_PENDING_REVIEW"
+    assert result["isPotentialDuplicate"] is False
+    assert result["scope"] == "PENDING_REVIEWS_ONLY"
     assert result["matches"] == []
 
 
@@ -2257,7 +2336,7 @@ def test_detect_duplicate_document_live_no_duplicate_against_real_backend() -> N
 
     result = asyncio.run(detect_duplicate_document(document_id=document_id))
     assert result["documentId"] == document_id
-    assert result["isDuplicate"] is False, (
+    assert result["isPotentialDuplicate"] is False, (
         f"Expected no duplicate - real seed data has only one PENDING_REVIEW document at a time, "
         f"so the candidate pool should be empty once it excludes itself. Got: {result!r}"
     )

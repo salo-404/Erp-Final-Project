@@ -24,6 +24,7 @@ from tools.schemas.insights_schema import (
     AvailableStockResponse,
     ConsumptionAnomaliesResponse,
     DeadStockResponse,
+    FulfillmentWarehouseResponse,
     LowStockResponse,
     OpenPurchaseOrdersResponse,
     RecommendDeadStockTransferResponse,
@@ -186,13 +187,15 @@ async def recommend_fulfillment_warehouse(
         },
     )
     if not eligible:
-        return {
-            "status": "NO_ELIGIBLE_WAREHOUSE",
-            "recommendedWarehouseId": None,
-            "recommendedWarehouseName": None,
-            "eligibleWarehouses": [],
-            "geographyConsidered": False,
-        }
+        return FulfillmentWarehouseResponse.model_validate(
+            {
+                "status": "NO_ELIGIBLE_WAREHOUSE",
+                "recommendedWarehouseId": None,
+                "recommendedWarehouseName": None,
+                "eligibleWarehouses": [],
+                "geographyConsidered": False,
+            }
+        ).model_dump(mode="json")
 
     distance_by_warehouse_id: dict[int, float] = {}
     if any((delivery_country, delivery_region, delivery_address)):
@@ -226,16 +229,18 @@ async def recommend_fulfillment_warehouse(
     )
     recommended = ranked[0] if ranked else None
 
-    return {
-        "status": "RECOMMENDED" if recommended else "ELIGIBLE_WAREHOUSES_FOUND",
-        "recommendedWarehouseId": recommended["warehouseId"] if recommended else None,
-        "recommendedWarehouseName": recommended["warehouseName"] if recommended else None,
-        "eligibleWarehouses": [
-            {**warehouse, "distanceKm": distance_by_warehouse_id.get(warehouse["warehouseId"])}
-            for warehouse in eligible
-        ],
-        "geographyConsidered": recommended is not None,
-    }
+    return FulfillmentWarehouseResponse.model_validate(
+        {
+            "status": "RECOMMENDED" if recommended else "ELIGIBLE_WAREHOUSES_FOUND",
+            "recommendedWarehouseId": recommended["warehouseId"] if recommended else None,
+            "recommendedWarehouseName": recommended["warehouseName"] if recommended else None,
+            "eligibleWarehouses": [
+                {**warehouse, "distanceKm": distance_by_warehouse_id.get(warehouse["warehouseId"])}
+                for warehouse in eligible
+            ],
+            "geographyConsidered": recommended is not None,
+        }
+    ).model_dump(mode="json")
 
 
 @tool
@@ -307,7 +312,8 @@ async def get_stockout_risk() -> dict:
         A dict with an `items` list, each carrying a `riskLevel`
         (OK/AT_RISK/OUT_OF_STOCK - a direct pass-through of the backend's
         own value, no remapping), a `predictedStockoutDate` when
-        available, and `averageDailyConsumption`.
+        available, and `avgDailyConsumption`, plus the backend's physical,
+        reserved, pending-incoming, and projected-stock context.
 
     Raises:
         Unauthorized, Forbidden, NotFound, ValidationError, Conflict, or
@@ -325,9 +331,17 @@ async def get_stockout_risk() -> dict:
         {
             "productId": entry["productId"],
             "warehouseId": entry["warehouseId"],
+            "onHand": entry["onHand"],
+            "activeReserved": entry["activeReserved"],
+            "available": entry["available"],
+            "reorderThreshold": entry["reorderThreshold"],
             "riskLevel": entry["riskLevel"],
+            "pendingIncomingQuantity": entry["pendingIncomingQuantity"],
+            "projectedAvailable": entry["projectedAvailable"],
+            "projectedRiskLevel": entry["projectedRiskLevel"],
+            "avgDailyConsumption": entry["avgDailyConsumption"],
+            "daysOfSupply": entry["daysOfSupply"],
             "predictedStockoutDate": entry["predictedStockoutDate"],
-            "averageDailyConsumption": entry["avgDailyConsumption"],
         }
         for entry in entries
     ]
@@ -362,7 +376,15 @@ async def get_restock_recommendations() -> dict:
         {
             "productId": entry["productId"],
             "warehouseId": entry["warehouseId"],
+            "available": entry["available"],
+            "pendingIncomingQuantity": entry["pendingIncomingQuantity"],
+            "projectedAvailable": entry["projectedAvailable"],
+            "reorderThreshold": entry["reorderThreshold"],
+            "riskLevel": entry["riskLevel"],
+            "projectedRiskLevel": entry["projectedRiskLevel"],
             "recommendedQuantity": entry["recommendedQuantity"],
+            "avgDailyConsumption": entry["avgDailyConsumption"],
+            "daysOfSupply": entry["daysOfSupply"],
             "reason": entry["reason"],
             "explanation": entry["explanation"],
         }
@@ -414,7 +436,8 @@ async def get_transfer_recommendations() -> dict:
 
     Returns:
         A dict with a `recommendations` list of source/destination
-        warehouse pairs, the product, `quantity`, and a `reason` string
+        warehouse pairs, the product, `transferQuantity`, the backend's
+        post-transfer/source/destination context, and a `reason` string
         the AI layer builds deterministically from real backend fields
         (destinationRiskLevel, destinationDaysOfSupply, sourceIsDeadStock)
         - never model-generated.
@@ -431,9 +454,22 @@ async def get_transfer_recommendations() -> dict:
     recommendations = [
         {
             "productId": entry["productId"],
-            "sourceWarehouseId": entry["fromWarehouseId"],
-            "destinationWarehouseId": entry["toWarehouseId"],
-            "quantity": entry["transferQuantity"],
+            "fromWarehouseId": entry["fromWarehouseId"],
+            "toWarehouseId": entry["toWarehouseId"],
+            "transferQuantity": entry["transferQuantity"],
+            "fromWarehouseAvailableAfterTransfer": entry[
+                "fromWarehouseAvailableAfterTransfer"
+            ],
+            "toWarehouseProjectedAvailableAfterTransfer": entry[
+                "toWarehouseProjectedAvailableAfterTransfer"
+            ],
+            "sourcePendingIncomingQuantity": entry["sourcePendingIncomingQuantity"],
+            "sourceIsDeadStock": entry["sourceIsDeadStock"],
+            "destinationRiskLevel": entry["destinationRiskLevel"],
+            "destinationAvgDailyConsumption": entry[
+                "destinationAvgDailyConsumption"
+            ],
+            "destinationDaysOfSupply": entry["destinationDaysOfSupply"],
             "reason": _build_transfer_recommendation_reason(
                 destination_risk_level=entry["destinationRiskLevel"],
                 destination_days_of_supply=entry["destinationDaysOfSupply"],
@@ -651,13 +687,24 @@ async def compare_suppliers(product_id: int) -> dict:
         {
             "supplierId": entry["supplierId"],
             "supplierName": entry["supplierName"],
+            "productId": entry["productId"],
+            "totalTransactions": entry["totalTransactions"],
+            "completedTransactions": entry["completedTransactions"],
+            "cancelledTransactions": entry["cancelledTransactions"],
+            "cancellationRate": entry["cancellationRate"],
             "unitCost": entry["averagePrice"],
+            "pricedItemCount": entry["pricedItemCount"],
             "leadTimeDays": lead_time_by_supplier_id.get(entry["supplierId"]),
             "reliabilityScore": entry["onTimeDeliveryRate"],
+            "evaluatedForOnTimeCount": entry["evaluatedForOnTimeCount"],
+            "purchaseFrequency": entry["purchaseFrequency"],
+            "firstPurchaseDate": entry["firstPurchaseDate"],
+            "lastPurchaseDate": entry["lastPurchaseDate"],
             "overallScore": entry["score"],
             "rank": entry["rank"],
             "insufficientData": entry["insufficientData"],
             "insufficientDataReasons": entry["insufficientDataReasons"],
+            "componentScores": entry["componentScores"],
         }
         for entry in ranked
     ]
@@ -674,7 +721,7 @@ async def compare_suppliers(product_id: int) -> dict:
     return SupplierComparisonResponse.model_validate(result).model_dump(mode="json")
 
 
-def _sum_transaction_value(items: list[dict]) -> float:
+def _sum_transaction_value(items: list[dict]) -> Optional[float]:
     """Sum quantity * price across items that actually have a price.
 
     price arrives from the backend as a Prisma Decimal, which decimal.js
@@ -688,13 +735,10 @@ def _sum_transaction_value(items: list[dict]) -> float:
     own code per the task rather than calling that per-transaction endpoint
     (which would mean one extra HTTP call per order).
     """
-    total = 0.0
-    for item in items:
-        price = item.get("price")
-        if price is None:
-            continue
-        total += item["quantity"] * float(price)
-    return total
+    priced_items = [item for item in items if item.get("price") is not None]
+    if not priced_items:
+        return None
+    return sum(item["quantity"] * float(item["price"]) for item in priced_items)
 
 
 @tool

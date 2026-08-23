@@ -21,7 +21,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 DocType = Literal["invoice", "order"]
 
@@ -39,6 +39,91 @@ class DocumentReviewStatus(str, Enum):
     PENDING_REVIEW = "PENDING_REVIEW"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+class BackendExtractedItem(BaseModel):
+    product: str
+    quantity: int = Field(..., gt=0)
+    price: Optional[float] = Field(None, ge=0)
+
+
+class DocumentReviewRecord(BaseModel):
+    """SQL-visible PendingDocumentReview fields returned by the frozen backend.
+
+    Detail responses additionally include `transaction` and `reviewedBy`;
+    those nested Prisma objects are preserved without the AI inventing a
+    second copy of their schema.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: int
+    documentUrl: Optional[str] = None
+    documentKey: Optional[str] = None
+    transactionType: Optional[Literal["INCOMING", "OUTGOING", "TRANSFER"]] = None
+    extractedPartyName: Optional[str] = None
+    extractedSupplierName: Optional[str] = None
+    extractedDate: Optional[datetime] = None
+    extractedWarehouseName: Optional[str] = None
+    extractedDeliveryCountry: Optional[str] = None
+    extractedDeliveryRegion: Optional[str] = None
+    extractedDeliveryAddress: Optional[str] = None
+    extractedItems: list[BackendExtractedItem] = Field(default_factory=list)
+    status: DocumentReviewStatus
+    rejectionReason: Optional[str] = None
+    reviewedById: Optional[int] = None
+    reviewedAt: Optional[datetime] = None
+    transactionId: Optional[int] = None
+    createdAt: Optional[datetime] = None
+    updatedAt: Optional[datetime] = None
+    transaction: Optional[dict] = None
+    reviewedBy: Optional[dict] = None
+
+
+class PendingDocumentReviewsResponse(BaseModel):
+    reviews: list[DocumentReviewRecord]
+
+
+class ProductResolutionSuggestion(BaseModel):
+    productId: int
+    name: str
+    score: float = Field(..., ge=0, le=1)
+
+
+class SupplierResolutionSuggestion(BaseModel):
+    supplierId: int
+    name: str
+    score: float = Field(..., ge=0, le=1)
+
+
+class ResolutionStatus(str, Enum):
+    RESOLVED = "RESOLVED"
+    AMBIGUOUS = "AMBIGUOUS"
+    NOT_FOUND = "NOT_FOUND"
+
+
+class ResolveDocumentProductResponse(BaseModel):
+    documentId: str
+    productNameRaw: str
+    requestedQuantity: Optional[int] = Field(None, gt=0)
+    status: ResolutionStatus
+    productId: Optional[int] = None
+    suggestions: list[ProductResolutionSuggestion]
+
+
+class ResolveDocumentSupplierResponse(BaseModel):
+    documentId: str
+    supplierNameRaw: str
+    status: ResolutionStatus
+    supplierId: Optional[int] = None
+    suggestions: list[SupplierResolutionSuggestion]
+
+
+class DocumentReviewDecisionResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: int
+    status: DocumentReviewStatus
 
 
 class ExtractedLineItem(BaseModel):
@@ -301,20 +386,17 @@ class ChooseFulfillmentWarehouseResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # detect_duplicate_document
 #
-# Is THIS EXACT DOCUMENT a re-submission of something already processed
-# before (same file uploaded twice, a resent email attachment, etc.)?
-# Unrelated to whether its CONTENT matches what was expected - that's
-# detect_discrepancy's job, below. Do not conflate the two: "has this
-# document already been processed" (duplicate) vs. "does this document's
-# data match what we expected" (discrepancy) are different questions.
+# Advisory similarity evidence for currently pending reviews. The backend
+# has no exact-file hash/invoice-number primitive and no list-all history
+# endpoint, so this contract intentionally does not assert exact identity.
 # ---------------------------------------------------------------------------
 
 
 class DuplicateMatch(BaseModel):
     """No invented "similarityScore" - see
     agents/document_agent/tools.py::detect_duplicate_document for the real
-    signal-based comparison (4 real signals, >= 3 agreeing flags a
-    candidate). matchedOn lists exactly which real signals agreed, e.g.
+    signal-based comparison (4 real signals, >= 3 agreeing surfaces a
+    potential candidate). matchedOn lists exactly which real signals agreed, e.g.
     ["supplier", "date", "total"] - itemOverlapRatio is the one genuinely
     well-defined real number here (Jaccard ratio of resolved productId
     sets), kept as its own field rather than folded into an opaque score.
@@ -335,12 +417,23 @@ class DuplicateMatch(BaseModel):
     )
 
 
+class DuplicateCheckStatus(str, Enum):
+    NO_SIMILAR_PENDING_REVIEW = "NO_SIMILAR_PENDING_REVIEW"
+    POTENTIAL_DUPLICATE_REVIEW = "POTENTIAL_DUPLICATE_REVIEW"
+
+
 class DetectDuplicateDocumentResponse(BaseModel):
     documentId: str = Field(..., description="Echoes the input document_id, for traceability.")
-    isDuplicate: bool
+    status: DuplicateCheckStatus
+    isPotentialDuplicate: bool = Field(
+        ...,
+        description="Advisory only; never proof that the underlying file is an exact duplicate.",
+    )
+    scope: Literal["PENDING_REVIEWS_ONLY"] = "PENDING_REVIEWS_ONLY"
+    evidenceLimitations: str
     matches: list[DuplicateMatch] = Field(
         default_factory=list,
-        description="Every same-transactionType PENDING candidate with >= 3 of 4 signals agreeing, sorted by most signals agreed first.",
+        description="Similar same-type pending reviews, sorted by most agreeing signals.",
     )
 
 

@@ -109,6 +109,40 @@ def test_insights_prompt_matches_active_tool_boundaries() -> None:
         assert removed_tool_name not in INSIGHTS_SYSTEM_PROMPT
 
 
+def test_insights_prompt_uses_tool_values_and_never_model_arithmetic() -> None:
+    prompt = " ".join(INSIGHTS_SYSTEM_PROMPT.split())
+
+    assert "All numerical claims must come from values returned by your tools" in prompt
+    assert "calculated by the backend or calculated deterministically by the Python adapter" in prompt
+    assert "Never calculate, estimate, assume, invent, recompute" in prompt
+    assert "never recompute supplier scores" in prompt
+    assert "transfer `reason` may be adapter-generated deterministically" in prompt
+    assert "Every number your tools return" not in prompt
+    assert "already calculated by the backend" not in prompt
+
+
+def test_insights_prompt_rejects_document_work_and_fake_failure_recovery() -> None:
+    prompt = " ".join(INSIGHTS_SYSTEM_PROMPT.split())
+
+    assert "Do not approve or reject reviews" in prompt
+    assert "resolve document product/supplier names" in prompt
+    assert "accept only exact resolved IDs and quantities" in prompt
+    assert "Unauthorized, forbidden, not-found, conflict, validation" in prompt
+    assert "Never fabricate an ID, quantity, stock value, supplier recommendation" in prompt
+
+
+def test_insights_prompt_resolves_pure_request_product_names_without_guessing_ids() -> None:
+    prompt = " ".join(INSIGHTS_SYSTEM_PROMPT.split())
+
+    assert "A user may naturally identify a product by name" in prompt
+    assert "use the existing read-only query_database() discovery path" in prompt
+    assert "then call the specific ID-based tool" in prompt
+    assert "only when the result uniquely identifies one product" in prompt
+    assert "report that not-found/ambiguity result" in prompt
+    assert "never invent or guess a productId" in prompt
+    assert "raw line-item names from a document" in prompt
+
+
 def test_supplier_ranking_prompt_separates_score_from_lead_time_context() -> None:
     normalized_prompt = " ".join(INSIGHTS_SYSTEM_PROMPT.split())
 
@@ -212,8 +246,8 @@ def test_sum_transaction_value_handles_string_decimal_prices() -> None:
     assert _sum_transaction_value([{"quantity": 4, "price": "12.25"}]) == 49.0
 
 
-def test_sum_transaction_value_is_zero_when_no_item_has_a_price() -> None:
-    assert _sum_transaction_value([{"quantity": 5, "price": None}]) == 0.0
+def test_sum_transaction_value_is_null_when_no_item_has_a_price() -> None:
+    assert _sum_transaction_value([{"quantity": 5, "price": None}]) is None
 
 
 def test_build_transfer_recommendation_reason_reflects_destination_urgency() -> None:
@@ -635,6 +669,17 @@ def test_get_stockout_risk_wired_end_to_end_against_mocked_backend(monkeypatch: 
     assert by_product[102]["predictedStockoutDate"] is not None
     assert by_product[101]["predictedStockoutDate"] is None
     for item in by_product.values():
+        assert {
+            "onHand",
+            "activeReserved",
+            "available",
+            "reorderThreshold",
+            "pendingIncomingQuantity",
+            "projectedAvailable",
+            "projectedRiskLevel",
+            "avgDailyConsumption",
+            "daysOfSupply",
+        } <= item.keys()
         assert "riskScore" not in item
         assert "productName" not in item
         assert "warehouseName" not in item
@@ -819,6 +864,16 @@ def test_get_restock_recommendations_wired_end_to_end_against_mocked_backend(
     assert by_product[103]["reason"] == "transfer_available"
     assert by_product[102]["explanation"].startswith("No pending incoming stock")
     for rec in by_product.values():
+        assert {
+            "available",
+            "pendingIncomingQuantity",
+            "projectedAvailable",
+            "reorderThreshold",
+            "riskLevel",
+            "projectedRiskLevel",
+            "avgDailyConsumption",
+            "daysOfSupply",
+        } <= rec.keys()
         assert "needsReorder" not in rec
         assert "candidate" not in rec
         assert "productName" not in rec
@@ -891,14 +946,18 @@ def test_get_transfer_recommendations_wired_end_to_end_against_mocked_backend(
 
     assert len(result["recommendations"]) == 1
     rec = result["recommendations"][0]
-    assert rec["sourceWarehouseId"] == 2
-    assert rec["destinationWarehouseId"] == 1
-    assert rec["quantity"] == 15
+    assert rec["fromWarehouseId"] == 2
+    assert rec["toWarehouseId"] == 1
+    assert rec["transferQuantity"] == 15
+    assert rec["fromWarehouseAvailableAfterTransfer"] == 33
+    assert rec["toWarehouseProjectedAvailableAfterTransfer"] == 27
+    assert rec["sourcePendingIncomingQuantity"] == 0
+    assert rec["sourceIsDeadStock"] is False
+    assert rec["destinationRiskLevel"] == "AT_RISK"
+    assert rec["destinationAvgDailyConsumption"] == 2.1
+    assert rec["destinationDaysOfSupply"] == 5.7
     assert "is at risk of stocking out" in rec["reason"]
     assert "5.7 days of supply" in rec["reason"]
-    assert "fromWarehouseId" not in rec
-    assert "toWarehouseId" not in rec
-    assert "transferQuantity" not in rec
     assert "productName" not in rec
 
 
@@ -1703,6 +1762,13 @@ def test_compare_suppliers_normal_case_wired_end_to_end_against_mocked_backend(
     assert by_id[7]["unitCost"] == 25.0
     assert by_id[7]["reliabilityScore"] == 0.95
     assert by_id[7]["overallScore"] == 88.5  # real 0-100 scale, not rescaled
+    assert by_id[7]["componentScores"] == {
+        "price": 70.0,
+        "onTimeDelivery": 95.0,
+        "cancellationPerformance": 90.0,
+        "productSupplyHistory": 100.0,
+    }
+    assert by_id[7]["totalTransactions"] == 10
 
     assert result["recommendationStatus"] == "supplier_recommended"
     recommended = result["recommendedSupplier"]
