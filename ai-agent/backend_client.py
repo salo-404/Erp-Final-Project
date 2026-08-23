@@ -1,10 +1,9 @@
 """Shared, authenticated HTTP client for the AI layer's calls to the real ERP backend.
 
-PLUMBING ONLY - no tool file imports or uses this yet. Wiring individual
-tools to real calls happens in separate follow-up passes; this module just
-makes that possible.
+Used by the active AI tools and Control Tower narration for authenticated
+calls to the real ERP backend.
 
-Usage (once a tool is actually wired):
+Usage:
 
     from backend_client import get_backend_client
 

@@ -1,7 +1,7 @@
 """Manual sanity-check script for the Control Tower narration layer.
 
 NOT an automated test - run it directly to see narrate_all_alerts() work
-against the mock alert set and eyeball the output. Same spirit as
+against the real authenticated backend alert feed and eyeball the output. Same spirit as
 scripts/chat_locally.py for the Supervisor's live chat path, but this is
 the batch narration path instead - Control Tower is not a chat entry point
 and this script doesn't behave like one (no REPL, no back-and-forth): it

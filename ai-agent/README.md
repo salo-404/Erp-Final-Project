@@ -247,11 +247,9 @@ before you attempt that.
 `narration/control_tower.py` is a **batch process, not a chat entry point,
 and explicitly not a fourth agent** - the architecture stays locked at
 Supervisor + Insights + Document (see "Architecture" above). Its job:
-take structured alerts - each with a category, severity, and an `evidence`
-dict of raw supporting data - and turn each one into a plain-language
-narrative plus one concrete proposed action. Today the alerts come from
-`tools/mocks/control_tower_mock_data.py`, standing in for the backend's
-not-yet-built `getControlTowerAlerts()`.
+fetch structured alerts from the authenticated backend
+`GET /control-tower/alerts` feed and turn each alert into a plain-language
+narrative plus one concrete proposed action.
 
 It is deliberately **not** a Strands `Agent` with tools. Narrating one
 alert is a single request/response - read the evidence, produce two
@@ -264,7 +262,7 @@ no-tools gate check (`agents/supervisor/gate.py`), which still wraps a
 `settings.build_model("narration")` - same per-provider pattern as
 everything else (`gpt-5.4-mini` / `llama3.1` / TODO-verified-Bedrock).
 
-Run it manually against the mock alert set:
+Run it manually against the real authenticated backend alert feed:
 
 ```bash
 python -m scripts.run_control_tower_narration
