@@ -226,24 +226,6 @@ export function AiAgentPage() {
             <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "var(--font-heading)", color: "var(--color-text)" }}>Nexora Assistant</div>
             <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>ERP intelligence workspace</div>
           </div>
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              fontSize: 10.5,
-              fontWeight: 600,
-              color: "var(--color-text-secondary)",
-              background: "var(--color-surface-2)",
-              border: "1px solid var(--color-border)",
-              borderRadius: 20,
-              padding: "4px 10px",
-              flexShrink: 0,
-            }}
-          >
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--color-warning)" }} />
-            Preview — not yet connected to live AI
-          </span>
         </div>
 
         <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: 20, position: "relative" }}>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MergedTrendPoint } from "../../lib/analyticsStats";
 
 interface RevenueTrendChartProps {
@@ -33,6 +33,25 @@ function roundedTopRectPath(x: number, y: number, width: number, height: number,
 
 export function RevenueTrendChart({ points }: RevenueTrendChartProps) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const chartWrapRef = useRef<HTMLDivElement>(null);
+  // preserveAspectRatio="none" stretches the whole coordinate system
+  // (including text glyphs) to fill the card's actual width, which is
+  // usually much wider than the VB_WIDTH:VB_HEIGHT ratio — without this,
+  // axis labels render visibly stretched/wide. Counter-scaling text by the
+  // inverse of that stretch keeps numbers and dates at their natural
+  // proportions while bars/gridlines still fill the full width.
+  const [textScaleX, setTextScaleX] = useState(1);
+
+  useEffect(() => {
+    const el = chartWrapRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry.contentRect.width;
+      if (width > 0) setTextScaleX(VB_WIDTH / width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   if (points.length === 0) {
     return (
@@ -70,7 +89,7 @@ export function RevenueTrendChart({ points }: RevenueTrendChartProps) {
         </div>
       </div>
 
-      <div style={{ position: "relative" }}>
+      <div ref={chartWrapRef} style={{ position: "relative" }}>
         {hovered && (
           <>
             <div
@@ -134,7 +153,9 @@ export function RevenueTrendChart({ points }: RevenueTrendChartProps) {
           return (
             <g key={i}>
               <line x1={PAD_LEFT} y1={y} x2={VB_WIDTH - PAD_RIGHT} y2={y} stroke="var(--color-border)" strokeWidth={1} />
-              <text x={PAD_LEFT - 8} y={y + 3} textAnchor="end" fontSize={9.5} fill="var(--color-text-muted)">{formatShort(v)}</text>
+              <g transform={`translate(${PAD_LEFT - 8}, ${y + 3}) scale(${textScaleX}, 1)`}>
+                <text textAnchor="end" fontSize={9.5} fill="var(--color-text-muted)">{formatShort(v)}</text>
+              </g>
             </g>
           );
         })}
@@ -165,9 +186,11 @@ export function RevenueTrendChart({ points }: RevenueTrendChartProps) {
                 <line x1={groupX + groupWidth / 2} y1={PAD_TOP} x2={groupX + groupWidth / 2} y2={PAD_TOP + plotHeight} stroke="var(--color-text-muted)" strokeWidth={1} strokeDasharray="3,3" opacity={0.5} />
               )}
               {i % labelStep === 0 && (
-                <text x={groupX + groupWidth / 2} y={VB_HEIGHT - PAD_BOTTOM + 16} textAnchor="middle" fontSize={9.5} fill="var(--color-text-muted)">
-                  {formatDate(p.date)}
-                </text>
+                <g transform={`translate(${groupX + groupWidth / 2}, ${VB_HEIGHT - PAD_BOTTOM + 16}) scale(${textScaleX}, 1)`}>
+                  <text textAnchor="middle" fontSize={9.5} fill="var(--color-text-muted)">
+                    {formatDate(p.date)}
+                  </text>
+                </g>
               )}
             </g>
           );
