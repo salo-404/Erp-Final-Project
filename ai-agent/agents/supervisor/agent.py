@@ -36,7 +36,7 @@ SUPERVISOR_TOOLS = [
 ]
 
 
-def build_supervisor_agent() -> Agent:
+def build_supervisor_agent(session_manager: object | None = None) -> Agent:
     """Construct the top-level Supervisor Agent.
 
     Architecture is LOCKED at exactly 3 agents: this Supervisor plus the
@@ -68,6 +68,7 @@ def build_supervisor_agent() -> Agent:
         tools=SUPERVISOR_TOOLS,
         name="supervisor",
         description="Top-level ERP assistant that routes to the Insights and Document specialists.",
+        session_manager=session_manager,
     )
 
 

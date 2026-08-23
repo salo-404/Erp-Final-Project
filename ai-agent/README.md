@@ -172,13 +172,23 @@ for that session. Different sessions use different Supervisor instances and
 independent locks. The registry repeats the owner check as defense-in-depth.
 
 The registry is in-process, bounded to 256 entries, and removes inactive
-sessions after one idle hour. It preserves history while that entry remains in
-the active runtime. After eviction or complete runtime/microVM termination,
-Supervisor history and locks are gone. A later invocation revalidates the
-session's stateless owner namespace: the correct user can resume the logical
-session with fresh history, while a different authenticated ERP user is still
-rejected. Durable conversation recovery would require external session storage
-and is deliberately outside the current scope.
+sessions after one idle hour. It preserves the live Supervisor and lock while
+that entry remains active. When `AGENTCORE_MEMORY_ID` is configured, the
+Supervisor also uses short-term AgentCore Memory with the authoritative ERP
+`User.id` as `actor_id` and the canonical runtime session ID as `session_id`.
+After registry eviction or runtime/microVM restart, rebuilding that same
+actor/session restores its conversation history. Different conversations use
+different session IDs, even for the same actor. The stateless owner validation
+still runs first and Memory is context only, never authorization or ERP truth.
+
+Set `AGENTCORE_MEMORY_ID` to the resource ID created during AWS provisioning.
+Keep `AGENTCORE_MEMORY_REQUIRED=false` locally before provisioning; set it to
+`true` in production so a missing ID or failed configured Memory cannot fall
+back to RAM. The canonical session format remains
+`erp-user-{ERP_USER_ID}-{32-character-lowercase-UUID-hex}`. No long-term
+AgentCore Memory, retrieval configuration, preference memory, semantic memory,
+or cross-session memory is used by this project. Dynamic ERP values are always
+fetched fresh through backend-backed tools.
 
 For a new frontend conversation, use the authenticated Cognito session to call
 backend `/auth/me`, generate a fresh UUID, construct

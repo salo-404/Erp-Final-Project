@@ -42,6 +42,7 @@ from typing import Any
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+from agentcore_memory import build_agentcore_memory_session_manager
 from agents.supervisor.agent import build_supervisor_agent
 from agents.supervisor.gate import is_in_scope
 from agentcore_session import parse_runtime_session_owner
@@ -55,7 +56,7 @@ app = BedrockAgentCoreApp()
 # multiple sessions safe: each session owns one mutable Supervisor and one
 # invocation lock. The canonical session ID independently carries a non-secret
 # ERP-user namespace, so ownership can be revalidated after process memory is
-# lost. Supervisor history and locks remain intentionally in-process only.
+# lost. Locks and live Supervisor instances remain intentionally in-process.
 _SESSION_IDLE_TTL_SECONDS = 60 * 60
 _MAX_CACHED_SESSIONS = 256
 
@@ -240,7 +241,16 @@ def invoke(payload: object, context: object) -> dict:
                 }
 
             if state.supervisor_agent is None:
-                state.supervisor_agent = build_supervisor_agent()
+                memory_session_manager = build_agentcore_memory_session_manager(
+                    actor_id=owner_erp_user_id,
+                    session_id=session_id,
+                )
+                if memory_session_manager is None:
+                    state.supervisor_agent = build_supervisor_agent()
+                else:
+                    state.supervisor_agent = build_supervisor_agent(
+                        session_manager=memory_session_manager
+                    )
 
             with human_auth_scope(bearer_token):
                 response = state.supervisor_agent(prompt)

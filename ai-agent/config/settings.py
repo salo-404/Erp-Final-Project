@@ -67,6 +67,19 @@ _DEFAULT_BEDROCK_SQL_MODEL_ID = "mistral.ministral-3-8b-instruct"
 _DEFAULT_BEDROCK_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 
 
+def _environment_flag(name: str, default: bool = False) -> bool:
+    """Parse a boolean environment flag without accepting ambiguous values."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
 def _default_model_id_for_provider(provider: str, bedrock_fallback: str) -> str:
     """Pick the right default model ID for whichever provider is active.
 
@@ -184,6 +197,10 @@ class Settings:
     )
     agentcore_request_header_allowlist: str = os.getenv(
         "AGENTCORE_REQUEST_HEADER_ALLOWLIST", "Authorization"
+    )
+    agentcore_memory_id: str = os.getenv("AGENTCORE_MEMORY_ID", "")
+    agentcore_memory_required: bool = _environment_flag(
+        "AGENTCORE_MEMORY_REQUIRED", False
     )
 
     # Bedrock Guardrails (see agents/supervisor/guardrails.py). Empty by
