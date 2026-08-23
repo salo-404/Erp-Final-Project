@@ -52,9 +52,13 @@ export function RevenueTrendChart({ points }: RevenueTrendChartProps) {
   const labelStep = Math.max(1, Math.ceil(points.length / 7));
   const hovered = hoverIndex !== null ? points[hoverIndex] : null;
   const hoverLeftPct = hoverIndex !== null ? ((PAD_LEFT + hoverIndex * groupWidth + groupWidth / 2) / VB_WIDTH) * 100 : 0;
+  // Anchor left/center/right depending on proximity to the plot edges so the
+  // tooltip never overflows the card when hovering the first/last points.
+  const tooltipAlign = hoverLeftPct < 15 ? "left" : hoverLeftPct > 85 ? "right" : "center";
+  const tooltipTransformX = tooltipAlign === "left" ? "0" : tooltipAlign === "right" ? "-100%" : "-50%";
 
   return (
-    <div style={{ position: "relative" }}>
+    <div>
       <div style={{ display: "flex", gap: 18, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--color-text-secondary)" }}>
           <span style={{ width: 10, height: 10, borderRadius: 3, background: "var(--color-success)", display: "inline-block" }} />
@@ -66,31 +70,53 @@ export function RevenueTrendChart({ points }: RevenueTrendChartProps) {
         </div>
       </div>
 
-      {hovered && (
-        <div
-          style={{
-            position: "absolute",
-            top: 0,
-            left: `${hoverLeftPct}%`,
-            transform: "translate(-50%, -100%)",
-            background: "var(--color-surface-2)",
-            border: "1px solid var(--color-border)",
-            borderRadius: 8,
-            padding: "8px 11px",
-            fontSize: 11.5,
-            whiteSpace: "nowrap",
-            boxShadow: "0 6px 18px rgba(0,0,0,0.18)",
-            pointerEvents: "none",
-            zIndex: 5,
-          }}
-        >
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>{formatDate(hovered.date)}</div>
-          <div style={{ color: "var(--color-success)" }}>Revenue: {formatShort(hovered.revenue)}</div>
-          <div style={{ color: "var(--color-danger)" }}>Cost: {formatShort(hovered.purchaseCost)}</div>
-        </div>
-      )}
+      <div style={{ position: "relative" }}>
+        {hovered && (
+          <>
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: `${hoverLeftPct}%`,
+                transform: `translate(${tooltipTransformX}, -100%)`,
+                marginTop: -14,
+                background: "var(--color-surface-2)",
+                border: "1px solid var(--color-border)",
+                borderRadius: 7,
+                padding: "6px 9px",
+                fontSize: 10.5,
+                lineHeight: 1.4,
+                whiteSpace: "nowrap",
+                boxShadow: "0 4px 14px rgba(0,0,0,0.16)",
+                pointerEvents: "none",
+                zIndex: 5,
+              }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: 2 }}>{formatDate(hovered.date)}</div>
+              <div style={{ color: "var(--color-success)" }}>Revenue: {formatShort(hovered.revenue)}</div>
+              <div style={{ color: "var(--color-danger)" }}>Cost: {formatShort(hovered.purchaseCost)}</div>
+            </div>
+            {/* Caret always tracks the hovered bar, independent of tooltip alignment */}
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: `${hoverLeftPct}%`,
+                transform: "translate(-50%, -9px)",
+                width: 0,
+                height: 0,
+                borderLeft: "4px solid transparent",
+                borderRight: "4px solid transparent",
+                borderTop: "5px solid var(--color-surface-2)",
+                filter: "drop-shadow(0 2px 1px rgba(0,0,0,0.08))",
+                pointerEvents: "none",
+                zIndex: 5,
+              }}
+            />
+          </>
+        )}
 
-      <svg viewBox={`0 0 ${VB_WIDTH} ${VB_HEIGHT}`} style={{ width: "100%", height: 260, overflow: "visible" }}>
+        <svg viewBox={`0 0 ${VB_WIDTH} ${VB_HEIGHT}`} preserveAspectRatio="none" style={{ width: "100%", height: 260, overflow: "visible", display: "block" }}>
         <defs>
           <linearGradient id="revenueBarGradient" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="var(--color-success)" stopOpacity={1} />
@@ -148,7 +174,8 @@ export function RevenueTrendChart({ points }: RevenueTrendChartProps) {
         })}
 
         <line x1={PAD_LEFT} y1={PAD_TOP + plotHeight} x2={VB_WIDTH - PAD_RIGHT} y2={PAD_TOP + plotHeight} stroke="var(--color-border)" strokeWidth={1.5} />
-      </svg>
+        </svg>
+      </div>
     </div>
   );
 }
