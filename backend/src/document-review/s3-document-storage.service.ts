@@ -13,10 +13,9 @@ import {
 } from './document-review.service';
 
 /**
- * How long a presigned GET URL stays valid. Handed to the extraction
- * provider (Ribal Agent) immediately after upload for a synchronous fetch —
- * kept short since nothing else should ever need to read the document
- * through this URL.
+ * How long a presigned GET URL stays valid. Used only by the authenticated
+ * viewing endpoint when a user needs temporary access, and kept short since
+ * extraction reads the private S3 object directly by key.
  */
 const PRESIGNED_URL_EXPIRY_SECONDS = 300;
 

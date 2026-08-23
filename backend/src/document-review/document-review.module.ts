@@ -9,15 +9,14 @@ import {
   DocumentReviewService,
 } from './document-review.service';
 import { EmailDocumentReviewNotifier } from './email-document-review.notifier';
-import { RibalDocumentExtractionProvider } from './ribal-document-extraction.provider';
+import { TextractDocumentExtractionProvider } from './textract-document-extraction.provider';
 import { S3DocumentStorageService } from './s3-document-storage.service';
 
 /**
  * All three provider tokens are now bound:
  *   - DOCUMENT_STORAGE_PROVIDER    -> S3DocumentStorageService
- *   - DOCUMENT_EXTRACTION_PROVIDER -> RibalDocumentExtractionProvider (HTTP
- *     adapter boundary only — Ribal's actual AgentCore/Bedrock logic lives
- *     behind RIBAL_AGENT_URL, not implemented here)
+ *   - DOCUMENT_EXTRACTION_PROVIDER -> TextractDocumentExtractionProvider
+ *     (AnalyzeExpense reads the already-private S3 object directly)
  *   - DOCUMENT_REVIEW_NOTIFIER     -> EmailDocumentReviewNotifier (reuses
  *     Joseph's EmailModule/EmailService)
  * This module can now be imported into AppModule.
@@ -33,7 +32,7 @@ import { S3DocumentStorageService } from './s3-document-storage.service';
     },
     {
       provide: DOCUMENT_EXTRACTION_PROVIDER,
-      useClass: RibalDocumentExtractionProvider,
+      useClass: TextractDocumentExtractionProvider,
     },
     {
       provide: DOCUMENT_REVIEW_NOTIFIER,

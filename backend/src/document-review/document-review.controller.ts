@@ -31,7 +31,7 @@ export class DocumentReviewController {
   constructor(private readonly documentReviewService: DocumentReviewService) {}
 
   /**
-   * Browser -> NestJS -> S3 -> presigned URL -> extraction provider, all
+   * Browser -> NestJS -> private S3 -> Textract AnalyzeExpense, all
    * handled by DocumentReviewService.upload() (see that method's doc
    * comment). `FileInterceptor` with no storage option defaults to
    * multer's in-memory storage, so `file.buffer` is what gets forwarded as

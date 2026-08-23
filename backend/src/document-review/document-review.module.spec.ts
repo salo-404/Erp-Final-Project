@@ -6,6 +6,8 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { DocumentReviewService } from './document-review.service';
 import { DocumentReviewController } from './document-review.controller';
 import { DocumentReviewModule } from './document-review.module';
+import { DOCUMENT_EXTRACTION_PROVIDER } from './document-review.service';
+import { TextractDocumentExtractionProvider } from './textract-document-extraction.provider';
 
 describe('DocumentReviewModule wiring', () => {
   const ORIGINAL_ENV = { ...process.env };
@@ -13,7 +15,6 @@ describe('DocumentReviewModule wiring', () => {
   beforeEach(() => {
     process.env.AWS_REGION = 'eu-west-1';
     process.env.AWS_S3_BUCKET = 'test-bucket';
-    process.env.RIBAL_AGENT_URL = 'http://localhost:9000/ribal/extract';
   });
 
   afterEach(() => {
@@ -34,18 +35,24 @@ describe('DocumentReviewModule wiring', () => {
     expect(moduleRef.get(DocumentReviewController)).toBeInstanceOf(
       DocumentReviewController,
     );
+    expect(moduleRef.get(DOCUMENT_EXTRACTION_PROVIDER)).toBeInstanceOf(
+      TextractDocumentExtractionProvider,
+    );
   });
 
-  it('fails to bootstrap when RIBAL_AGENT_URL is not configured, since RibalDocumentExtractionProvider requires it', async () => {
-    delete process.env.RIBAL_AGENT_URL;
+  it.each(['AWS_REGION', 'AWS_S3_BUCKET'] as const)(
+    'fails to bootstrap when %s is not configured',
+    async (variable) => {
+      delete process.env[variable];
 
-    await expect(
-      Test.createTestingModule({
-        imports: [PrismaModule, DocumentReviewModule],
-      })
-        .overrideProvider(PrismaService)
-        .useValue({})
-        .compile(),
-    ).rejects.toThrow('RIBAL_AGENT_URL is not configured');
-  });
+      await expect(
+        Test.createTestingModule({
+          imports: [PrismaModule, DocumentReviewModule],
+        })
+          .overrideProvider(PrismaService)
+          .useValue({})
+          .compile(),
+      ).rejects.toThrow(`${variable} is not configured`);
+    },
+  );
 });

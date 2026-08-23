@@ -20,7 +20,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 /**
  * Builds a real DocumentReviewService (not a mock of the service itself) so
  * these tests exercise the actual upload() flow — file-type validation,
- * S3-style storage, presigned-URL generation, and extraction — through the
+ * S3-style storage and key-based Textract extraction — through the
  * real HTTP multipart layer, with only the three external provider
  * boundaries (storage/extraction/notifier) and Prisma/InventoryTransactions
  * mocked out.
@@ -39,7 +39,7 @@ function buildApp() {
 
   const extract = jest.fn<
     Promise<ExtractedDocumentData>,
-    [{ mimeType: string; documentUrl: string }]
+    [{ mimeType: string; documentKey: string }]
   >();
   const extractionProvider: DocumentExtractionProvider = { extract };
 
@@ -104,7 +104,7 @@ describe('DocumentReviewController.upload', () => {
     }
   });
 
-  it('accepts a PDF upload, stores it, generates a presigned URL, extracts via that URL, and returns the created review', async () => {
+  it('accepts a PDF upload, stores it, extracts by private S3 key, and returns the created review', async () => {
     const { service, upload, getPresignedUrl, extract, prismaCreate } =
       buildApp();
     upload.mockResolvedValue({
@@ -150,15 +150,16 @@ describe('DocumentReviewController.upload', () => {
     expect(Buffer.isBuffer(uploadArg.content)).toBe(true);
     expect(uploadArg.content.toString()).toBe('%PDF-1.4 fake content');
 
-    expect(getPresignedUrl).toHaveBeenCalledWith('documents/doc-1.pdf');
+    expect(getPresignedUrl).not.toHaveBeenCalled();
 
-    // Extraction must receive the presigned documentUrl, never the Buffer.
+    // Extraction receives the private S3 key, never bytes or a presigned URL.
     expect(extract).toHaveBeenCalledWith({
       mimeType: 'application/pdf',
-      documentUrl: 'https://s3.example.com/doc-1.pdf?X-Amz-Signature=fake',
+      documentKey: 'documents/doc-1.pdf',
     });
     const extractArg = extract.mock.calls[0][0];
     expect(extractArg).not.toHaveProperty('content');
+    expect(extractArg).not.toHaveProperty('documentUrl');
   });
 
   it('accepts a supported image upload (image/png)', async () => {
@@ -186,6 +187,67 @@ describe('DocumentReviewController.upload', () => {
     expect(upload).toHaveBeenCalledWith(
       expect.objectContaining({ mimeType: 'image/png' }),
     );
+  });
+
+  it('accepts a supported image upload (image/jpeg)', async () => {
+    const { service, upload, extract, prismaCreate } = buildApp();
+    upload.mockResolvedValue({
+      url: 'https://s3.example.com/doc-3.jpg',
+      key: 'documents/doc-3.jpg',
+    });
+    extract.mockResolvedValue({ transactionType: 'OUTGOING', items: [] });
+    prismaCreate.mockResolvedValue({ id: 3, status: 'PENDING_REVIEW' });
+    app = await createTestApp(service);
+
+    const response = await request(app.getHttpServer())
+      .post('/document-review/upload')
+      .attach('file', Buffer.from('fake jpeg bytes'), {
+        filename: 'scan.jpg',
+        contentType: 'image/jpeg',
+      });
+
+    expect(response.status).toBe(201);
+    expect(upload).toHaveBeenCalledWith(
+      expect.objectContaining({ mimeType: 'image/jpeg' }),
+    );
+  });
+
+  it.each([
+    ['invoice.doc', 'application/msword'],
+    [
+      'invoice.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ],
+  ])('rejects unsupported Word upload %s', async (filename, contentType) => {
+    const { service, upload, extract } = buildApp();
+    app = await createTestApp(service);
+
+    const response = await request(app.getHttpServer())
+      .post('/document-review/upload')
+      .attach('file', Buffer.from('fake word bytes'), {
+        filename,
+        contentType,
+      });
+
+    expect(response.status).toBe(400);
+    expect(upload).not.toHaveBeenCalled();
+    expect(extract).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty upload before storage or extraction', async () => {
+    const { service, upload, extract } = buildApp();
+    app = await createTestApp(service);
+
+    const response = await request(app.getHttpServer())
+      .post('/document-review/upload')
+      .attach('file', Buffer.alloc(0), {
+        filename: 'empty.pdf',
+        contentType: 'application/pdf',
+      });
+
+    expect(response.status).toBe(400);
+    expect(upload).not.toHaveBeenCalled();
+    expect(extract).not.toHaveBeenCalled();
   });
 
   it('rejects an unsupported file type with 400, without calling the storage provider', async () => {
@@ -253,9 +315,7 @@ describe('DocumentReviewController.upload', () => {
       key: 'documents/doc-1.pdf',
     });
     getPresignedUrl.mockResolvedValue('https://s3.example.com/signed');
-    extract.mockRejectedValue(
-      new Error('Ribal extraction agent returned HTTP 503'),
-    );
+    extract.mockRejectedValue(new Error('Textract extraction failed'));
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer())
