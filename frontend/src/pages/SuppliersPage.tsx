@@ -58,6 +58,7 @@ export function SuppliersPage() {
   const [formMode, setFormMode] = useState<"create" | "edit" | null>(null);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
+  const [confirmingTxAction, setConfirmingTxAction] = useState<{ id: number; action: "complete" | "cancel" } | null>(null);
   const [creatingPO, setCreatingPO] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -104,13 +105,15 @@ export function SuppliersPage() {
     await createIncoming(input);
     purchasesFetch.refetch();
   }
-  async function handleComplete(id: number) {
-    await completeTransaction(id);
+  async function handleConfirmTxAction() {
+    if (!confirmingTxAction) return;
+    if (confirmingTxAction.action === "complete") {
+      await completeTransaction(confirmingTxAction.id);
+    } else {
+      await cancelTransaction(confirmingTxAction.id);
+    }
     purchasesFetch.refetch();
-  }
-  async function handleCancel(id: number) {
-    await cancelTransaction(id);
-    purchasesFetch.refetch();
+    setConfirmingTxAction(null);
   }
 
   async function handleUploadFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -136,8 +139,18 @@ export function SuppliersPage() {
       </div>
     );
   }
-  if (suppliersFetch.error) {
-    return <ErrorMessage message={suppliersFetch.error} onRetry={suppliersFetch.refetch} />;
+  const pageError = suppliersFetch.error || productsFetch.error || warehousesFetch.error;
+  if (pageError) {
+    return (
+      <ErrorMessage
+        message={pageError}
+        onRetry={() => {
+          suppliersFetch.refetch();
+          productsFetch.refetch();
+          warehousesFetch.refetch();
+        }}
+      />
+    );
   }
 
   return (
@@ -255,7 +268,7 @@ export function SuppliersPage() {
             </div>
           </div>
           {isAdmin && (
-            <button type="button" onClick={() => setFormMode("create")} style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, padding: "8px 14px", borderRadius: 7, background: "var(--color-accent)", color: "#FFFFFF", border: "none", cursor: "pointer" }}>
+            <button type="button" onClick={() => setFormMode("create")} style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, padding: "8px 14px", borderRadius: 7, background: "var(--color-accent)", color: "var(--color-on-accent)", border: "none", cursor: "pointer" }}>
               <PlusIcon className="h-[14px] w-[14px]" />
               Add Supplier
             </button>
@@ -324,7 +337,7 @@ export function SuppliersPage() {
             <button
               type="button"
               onClick={() => setCreatingPO(true)}
-              style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, padding: "10px 16px", borderRadius: 8, background: "var(--color-accent)", color: "#FFFFFF", border: "none", cursor: "pointer" }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, padding: "10px 16px", borderRadius: 8, background: "var(--color-accent)", color: "var(--color-on-accent)", border: "none", cursor: "pointer" }}
             >
               <PlusIcon className="h-[14px] w-[14px]" />
               Create Purchase Order
@@ -373,10 +386,10 @@ export function SuppliersPage() {
                       <td style={{ padding: "10px 16px", borderTop: "1px solid var(--color-border)" }}>
                         {tx.status === "PENDING" && (
                           <div style={{ display: "flex", gap: 6 }}>
-                            <button type="button" title="Complete" onClick={() => handleComplete(tx.id)} style={{ width: 26, height: 26, borderRadius: 6, background: "rgba(34,197,94,0.12)", border: "1px solid var(--color-border)", color: "var(--color-success)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                            <button type="button" title="Complete" onClick={() => setConfirmingTxAction({ id: tx.id, action: "complete" })} style={{ width: 26, height: 26, borderRadius: 6, background: "rgba(34,197,94,0.12)", border: "1px solid var(--color-border)", color: "var(--color-success)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
                               <CheckIcon className="h-[13px] w-[13px]" />
                             </button>
-                            <button type="button" title="Cancel" onClick={() => handleCancel(tx.id)} style={{ width: 26, height: 26, borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid var(--color-border)", color: "var(--color-danger)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                            <button type="button" title="Cancel" onClick={() => setConfirmingTxAction({ id: tx.id, action: "cancel" })} style={{ width: 26, height: 26, borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid var(--color-border)", color: "var(--color-danger)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
                               <XCircleIcon className="h-[13px] w-[13px]" />
                             </button>
                           </div>
@@ -407,6 +420,20 @@ export function SuppliersPage() {
           danger
           onCancel={() => setConfirmingDeleteId(null)}
           onConfirm={handleDeleteSupplier}
+        />
+      )}
+      {confirmingTxAction && (
+        <ConfirmDialog
+          title={confirmingTxAction.action === "complete" ? "Complete Purchase" : "Cancel Purchase"}
+          message={
+            confirmingTxAction.action === "complete"
+              ? "Mark this purchase as completed? This will add the received stock to inventory."
+              : "Cancel this purchase? This cannot be undone."
+          }
+          confirmLabel={confirmingTxAction.action === "complete" ? "Complete" : "Cancel Purchase"}
+          danger={confirmingTxAction.action === "cancel"}
+          onCancel={() => setConfirmingTxAction(null)}
+          onConfirm={handleConfirmTxAction}
         />
       )}
       {creatingPO && (

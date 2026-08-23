@@ -92,7 +92,7 @@ export function MovementLedger({
                   borderRadius: 7,
                   border: "1px solid var(--color-border)",
                   background: filter === f.key ? "var(--color-accent)" : "transparent",
-                  color: filter === f.key ? "#FFFFFF" : "var(--color-text-secondary)",
+                  color: filter === f.key ? "var(--color-on-accent)" : "var(--color-text-secondary)",
                   cursor: "pointer",
                 }}
               >

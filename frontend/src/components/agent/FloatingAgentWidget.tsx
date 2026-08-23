@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAgent } from "../../agent/AgentContext";
 import { usePageContext } from "../../agent/pageContext";
@@ -7,6 +8,7 @@ import { AgentMark } from "./AgentMark";
 import { ConversationView } from "./ConversationView";
 import { QuickActionChips } from "./QuickActionChips";
 import { Composer } from "./Composer";
+import { ErrorMessage } from "../ui/ErrorMessage";
 
 export function FloatingAgentWidget() {
   const navigate = useNavigate();
@@ -16,11 +18,21 @@ export function FloatingAgentWidget() {
     isSending,
     streamingStatus,
     streamingText,
+    agentError,
     isFloatingOpen,
     closeFloating,
     toggleFloating,
     sendMessage,
   } = useAgent();
+
+  // Closing (not just hiding) the panel here means it doesn't silently
+  // reappear on the next page if the user reached /ai-agent via the
+  // sidebar link rather than "Open Full Agent" (which already closes it).
+  useEffect(() => {
+    if (pageContext.path.startsWith("/ai-agent")) {
+      closeFloating();
+    }
+  }, [pageContext.path, closeFloating]);
 
   if (pageContext.path.startsWith("/ai-agent")) return null;
 
@@ -134,6 +146,11 @@ export function FloatingAgentWidget() {
 
           {/* Composer */}
           <div style={{ padding: 12, borderTop: "1px solid var(--color-border)", background: "var(--color-surface)", flexShrink: 0 }}>
+            {agentError && (
+              <div style={{ marginBottom: 10 }}>
+                <ErrorMessage message={agentError} />
+              </div>
+            )}
             <Composer onSend={handleSend} disabled={isSending} placeholder="Ask about this page..." />
           </div>
         </div>
@@ -186,7 +203,7 @@ export function FloatingAgentWidget() {
               justifyContent: "center",
             }}
           >
-            <MinusIcon style={{ width: 10, height: 10, color: "#FFFFFF" }} />
+            <MinusIcon style={{ width: 10, height: 10, color: "var(--color-on-accent)" }} />
           </span>
         )}
       </button>

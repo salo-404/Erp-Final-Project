@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { fetchCurrentIdentity, login as loginRequest } from "./auth.api";
-import { getStoredToken, setStoredToken } from "../lib/api-client";
+import { getStoredToken, setStoredToken, SESSION_EXPIRED_EVENT } from "../lib/api-client";
 import type { User } from "../types/api";
 
 const USER_STORAGE_KEY = "nexora.user";
@@ -85,6 +85,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setStatus("unauthenticated");
   }, []);
+
+  // A 401 on an authenticated request means the session is no longer valid
+  // (expired/revoked token) — log out and let ProtectedRoute redirect to
+  // /login, instead of leaving every page stuck on a dead "Retry" error.
+  useEffect(() => {
+    function handleSessionExpired() {
+      logout();
+    }
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+  }, [logout]);
 
   const value = useMemo(() => ({ status, user, login, logout }), [status, user, login, logout]);
 

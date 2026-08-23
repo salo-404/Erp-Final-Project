@@ -15,7 +15,7 @@ interface EmailNotificationsCardProps {
 
 const BUCKET_CARDS: { bucket: "today" | "upcoming" | "overdue"; tag: string; tagBg: string; tagColor: string; label: string }[] = [
   { bucket: "today", tag: "TODAY", tagBg: "rgba(244,196,48,0.16)", tagColor: "var(--color-warning)", label: "Deliveries due today" },
-  { bucket: "upcoming", tag: "UPCOMING", tagBg: "rgba(109,63,217,0.14)", tagColor: "var(--color-accent)", label: "Deliveries on the way" },
+  { bucket: "upcoming", tag: "UPCOMING", tagBg: "var(--color-accent-tint)", tagColor: "var(--color-accent)", label: "Deliveries on the way" },
   { bucket: "overdue", tag: "OVERDUE", tagBg: "rgba(239,68,68,0.14)", tagColor: "var(--color-danger)", label: "Deliveries past due" },
 ];
 
@@ -23,6 +23,7 @@ export function EmailNotificationsCard({ counts, userEmail, connectionStatus, on
   const [testState, setTestState] = useState<"idle" | "sending" | "done" | "error">("idle");
   const [testError, setTestError] = useState<string | null>(null);
   const [bucketState, setBucketState] = useState<Record<string, "idle" | "sending" | "done" | "error">>({});
+  const [bucketError, setBucketError] = useState<Record<string, string>>({});
 
   async function handleSendTest() {
     setTestState("sending");
@@ -38,11 +39,13 @@ export function EmailNotificationsCard({ counts, userEmail, connectionStatus, on
 
   async function handleBucket(bucket: "today" | "upcoming" | "overdue") {
     setBucketState((s) => ({ ...s, [bucket]: "sending" }));
+    setBucketError((s) => ({ ...s, [bucket]: "" }));
     try {
       await onSendBucketReminder(bucket);
       setBucketState((s) => ({ ...s, [bucket]: "done" }));
-    } catch {
+    } catch (err) {
       setBucketState((s) => ({ ...s, [bucket]: "error" }));
+      setBucketError((s) => ({ ...s, [bucket]: err instanceof Error ? err.message : "Failed to send." }));
     }
   }
 
@@ -91,6 +94,7 @@ export function EmailNotificationsCard({ counts, userEmail, connectionStatus, on
                 type="button"
                 onClick={() => handleBucket(c.bucket)}
                 disabled={count === 0 || state === "sending" || state === "done"}
+                title={state === "error" ? bucketError[c.bucket] : undefined}
                 style={{
                   width: "100%",
                   fontSize: 11.5,
@@ -122,7 +126,7 @@ export function EmailNotificationsCard({ counts, userEmail, connectionStatus, on
           type="button"
           onClick={handleSendTest}
           disabled={testState === "sending"}
-          style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, fontWeight: 600, padding: "9px 14px", borderRadius: 7, background: "var(--color-accent)", color: "#FFFFFF", border: "none", cursor: testState === "sending" ? "default" : "pointer", opacity: testState === "sending" ? 0.7 : 1 }}
+          style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, fontWeight: 600, padding: "9px 14px", borderRadius: 7, background: "var(--color-accent)", color: "var(--color-on-accent)", border: "none", cursor: testState === "sending" ? "default" : "pointer", opacity: testState === "sending" ? 0.7 : 1 }}
         >
           <MailIcon className="h-[13px] w-[13px]" />
           Send Test Email

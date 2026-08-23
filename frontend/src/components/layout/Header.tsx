@@ -44,7 +44,7 @@ export function Header() {
 
         {user && (
           <div className="flex items-center gap-2 text-sm">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-accent)] text-xs font-semibold text-white">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-accent)] text-xs font-semibold text-[var(--color-on-accent)]">
               {displayName.slice(0, 1).toUpperCase()}
             </div>
             <div className="hidden text-left sm:block">

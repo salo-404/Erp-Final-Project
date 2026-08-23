@@ -37,7 +37,7 @@ export function SettingsPage() {
       {/* Account */}
       <div style={cardStyle}>
         <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
-          <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--color-accent)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 18, color: "#FFFFFF", flexShrink: 0 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--color-accent)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 18, color: "var(--color-on-accent)", flexShrink: 0 }}>
             {(displayName || user?.email || "?").slice(0, 1).toUpperCase()}
           </div>
           <div>
@@ -65,7 +65,7 @@ export function SettingsPage() {
               type="button"
               onClick={handleSaveName}
               disabled={!nameDraft.trim() || nameDraft === displayName}
-              style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, padding: "10px 16px", borderRadius: 8, background: "var(--color-accent)", color: "#FFFFFF", border: "none", cursor: !nameDraft.trim() || nameDraft === displayName ? "default" : "pointer", opacity: !nameDraft.trim() || nameDraft === displayName ? 0.5 : 1 }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, padding: "10px 16px", borderRadius: 8, background: "var(--color-accent)", color: "var(--color-on-accent)", border: "none", cursor: !nameDraft.trim() || nameDraft === displayName ? "default" : "pointer", opacity: !nameDraft.trim() || nameDraft === displayName ? 0.5 : 1 }}
             >
               {saved ? <CheckIcon className="h-3 w-3" /> : null}
               {saved ? "Saved" : "Save"}

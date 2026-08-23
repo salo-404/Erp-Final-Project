@@ -59,7 +59,7 @@ export function CalendarGrid({ cells, deliveriesByDay, selectedKey, onSelectDay,
                     fontWeight: cell.isToday ? 800 : 500,
                     fontFamily: "var(--font-heading)",
                     background: cell.isToday ? "var(--color-accent)" : "transparent",
-                    color: cell.isToday ? "#FFFFFF" : "var(--color-text)",
+                    color: cell.isToday ? "var(--color-on-accent)" : "var(--color-text)",
                   }}
                 >
                   {cell.day}

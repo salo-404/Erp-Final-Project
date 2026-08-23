@@ -60,7 +60,7 @@ export function ConfirmDialog({ title, message, confirmLabel = "Confirm", danger
             borderRadius: 7,
             border: "none",
             background: danger ? "var(--color-danger)" : "var(--color-accent)",
-            color: "#FFFFFF",
+            color: danger ? "#FFFFFF" : "var(--color-on-accent)",
             fontSize: 13,
             fontWeight: 600,
             cursor: submitting ? "default" : "pointer",

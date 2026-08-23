@@ -43,6 +43,7 @@ interface AgentContextValue {
   isSending: boolean;
   streamingStatus: AgentStreamStatus | null;
   streamingText: string;
+  agentError: string | null;
   isFloatingOpen: boolean;
   openFloating: () => void;
   closeFloating: () => void;
@@ -61,6 +62,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const [isSending, setIsSending] = useState(false);
   const [streamingStatus, setStreamingStatus] = useState<AgentStreamStatus | null>(null);
   const [streamingText, setStreamingText] = useState("");
+  const [agentError, setAgentError] = useState<string | null>(null);
   const [isFloatingOpen, setIsFloatingOpen] = useState(false);
 
   const setActive = useCallback((id: string | null) => {
@@ -134,6 +136,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       setIsSending(true);
       setStreamingStatus("thinking");
       setStreamingText("");
+      setAgentError(null);
 
       try {
         for await (const event of mockAgentService.sendMessage({
@@ -159,7 +162,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             setStreamingText("");
           } else if (event.type === "error") {
             setStreamingStatus(null);
+            setStreamingText("");
+            setAgentError(event.error);
           }
+        }
+      } catch (err) {
+        if (streamGeneration.current === generation) {
+          setStreamingStatus(null);
+          setStreamingText("");
+          setAgentError(err instanceof Error ? err.message : "The assistant hit an unexpected error.");
         }
       } finally {
         if (streamGeneration.current === generation) {
@@ -183,6 +194,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       isSending,
       streamingStatus,
       streamingText,
+      agentError,
       isFloatingOpen,
       openFloating,
       closeFloating,
@@ -199,6 +211,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       isSending,
       streamingStatus,
       streamingText,
+      agentError,
       isFloatingOpen,
       openFloating,
       closeFloating,

@@ -103,7 +103,7 @@ export function WarehouseFormModal({ warehouse, onClose, onSubmit }: WarehouseFo
               borderRadius: 7,
               border: "none",
               background: "var(--color-accent)",
-              color: "#FFFFFF",
+              color: "var(--color-on-accent)",
               fontSize: 13,
               fontWeight: 600,
               cursor: submitting ? "default" : "pointer",

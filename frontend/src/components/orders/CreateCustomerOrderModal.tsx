@@ -135,7 +135,7 @@ export function CreateCustomerOrderModal({ warehouses, products, onClose, onSubm
           <button
             type="submit"
             disabled={submitting}
-            style={{ padding: "9px 16px", borderRadius: 7, border: "none", background: "var(--color-accent)", color: "#FFFFFF", fontSize: 13, fontWeight: 600, cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.7 : 1 }}
+            style={{ padding: "9px 16px", borderRadius: 7, border: "none", background: "var(--color-accent)", color: "var(--color-on-accent)", fontSize: 13, fontWeight: 600, cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.7 : 1 }}
           >
             {submitting ? "Creating..." : "Create order"}
           </button>

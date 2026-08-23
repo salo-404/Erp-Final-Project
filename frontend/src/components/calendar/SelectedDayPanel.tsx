@@ -25,14 +25,17 @@ function totalQty(d: DeliveryTransaction): number {
 export function SelectedDayPanel({ selectedDate, deliveries, productsById, onCreateReminder }: SelectedDayPanelProps) {
   const navigate = useNavigate();
   const [reminderState, setReminderState] = useState<Record<number, "idle" | "sending" | "done" | "error">>({});
+  const [reminderError, setReminderError] = useState<Record<number, string>>({});
 
   async function handleReminder(id: number) {
     setReminderState((s) => ({ ...s, [id]: "sending" }));
+    setReminderError((s) => ({ ...s, [id]: "" }));
     try {
       await onCreateReminder(id);
       setReminderState((s) => ({ ...s, [id]: "done" }));
-    } catch {
+    } catch (err) {
       setReminderState((s) => ({ ...s, [id]: "error" }));
+      setReminderError((s) => ({ ...s, [id]: err instanceof Error ? err.message : "Failed to add reminder." }));
     }
   }
 
@@ -87,7 +90,7 @@ export function SelectedDayPanel({ selectedDate, deliveries, productsById, onCre
                     type="button"
                     onClick={() => handleReminder(d.id)}
                     disabled={state === "sending" || state === "done"}
-                    title="Add to Google Calendar"
+                    title={state === "error" ? reminderError[d.id] : "Add to Google Calendar"}
                     style={{
                       display: "inline-flex",
                       alignItems: "center",

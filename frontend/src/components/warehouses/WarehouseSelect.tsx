@@ -41,7 +41,7 @@ export function WarehouseSelect({ warehouses, selectedId, onChange }: WarehouseS
           transform: "translateY(-50%)",
           width: 28,
           height: 28,
-          background: "rgba(109,63,217,0.15)",
+          background: "var(--color-accent-tint)",
           borderRadius: 6,
           display: "flex",
           alignItems: "center",

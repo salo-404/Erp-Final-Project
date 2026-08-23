@@ -150,7 +150,7 @@ export function WarehousesPage() {
           <button
             type="button"
             onClick={() => setFormMode("create")}
-            className="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white"
+            className="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)]"
           >
             Create Warehouse
           </button>
@@ -172,7 +172,7 @@ export function WarehousesPage() {
             <button
               type="button"
               onClick={() => setFormMode("create")}
-              style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 600, padding: "10px 16px", borderRadius: 8, background: "var(--color-accent)", color: "#FFFFFF", border: "none", cursor: "pointer" }}
+              style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 600, padding: "10px 16px", borderRadius: 8, background: "var(--color-accent)", color: "var(--color-on-accent)", border: "none", cursor: "pointer" }}
             >
               <PlusIcon className="h-[14px] w-[14px]" />
               Create Warehouse
@@ -305,7 +305,7 @@ export function WarehousesPage() {
         ].map((kpi) => (
           <div key={kpi.label} style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 10, padding: 16 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-              <div style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(109,63,217,0.14)", color: "var(--color-accent)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--color-accent-tint)", color: "var(--color-accent)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <kpi.Icon className="h-4 w-4" />
               </div>
               <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{kpi.label}</div>

@@ -75,7 +75,7 @@ export function Composer({ onSend, disabled, placeholder = "Ask about your ERP d
           borderRadius: "50%",
           border: "none",
           background: canSend ? "var(--color-accent)" : "var(--color-surface-2)",
-          color: canSend ? "#FFFFFF" : "var(--color-text-muted)",
+          color: canSend ? "var(--color-on-accent)" : "var(--color-text-muted)",
           cursor: canSend ? "pointer" : "default",
         }}
       >

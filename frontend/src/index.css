@@ -12,6 +12,13 @@
   --color-text-secondary: #4a4e5a;
   --color-text-muted: #8a8f9c;
   --color-accent: #6d3fd9;
+  /* Text/icon color for content sitting on top of --color-accent. Tied to
+     the theme (not per-accent-swatch) because the one confirmed contrast
+     failure is the dark theme's default gold accent with hardcoded white
+     text — light theme's purple default (and most accent swatches) read
+     fine with white. */
+  --color-on-accent: #ffffff;
+  --color-accent-tint: rgba(109, 63, 217, 0.14);
   --color-danger: #ef4444;
   --color-success: #22c55e;
   --color-warning: #f4c430;
@@ -34,6 +41,8 @@
   --color-text-secondary: #a8b0c0;
   --color-text-muted: #6b7280;
   --color-accent: #f4c430;
+  --color-on-accent: #1a1b26;
+  --color-accent-tint: rgba(244, 196, 48, 0.16);
 
   --color-sidebar-bg: #1a1b26;
   --color-sidebar-text: #e8eaf0;

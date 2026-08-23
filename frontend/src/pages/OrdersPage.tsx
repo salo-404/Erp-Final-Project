@@ -15,6 +15,7 @@ import { transactionStatusBadge } from "../lib/transactionStatus";
 import { categorySalesBreakdown } from "../lib/orderStats";
 import { StatusDonut } from "../components/ui/StatusDonut";
 import { CreateCustomerOrderModal } from "../components/orders/CreateCustomerOrderModal";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import { ErrorMessage } from "../components/ui/ErrorMessage";
 import { CheckIcon, PlusIcon, UploadIcon, XCircleIcon } from "../components/ui/icons";
@@ -32,6 +33,7 @@ export function OrdersPage() {
   const topSellingFetch = useFetch(() => getTopSellingProducts(), []);
 
   const [creatingOrder, setCreatingOrder] = useState(false);
+  const [confirmingTxAction, setConfirmingTxAction] = useState<{ id: number; action: "complete" | "cancel" } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -58,13 +60,15 @@ export function OrdersPage() {
     await createOutgoing(input);
     ordersFetch.refetch();
   }
-  async function handleComplete(id: number) {
-    await completeTransaction(id);
+  async function handleConfirmTxAction() {
+    if (!confirmingTxAction) return;
+    if (confirmingTxAction.action === "complete") {
+      await completeTransaction(confirmingTxAction.id);
+    } else {
+      await cancelTransaction(confirmingTxAction.id);
+    }
     ordersFetch.refetch();
-  }
-  async function handleCancel(id: number) {
-    await cancelTransaction(id);
-    ordersFetch.refetch();
+    setConfirmingTxAction(null);
   }
 
   async function handleUploadInvoice(e: React.ChangeEvent<HTMLInputElement>) {
@@ -90,8 +94,18 @@ export function OrdersPage() {
       </div>
     );
   }
-  if (ordersFetch.error) {
-    return <ErrorMessage message={ordersFetch.error} onRetry={ordersFetch.refetch} />;
+  const pageError = ordersFetch.error || warehousesFetch.error || productsFetch.error;
+  if (pageError) {
+    return (
+      <ErrorMessage
+        message={pageError}
+        onRetry={() => {
+          ordersFetch.refetch();
+          warehousesFetch.refetch();
+          productsFetch.refetch();
+        }}
+      />
+    );
   }
 
   return (
@@ -144,6 +158,8 @@ export function OrdersPage() {
           </div>
           {topSellingFetch.loading ? (
             <LoadingSpinner />
+          ) : topSellingFetch.error ? (
+            <ErrorMessage message={topSellingFetch.error} onRetry={topSellingFetch.refetch} />
           ) : (topSellingFetch.data ?? []).length === 0 ? (
             <p style={{ fontSize: 12.5, color: "var(--color-text-muted)" }}>No completed sales yet.</p>
           ) : (
@@ -186,7 +202,7 @@ export function OrdersPage() {
             <button
               type="button"
               onClick={() => setCreatingOrder(true)}
-              style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, padding: "10px 16px", borderRadius: 8, background: "var(--color-accent)", color: "#FFFFFF", border: "none", cursor: "pointer" }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, padding: "10px 16px", borderRadius: 8, background: "var(--color-accent)", color: "var(--color-on-accent)", border: "none", cursor: "pointer" }}
             >
               <PlusIcon className="h-[14px] w-[14px]" />
               Create Customer Order
@@ -231,10 +247,10 @@ export function OrdersPage() {
                         <div style={{ display: "flex", gap: 6 }}>
                           {o.status === "PENDING" && (
                             <>
-                              <button type="button" title="Complete" onClick={() => handleComplete(o.id)} style={{ width: 26, height: 26, borderRadius: 6, background: "rgba(34,197,94,0.12)", border: "1px solid var(--color-border)", color: "var(--color-success)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                              <button type="button" title="Complete" onClick={() => setConfirmingTxAction({ id: o.id, action: "complete" })} style={{ width: 26, height: 26, borderRadius: 6, background: "rgba(34,197,94,0.12)", border: "1px solid var(--color-border)", color: "var(--color-success)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
                                 <CheckIcon className="h-[13px] w-[13px]" />
                               </button>
-                              <button type="button" title="Cancel" onClick={() => handleCancel(o.id)} style={{ width: 26, height: 26, borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid var(--color-border)", color: "var(--color-danger)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                              <button type="button" title="Cancel" onClick={() => setConfirmingTxAction({ id: o.id, action: "cancel" })} style={{ width: 26, height: 26, borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid var(--color-border)", color: "var(--color-danger)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
                                 <XCircleIcon className="h-[13px] w-[13px]" />
                               </button>
                             </>
@@ -260,6 +276,20 @@ export function OrdersPage() {
           products={products}
           onClose={() => setCreatingOrder(false)}
           onSubmit={handleCreateOrder}
+        />
+      )}
+      {confirmingTxAction && (
+        <ConfirmDialog
+          title={confirmingTxAction.action === "complete" ? "Complete Order" : "Cancel Order"}
+          message={
+            confirmingTxAction.action === "complete"
+              ? "Mark this order as completed? This will deduct the fulfilled stock from inventory."
+              : "Cancel this order? This cannot be undone."
+          }
+          confirmLabel={confirmingTxAction.action === "complete" ? "Complete" : "Cancel Order"}
+          danger={confirmingTxAction.action === "cancel"}
+          onCancel={() => setConfirmingTxAction(null)}
+          onConfirm={handleConfirmTxAction}
         />
       )}
     </div>

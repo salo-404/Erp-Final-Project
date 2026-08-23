@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError } from "../lib/api-client";
+import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import loginHero from "../assets/login-hero.png";
 
 // Layout, copy, and styling below are ported 1:1 from the Nexora Claude
@@ -29,6 +30,14 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  if (status === "loading") {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-[var(--color-bg)]">
+        <LoadingSpinner label="Checking session..." />
+      </div>
+    );
+  }
 
   if (status === "authenticated") {
     const redirectTo = (location.state as { from?: string } | null)?.from ?? "/";
@@ -85,7 +94,7 @@ export function LoginPage() {
                 fontFamily: "var(--font-heading)",
                 fontWeight: 700,
                 fontSize: 17,
-                color: "#FFFFFF",
+                color: "var(--color-on-accent)",
               }}
             >
               N
@@ -134,7 +143,7 @@ export function LoginPage() {
               style={{
                 marginTop: 6,
                 background: "var(--color-accent)",
-                color: "#FFFFFF",
+                color: "var(--color-on-accent)",
                 textAlign: "center",
                 padding: 12,
                 borderRadius: 7,

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { SearchIcon, CheckIcon } from "../ui/icons";
+import { ErrorMessage } from "../ui/ErrorMessage";
 import type { MatchSuggestion } from "../../types/domain";
 
 interface ResolveSearchInputProps {
@@ -27,12 +28,16 @@ export function ResolveSearchInput({ initialQuery, search, resolvedLabel, onReso
   const [query, setQuery] = useState(initialQuery);
   const [results, setResults] = useState<MatchSuggestion[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
 
   async function handleSearch() {
     if (!query.trim()) return;
     setSearching(true);
+    setSearchError(null);
     try {
       setResults(await search(query));
+    } catch (err) {
+      setSearchError(err instanceof Error ? err.message : "Search failed.");
     } finally {
       setSearching(false);
     }
@@ -85,6 +90,11 @@ export function ResolveSearchInput({ initialQuery, search, resolvedLabel, onReso
       )}
       {results && results.length === 0 && (
         <p style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginTop: 5 }}>No matches found.</p>
+      )}
+      {searchError && (
+        <div style={{ marginTop: 6 }}>
+          <ErrorMessage message={searchError} onRetry={handleSearch} />
+        </div>
       )}
     </div>
   );

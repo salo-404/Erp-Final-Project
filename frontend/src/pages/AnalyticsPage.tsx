@@ -93,6 +93,20 @@ export function AnalyticsPage() {
     (performanceView === "fast" && fastMovingFetch.loading) ||
     (performanceView === "slow" && slowMovingFetch.loading);
 
+  const performanceError =
+    (performanceView === "best" && bestSellingFetch.error) ||
+    (performanceView === "lowest" && lowestSellingFetch.error) ||
+    (performanceView === "fast" && fastMovingFetch.error) ||
+    (performanceView === "slow" && slowMovingFetch.error) ||
+    null;
+
+  const performanceRefetch = {
+    best: bestSellingFetch.refetch,
+    lowest: lowestSellingFetch.refetch,
+    fast: fastMovingFetch.refetch,
+    slow: slowMovingFetch.refetch,
+  }[performanceView];
+
   const warehouseDemand = useMemo(() => warehouseDemandFetch.data ?? [], [warehouseDemandFetch.data]);
   const suppliers = useMemo(() => supplierComparisonFetch.data ?? [], [supplierComparisonFetch.data]);
 
@@ -162,7 +176,7 @@ export function AnalyticsPage() {
                   borderRadius: 7,
                   border: "1px solid var(--color-border)",
                   background: range === r.value ? "var(--color-accent)" : "var(--color-surface-2)",
-                  color: range === r.value ? "#FFFFFF" : "var(--color-text-secondary)",
+                  color: range === r.value ? "var(--color-on-accent)" : "var(--color-text-secondary)",
                   cursor: "pointer",
                 }}
               >
@@ -181,6 +195,8 @@ export function AnalyticsPage() {
           <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 12 }}>Completed customer sales, all-time, all warehouses</div>
           {warehouseDemandFetch.loading ? (
             <LoadingSpinner />
+          ) : warehouseDemandFetch.error ? (
+            <ErrorMessage message={warehouseDemandFetch.error} onRetry={warehouseDemandFetch.refetch} />
           ) : (
             <WarehousePerformanceChart warehouses={warehouseDemand} compact />
           )}
@@ -193,6 +209,8 @@ export function AnalyticsPage() {
           </div>
           {supplierComparisonFetch.loading ? (
             <div style={{ padding: 16 }}><LoadingSpinner /></div>
+          ) : supplierComparisonFetch.error ? (
+            <div style={{ padding: 16 }}><ErrorMessage message={supplierComparisonFetch.error} onRetry={supplierComparisonFetch.refetch} /></div>
           ) : (
             <SupplierComparisonGrid suppliers={suppliers} compact />
           )}
@@ -236,7 +254,7 @@ export function AnalyticsPage() {
                   borderRadius: 6,
                   border: "1px solid var(--color-border)",
                   background: performanceView === v.value ? "var(--color-accent)" : "var(--color-surface-2)",
-                  color: performanceView === v.value ? "#FFFFFF" : "var(--color-text-secondary)",
+                  color: performanceView === v.value ? "var(--color-on-accent)" : "var(--color-text-secondary)",
                   cursor: "pointer",
                 }}
               >
@@ -250,6 +268,8 @@ export function AnalyticsPage() {
         ) : null}
         {performanceLoading ? (
           <div style={{ padding: 20 }}><LoadingSpinner /></div>
+        ) : performanceError ? (
+          <div style={{ padding: 20 }}><ErrorMessage message={performanceError} onRetry={performanceRefetch} /></div>
         ) : performanceRows.length === 0 ? (
           <div style={{ padding: "36px 20px", textAlign: "center", fontSize: 12.5, color: "var(--color-text-muted)" }}>No products match this view.</div>
         ) : (

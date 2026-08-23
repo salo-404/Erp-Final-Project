@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ComponentType, SVGProps } from "react";
 import { useAgent } from "../agent/AgentContext";
 import { resolvePageContext } from "../agent/pageContext";
@@ -15,6 +15,8 @@ import { AgentMark } from "../components/agent/AgentMark";
 import { ConversationView } from "../components/agent/ConversationView";
 import { Composer } from "../components/agent/Composer";
 import { QuickActionChips } from "../components/agent/QuickActionChips";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
+import { ErrorMessage } from "../components/ui/ErrorMessage";
 
 const WORKSPACE_CONTEXT = resolvePageContext("/ai-agent");
 
@@ -61,6 +63,7 @@ export function AiAgentPage() {
     isSending,
     streamingStatus,
     streamingText,
+    agentError,
     newConversation,
     selectConversation,
     deleteConversation,
@@ -68,6 +71,7 @@ export function AiAgentPage() {
   } = useAgent();
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
 
   const messages = activeConversation?.messages ?? [];
   const hasMessages = messages.length > 0 || streamingStatus !== null;
@@ -120,7 +124,7 @@ export function AiAgentPage() {
               padding: "9px 12px",
               borderRadius: 9,
               background: "var(--color-accent)",
-              color: "#FFFFFF",
+              color: "var(--color-on-accent)",
               border: "none",
               cursor: "pointer",
               boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)",
@@ -176,7 +180,7 @@ export function AiAgentPage() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        deleteConversation(conv.id);
+                        setConfirmingDeleteId(conv.id);
                       }}
                       aria-label="Delete conversation"
                       style={{
@@ -325,6 +329,11 @@ export function AiAgentPage() {
         </div>
 
         <div style={{ padding: 16, borderTop: "1px solid var(--color-border)" }}>
+          {agentError && (
+            <div style={{ marginBottom: 10 }}>
+              <ErrorMessage message={agentError} />
+            </div>
+          )}
           {hasMessages && (
             <div style={{ marginBottom: 10 }}>
               <QuickActionChips actions={WORKSPACE_CONTEXT.quickActions} onSelect={handleSend} disabled={isSending} />
@@ -333,6 +342,20 @@ export function AiAgentPage() {
           <Composer onSend={handleSend} disabled={isSending} placeholder="Ask the Nexora assistant anything..." large />
         </div>
       </div>
+
+      {confirmingDeleteId && (
+        <ConfirmDialog
+          title="Delete Conversation"
+          message="Delete this conversation? This cannot be undone."
+          confirmLabel="Delete"
+          danger
+          onCancel={() => setConfirmingDeleteId(null)}
+          onConfirm={async () => {
+            deleteConversation(confirmingDeleteId);
+            setConfirmingDeleteId(null);
+          }}
+        />
+      )}
     </div>
   );
 }

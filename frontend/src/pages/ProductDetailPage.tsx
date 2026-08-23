@@ -169,6 +169,8 @@ export function ProductDetailPage() {
           <div style={heading}>Supplier & Reorder Info</div>
           {bestSupplierFetch.loading || supplierDetailFetch.loading ? (
             <LoadingSpinner label="Loading supplier info..." />
+          ) : bestSupplierFetch.error ? (
+            <ErrorMessage message={bestSupplierFetch.error} onRetry={bestSupplierFetch.refetch} />
           ) : !bestSupplierFetch.data ? (
             <p style={{ fontSize: 12.5, color: "var(--color-text-muted)" }}>No purchase history for this product yet.</p>
           ) : (
@@ -182,12 +184,16 @@ export function ProductDetailPage() {
                 View supplier &amp; orders →
               </Link>
               <div style={{ borderTop: "1px solid var(--color-border)", paddingTop: 14, fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
-                {supplierDetailFetch.data?.leadTimeDays != null ? (
+                {supplierDetailFetch.error ? (
+                  <>Lead time unavailable ({supplierDetailFetch.error}). </>
+                ) : supplierDetailFetch.data?.leadTimeDays != null ? (
                   <>Lead time: {supplierDetailFetch.data.leadTimeDays} days. </>
                 ) : (
                   <>Lead time not on record. </>
                 )}
-                {recommendation ? (
+                {restockFetch.error ? (
+                  <>Restock recommendation unavailable ({restockFetch.error}).</>
+                ) : recommendation ? (
                   <>
                     Suggested reorder: {recommendation.recommendedQuantity} units for {recommendationWarehouseName ?? `warehouse #${recommendation.warehouseId}`}.
                   </>

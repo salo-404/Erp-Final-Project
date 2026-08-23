@@ -17,7 +17,7 @@ function UserBubble({ message, compact }: { message: AgentMessage; compact?: boo
         style={{
           maxWidth: compact ? "82%" : "70%",
           background: "var(--color-accent)",
-          color: "#FFFFFF",
+          color: "var(--color-on-accent)",
           borderRadius: "14px 14px 3px 14px",
           padding: compact ? "8px 12px" : "10px 14px",
           fontSize: compact ? 12.5 : 13.5,

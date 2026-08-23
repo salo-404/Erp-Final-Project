@@ -278,7 +278,7 @@ export function InventoryPage() {
             <button
               type="button"
               onClick={() => setAddingProduct(true)}
-              style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, padding: "8px 14px", borderRadius: 7, background: "var(--color-accent)", color: "#FFFFFF", border: "none", cursor: "pointer" }}
+              style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, padding: "8px 14px", borderRadius: 7, background: "var(--color-accent)", color: "var(--color-on-accent)", border: "none", cursor: "pointer" }}
             >
               <PlusIcon className="h-[14px] w-[14px]" />
               Add Product

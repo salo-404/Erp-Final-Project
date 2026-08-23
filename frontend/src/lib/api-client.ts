@@ -7,7 +7,7 @@ export class ApiError extends Error {
 
   constructor(body: ApiErrorBody, statusCode: number) {
     const details = Array.isArray(body.message) ? body.message : [body.message];
-    super(details.join(" "));
+    super(details.join("; "));
     this.name = "ApiError";
     this.statusCode = statusCode;
     this.details = details;
@@ -15,6 +15,14 @@ export class ApiError extends Error {
 }
 
 const TOKEN_STORAGE_KEY = "nexora.accessToken";
+
+// Fired when an authenticated request (one that actually sent a bearer
+// token) comes back 401 — i.e. the session itself is no longer valid, not a
+// login attempt with bad credentials (which sends no token at all).
+// AuthContext listens for this to log out and redirect, since this module
+// can't import AuthContext directly (auth.api.ts imports apiRequest from
+// here, so that would be circular).
+export const SESSION_EXPIRED_EVENT = "nexora:session-expired";
 
 export function getStoredToken(): string | null {
   return localStorage.getItem(TOKEN_STORAGE_KEY);
@@ -44,10 +52,12 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
   }
+  let sentToken = false;
   if (auth) {
     const token = getStoredToken();
     if (token) {
       headers["Authorization"] = `Bearer ${token}`;
+      sentToken = true;
     }
   }
 
@@ -64,6 +74,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const payload = await response.json().catch(() => null);
 
   if (!response.ok) {
+    if (response.status === 401 && sentToken) {
+      window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    }
     throw new ApiError(
       (payload as ApiErrorBody) ?? { statusCode: response.status, message: response.statusText, error: "Error" },
       response.status,

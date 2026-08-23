@@ -209,7 +209,7 @@ export function ControlTowerPage() {
                 borderRadius: 7,
                 border: "1px solid var(--color-border)",
                 background: categoryFilter === f.value ? "var(--color-accent)" : "var(--color-surface)",
-                color: categoryFilter === f.value ? "#FFFFFF" : "var(--color-text-secondary)",
+                color: categoryFilter === f.value ? "var(--color-on-accent)" : "var(--color-text-secondary)",
                 cursor: "pointer",
               }}
             >
@@ -265,7 +265,7 @@ export function ControlTowerPage() {
                       <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 14, lineHeight: 1.5, maxWidth: 640 }}>{alert.message}</div>
                       {action && (
                         <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                          <div onClick={action.onClick} style={{ fontSize: 12.5, fontWeight: 600, padding: "8px 14px", borderRadius: 6, background: "var(--color-accent)", color: "#FFFFFF", cursor: "pointer" }}>
+                          <div onClick={action.onClick} style={{ fontSize: 12.5, fontWeight: 600, padding: "8px 14px", borderRadius: 6, background: "var(--color-accent)", color: "var(--color-on-accent)", cursor: "pointer" }}>
                             {action.label}
                           </div>
                         </div>

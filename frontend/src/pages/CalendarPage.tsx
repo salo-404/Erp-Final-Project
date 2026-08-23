@@ -163,7 +163,7 @@ export function CalendarPage() {
                   borderRadius: 8,
                   border: "1px solid var(--color-border)",
                   background: filter === f.value ? "var(--color-accent)" : "var(--color-surface)",
-                  color: filter === f.value ? "#FFFFFF" : "var(--color-text-secondary)",
+                  color: filter === f.value ? "var(--color-on-accent)" : "var(--color-text-secondary)",
                   cursor: "pointer",
                 }}
               >
@@ -191,7 +191,7 @@ export function CalendarPage() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
         {[
           { label: "Today", count: counts.today, color: "var(--color-warning)", bg: "rgba(244,196,48,0.16)" },
-          { label: "Upcoming", count: counts.upcoming, color: "var(--color-accent)", bg: "rgba(109,63,217,0.14)" },
+          { label: "Upcoming", count: counts.upcoming, color: "var(--color-accent)", bg: "var(--color-accent-tint)" },
           { label: "Overdue", count: counts.overdue, color: "var(--color-danger)", bg: "rgba(239,68,68,0.14)" },
           { label: "Total Scheduled", count: counts.total, color: "var(--color-text-secondary)", bg: "var(--color-surface-2)" },
         ].map((s) => (

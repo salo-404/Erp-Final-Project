@@ -170,11 +170,24 @@ export function DocumentReviewPage() {
     }
   }
 
-  if (pendingFetch.loading && urlId === null) {
+  if ((pendingFetch.loading || warehousesFetch.loading) && urlId === null) {
     return (
       <div className="flex h-full items-center justify-center">
         <LoadingSpinner label="Loading document reviews..." />
       </div>
+    );
+  }
+
+  const listPageError = pendingFetch.error || warehousesFetch.error;
+  if (urlId === null && listPageError) {
+    return (
+      <ErrorMessage
+        message={listPageError}
+        onRetry={() => {
+          pendingFetch.refetch();
+          warehousesFetch.refetch();
+        }}
+      />
     );
   }
 
@@ -216,7 +229,7 @@ export function DocumentReviewPage() {
                 borderRadius: 8,
                 border: "1px solid var(--color-border)",
                 background: p.id === urlId ? "var(--color-accent)" : "var(--color-surface)",
-                color: p.id === urlId ? "#FFFFFF" : "var(--color-text-secondary)",
+                color: p.id === urlId ? "var(--color-on-accent)" : "var(--color-text-secondary)",
                 cursor: "pointer",
                 whiteSpace: "nowrap",
               }}
@@ -375,7 +388,7 @@ export function DocumentReviewPage() {
                     <button type="button" onClick={() => setRejecting(true)} style={{ padding: "10px 18px", borderRadius: 8, border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-danger)", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
                       Reject
                     </button>
-                    <button type="button" onClick={handleApprove} disabled={submitting} style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: "var(--color-accent)", color: "#FFFFFF", fontSize: 12.5, fontWeight: 600, cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.7 : 1 }}>
+                    <button type="button" onClick={handleApprove} disabled={submitting} style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: "var(--color-accent)", color: "var(--color-on-accent)", fontSize: 12.5, fontWeight: 600, cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.7 : 1 }}>
                       {submitting ? "Syncing..." : "Approve & Sync"}
                     </button>
                   </div>

@@ -134,7 +134,7 @@ function Recommendation({ block }: { block: Extract<AgentContentBlock, { type: "
                   borderRadius: 7,
                   textDecoration: "none",
                   background: action.kind === "primary" ? "var(--color-accent)" : "transparent",
-                  color: action.kind === "primary" ? "#FFFFFF" : "var(--color-text-secondary)",
+                  color: action.kind === "primary" ? "var(--color-on-accent)" : "var(--color-text-secondary)",
                   border: action.kind === "primary" ? "none" : "1px solid var(--color-border)",
                 }}
               >

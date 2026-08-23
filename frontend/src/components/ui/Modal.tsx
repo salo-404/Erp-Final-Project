@@ -29,8 +29,11 @@ export function Modal({ title, onClose, children }: ModalProps) {
           borderRadius: 12,
           width: "100%",
           maxWidth: 440,
+          maxHeight: "calc(100vh - 32px)",
           margin: 16,
           boxShadow: "0 20px 60px rgba(0,0,0,0.35)",
+          display: "flex",
+          flexDirection: "column",
         }}
       >
         <div
@@ -40,6 +43,7 @@ export function Modal({ title, onClose, children }: ModalProps) {
             justifyContent: "space-between",
             padding: "16px 20px",
             borderBottom: "1px solid var(--color-border)",
+            flexShrink: 0,
           }}
         >
           <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 16 }}>{title}</div>
@@ -58,7 +62,7 @@ export function Modal({ title, onClose, children }: ModalProps) {
             <CloseIcon className="h-[18px] w-[18px]" />
           </button>
         </div>
-        <div style={{ padding: 20 }}>{children}</div>
+        <div style={{ padding: 20, overflowY: "auto" }}>{children}</div>
       </div>
     </div>
   );
