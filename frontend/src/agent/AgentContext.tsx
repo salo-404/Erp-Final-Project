@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
-import { mockAgentService } from "./agentService";
+import { agentCoreService } from "./agentCoreService";
+import { useAuth } from "../auth/AuthContext";
 import type { AgentConversation, AgentMessage, AgentPageContext, AgentStreamStatus } from "../types/agent";
 
 const CONVERSATIONS_KEY = "nexora.agent.conversations";
@@ -57,6 +58,7 @@ interface AgentContextValue {
 const AgentContext = createContext<AgentContextValue | null>(null);
 
 export function AgentProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [conversations, setConversations] = useState<AgentConversation[]>(readConversations);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(readActiveId);
   const [isSending, setIsSending] = useState(false);
@@ -106,7 +108,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const sendMessage = useCallback(
     async (text: string, pageContext: AgentPageContext) => {
       const trimmed = text.trim();
-      if (!trimmed || isSending) return;
+      if (!trimmed || isSending || !user) return;
 
       const generation = ++streamGeneration.current;
       const now = new Date().toISOString();
@@ -139,10 +141,11 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       setAgentError(null);
 
       try {
-        for await (const event of mockAgentService.sendMessage({
+        for await (const event of agentCoreService.sendMessage({
           conversation: snap,
           userMessage: trimmed,
           pageContext,
+          userId: user.id,
         })) {
           if (streamGeneration.current !== generation) return;
 
@@ -178,7 +181,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [activeConversationId, conversations, isSending, setActive],
+    [activeConversationId, conversations, isSending, setActive, user],
   );
 
   const activeConversation = useMemo(

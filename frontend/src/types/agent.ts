@@ -1,6 +1,6 @@
 // Types for the AI Agent feature. Kept independent of any specific transport
-// so the mock service (agent/agentService.ts) can later be swapped for a
-// real streaming API without touching these shapes or any UI component.
+// so the real streaming implementation (agent/agentCoreService.ts) can be
+// swapped without touching these shapes or any UI component.
 
 export type AgentRole = "user" | "agent";
 
@@ -70,6 +70,8 @@ export interface AgentSendMessageParams {
   conversation: AgentConversation;
   userMessage: string;
   pageContext: AgentPageContext;
+  /** Authenticated ERP user id — namespaces the AgentCore runtime session ID so the backend can enforce session ownership. */
+  userId: number;
 }
 
 export interface AgentService {
