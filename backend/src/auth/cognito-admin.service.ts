@@ -29,6 +29,16 @@ export class CognitoAdminService {
         UserAttributes: [
           { Name: 'email', Value: input.email },
           { Name: 'name', Value: input.name },
+          // Required for the pool's email alias (AliasAttributes) to
+          // resolve at all - an unverified email attribute is never
+          // registered as a usable sign-in alias, so without this every
+          // admin-created user would be permanently unable to sign in
+          // with their email (only the opaque erp-<uuid> Cognito
+          // username would work). There's no self-service email
+          // verification flow in this app, and the admin is trusted to
+          // enter a real employee's address, so pre-verifying is correct
+          // here rather than leaving it false.
+          { Name: 'email_verified', Value: 'true' },
         ],
       }),
     );

@@ -127,6 +127,7 @@ describe('CognitoAdminService', () => {
         UserAttributes: [
           { Name: 'email', Value: 'invited@example.com' },
           { Name: 'name', Value: 'Invited User' },
+          { Name: 'email_verified', Value: 'true' },
         ],
       }),
     );
