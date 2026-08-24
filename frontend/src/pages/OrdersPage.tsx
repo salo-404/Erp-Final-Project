@@ -15,6 +15,7 @@ import { transactionStatusBadge } from "../lib/transactionStatus";
 import { categorySalesBreakdown } from "../lib/orderStats";
 import { StatusDonut } from "../components/ui/StatusDonut";
 import { CreateCustomerOrderModal } from "../components/orders/CreateCustomerOrderModal";
+import { InvoicePreviewModal } from "../components/inventoryTransactions/InvoicePreviewModal";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import { ErrorMessage } from "../components/ui/ErrorMessage";
@@ -34,6 +35,7 @@ export function OrdersPage() {
 
   const [creatingOrder, setCreatingOrder] = useState(false);
   const [confirmingTxAction, setConfirmingTxAction] = useState<{ id: number; action: "complete" | "cancel" } | null>(null);
+  const [previewingInvoiceId, setPreviewingInvoiceId] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -227,7 +229,20 @@ export function OrdersPage() {
                   const badge = transactionStatusBadge(o.status, o.expectedDate);
                   return (
                     <tr key={o.id}>
-                      <td style={{ padding: "10px 16px", fontSize: 12.5, fontFamily: "var(--font-mono)", fontWeight: 600, borderTop: "1px solid var(--color-border)" }}>TXN-{o.id}</td>
+                      <td style={{ padding: "10px 16px", fontSize: 12.5, fontFamily: "var(--font-mono)", fontWeight: 600, borderTop: "1px solid var(--color-border)" }}>
+                        {o.documentKey ? (
+                          <button
+                            type="button"
+                            title="View invoice"
+                            onClick={() => setPreviewingInvoiceId(o.id)}
+                            style={{ padding: 0, border: "none", background: "none", font: "inherit", fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--color-accent)", textDecoration: "underline", cursor: "pointer" }}
+                          >
+                            TXN-{o.id}
+                          </button>
+                        ) : (
+                          `TXN-${o.id}`
+                        )}
+                      </td>
                       <td style={{ padding: "10px 16px", fontSize: 13, fontWeight: 500, borderTop: "1px solid var(--color-border)" }}>{o.partyName ?? "—"}</td>
                       <td style={{ padding: "10px 16px", fontSize: 13, color: "var(--color-text-secondary)", borderTop: "1px solid var(--color-border)" }}>
                         {o.sourceWarehouseId ? warehouseNames.get(o.sourceWarehouseId) ?? `#${o.sourceWarehouseId}` : "—"}
@@ -291,6 +306,9 @@ export function OrdersPage() {
           onCancel={() => setConfirmingTxAction(null)}
           onConfirm={handleConfirmTxAction}
         />
+      )}
+      {previewingInvoiceId !== null && (
+        <InvoicePreviewModal transactionId={previewingInvoiceId} onClose={() => setPreviewingInvoiceId(null)} />
       )}
     </div>
   );

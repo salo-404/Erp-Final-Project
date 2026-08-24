@@ -17,6 +17,7 @@ import { uploadDocument } from "../lib/documentReview.api";
 import { transactionStatusBadge } from "../lib/transactionStatus";
 import { SupplierFormModal } from "../components/suppliers/SupplierFormModal";
 import { CreatePurchaseOrderModal } from "../components/suppliers/CreatePurchaseOrderModal";
+import { InvoicePreviewModal } from "../components/inventoryTransactions/InvoicePreviewModal";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import { ErrorMessage } from "../components/ui/ErrorMessage";
@@ -59,6 +60,7 @@ export function SuppliersPage() {
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<number | null>(null);
   const [confirmingTxAction, setConfirmingTxAction] = useState<{ id: number; action: "complete" | "cancel" } | null>(null);
+  const [previewingInvoiceId, setPreviewingInvoiceId] = useState<number | null>(null);
   const [creatingPO, setCreatingPO] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -365,7 +367,20 @@ export function SuppliersPage() {
                   const badge = transactionStatusBadge(tx.status, tx.expectedDate);
                   return (
                     <tr key={tx.id}>
-                      <td style={{ padding: "10px 16px", fontSize: 12.5, fontFamily: "var(--font-mono)", borderTop: "1px solid var(--color-border)" }}>TXN-{tx.id}</td>
+                      <td style={{ padding: "10px 16px", fontSize: 12.5, fontFamily: "var(--font-mono)", borderTop: "1px solid var(--color-border)" }}>
+                        {tx.documentKey ? (
+                          <button
+                            type="button"
+                            title="View invoice"
+                            onClick={() => setPreviewingInvoiceId(tx.id)}
+                            style={{ padding: 0, border: "none", background: "none", font: "inherit", fontFamily: "var(--font-mono)", color: "var(--color-accent)", textDecoration: "underline", cursor: "pointer" }}
+                          >
+                            TXN-{tx.id}
+                          </button>
+                        ) : (
+                          `TXN-${tx.id}`
+                        )}
+                      </td>
                       <td style={{ padding: "10px 16px", fontSize: 13, borderTop: "1px solid var(--color-border)" }}>
                         {tx.supplierId != null ? supplierNames.get(tx.supplierId) ?? `#${tx.supplierId}` : "—"}
                       </td>
@@ -444,6 +459,9 @@ export function SuppliersPage() {
           onClose={() => setCreatingPO(false)}
           onSubmit={handleCreatePO}
         />
+      )}
+      {previewingInvoiceId !== null && (
+        <InvoicePreviewModal transactionId={previewingInvoiceId} onClose={() => setPreviewingInvoiceId(null)} />
       )}
     </div>
   );

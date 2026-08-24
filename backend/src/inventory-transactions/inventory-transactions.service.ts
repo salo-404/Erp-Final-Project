@@ -38,6 +38,7 @@ export interface CreateIncomingInput {
   destinationWarehouseId: number;
   expectedDate?: Date;
   documentUrl?: string;
+  documentKey?: string;
   items: TransactionItemInput[];
 }
 
@@ -49,6 +50,7 @@ export interface CreateOutgoingInput {
   deliveryAddress?: string;
   expectedDate?: Date;
   documentUrl?: string;
+  documentKey?: string;
   items: TransactionItemInput[];
 }
 
@@ -57,6 +59,7 @@ export interface CreateTransferInput {
   destinationWarehouseId: number;
   expectedDate?: Date;
   documentUrl?: string;
+  documentKey?: string;
   items: TransactionItemInput[];
 }
 
@@ -1028,6 +1031,7 @@ export class InventoryTransactionsService {
         destinationWarehouseId: input.destinationWarehouseId,
         expectedDate: input.expectedDate,
         documentUrl: input.documentUrl,
+        documentKey: input.documentKey,
         items: {
           create: input.items.map((item) => ({
             productId: item.productId,
@@ -1058,6 +1062,7 @@ export class InventoryTransactionsService {
         deliveryAddress: input.deliveryAddress,
         expectedDate: input.expectedDate,
         documentUrl: input.documentUrl,
+        documentKey: input.documentKey,
         items: {
           create: input.items.map((item) => ({
             productId: item.productId,
@@ -1100,6 +1105,7 @@ export class InventoryTransactionsService {
         destinationWarehouseId: input.destinationWarehouseId,
         expectedDate: input.expectedDate,
         documentUrl: input.documentUrl,
+        documentKey: input.documentKey,
         items: {
           create: input.items.map((item) => ({
             productId: item.productId,
