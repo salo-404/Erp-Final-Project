@@ -2,9 +2,13 @@
 
 Distinct from narration/control_tower.py's batch alert narration in two
 ways: it's triggered on demand for ONE specific supplier, not looped over a
-batch, and it narrates the backend's existing supplier stats functions
-(getSupplierStats() / rankSuppliers() / getTransactionHistory(), mocked
-today in tools/mocks/supplier_mock_data.py) rather than alert evidence.
+batch, and it narrates the backend's real supplier stats endpoints
+(SuppliersService.getTransactionHistory() via GET /suppliers/:id/transactions,
+SupplierIntelligenceService.getSupplierStats() via
+GET /supplier-intelligence/:id/stats) rather than alert evidence. These are
+the same real endpoints agents/insights_agent/tools.py's compare_suppliers()
+already draws supplier quality data from - reused here via get_backend_client(),
+not duplicated.
 
 Same lightweight, non-agent pattern as control_tower.py: a single direct
 call to the strands Model via .structured_output() - no Strands Agent, no
@@ -20,8 +24,9 @@ import json
 from pydantic import BaseModel, Field
 from strands.types.content import Message
 
+from backend_client import NotFound, get_backend_client
 from config.settings import settings
-from tools.mocks.supplier_mock_data import get_mock_supplier_stats
+from tools.mocks.supplier_mock_data import SupplierNotFoundError
 from tools.schemas.supplier_schema import SupplierNarration, SupplierStats
 
 SUPPLIER_NARRATION_SYSTEM_PROMPT = """\
@@ -73,8 +78,74 @@ class _NarrationFields(BaseModel):
     )
 
 
+async def _fetch_supplier_stats(supplier_id: int) -> SupplierStats:
+    """Compose two real backend endpoints into this AI layer's SupplierStats shape.
+
+    GET /suppliers/{id}/transactions (SuppliersService.getTransactionHistory())
+    is both the existence check and the source of name/leadTimeDays/
+    product_categories in one call - it 404s for an unknown id via its own
+    findOne() call (see suppliers.service.ts), so a real NotFound here means
+    a real unknown supplier, not a system failure.
+
+    GET /supplier-intelligence/{id}/stats (SupplierIntelligenceService.
+    getSupplierStats()) supplies the transaction-derived quality metrics -
+    the same real endpoint agents/insights_agent/tools.py's
+    compare_suppliers() already relies on for supplier data, just scoped to
+    ALL of this supplier's history instead of one product's.
+
+    Raises:
+        SupplierNotFoundError: If supplier_id doesn't match a real supplier.
+    """
+    client = get_backend_client()
+
+    try:
+        history = await client.get(f"/suppliers/{supplier_id}/transactions")
+    except NotFound as exc:
+        raise SupplierNotFoundError(
+            f"No supplier found for supplier_id={supplier_id!r}. "
+            "Do not guess or fabricate a supplier_id - it must come from a "
+            "real supplier record or from the user."
+        ) from exc
+
+    stats = await client.get(f"/supplier-intelligence/{supplier_id}/stats")
+
+    product_categories = sorted(
+        {
+            item["product"]["category"]
+            for transaction in history.get("transactions", [])
+            for item in transaction.get("items", [])
+            if item.get("product", {}).get("category")
+        }
+    )
+
+    # The real backend computes exactly one on-time-delivery metric for a
+    # supplier outside a specific product's ranking - reliability_score
+    # mirrors it rather than inventing a second, independently-derived
+    # number the backend doesn't produce.
+    on_time_delivery_rate = stats["onTimeDeliveryRate"]
+
+    return SupplierStats.model_validate(
+        {
+            "supplier_id": supplier_id,
+            "name": history["name"],
+            "unit_cost": stats["averagePrice"],
+            "lead_time_days": history["leadTimeDays"],
+            "reliability_score": on_time_delivery_rate,
+            # No real backend endpoint computes a composite quality score
+            # for a supplier outside a specific product's ranking (see
+            # SupplierIntelligenceService.rankSuppliers(), which is
+            # product-scoped) - left unset rather than fabricated or
+            # averaged across products, which would be new scoring logic.
+            "overall_score": None,
+            "recent_transaction_count": stats["totalTransactions"],
+            "on_time_delivery_rate": on_time_delivery_rate,
+            "product_categories": product_categories,
+        }
+    )
+
+
 def narrate_supplier(supplier_id: str) -> SupplierNarration:
-    """Narrate one supplier's stats into plain language, on demand.
+    """Narrate one supplier's real stats into plain language, on demand.
 
     Makes ONE direct, non-tool-calling call to the strands Model returned
     by settings.build_model("narration") - the same model tier as the
@@ -100,7 +171,7 @@ def narrate_supplier(supplier_id: str) -> SupplierNarration:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"supplier_id must be a numeric ID, got {supplier_id!r}") from exc
 
-    stats: SupplierStats = get_mock_supplier_stats(numeric_id)
+    stats: SupplierStats = asyncio.run(_fetch_supplier_stats(numeric_id))
 
     model = settings.build_model("narration")
 

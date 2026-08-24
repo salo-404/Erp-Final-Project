@@ -9,9 +9,9 @@ Usage (from the ai-agent/ directory):
 
     python scripts/run_supplier_analysis.py <supplier_id>
 
-Example (known mock suppliers - see tools/mocks/supplier_mock_data.py):
-
-    python scripts/run_supplier_analysis.py 5
+supplier_id must be a real Supplier database ID - narrate_supplier() reads
+live data via GET /suppliers/:id/transactions and
+GET /supplier-intelligence/:id/stats, not mock data.
 """
 
 from __future__ import annotations

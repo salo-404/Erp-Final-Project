@@ -744,7 +744,7 @@ def test_get_stockout_risk_live_against_real_backend() -> None:
 
     assert isinstance(result["items"], list)
     for item in result["items"]:
-        assert {"productId", "warehouseId", "riskLevel", "predictedStockoutDate", "averageDailyConsumption"} <= item.keys()
+        assert {"productId", "warehouseId", "riskLevel", "predictedStockoutDate", "avgDailyConsumption"} <= item.keys()
         assert item["riskLevel"] in {"OK", "AT_RISK", "OUT_OF_STOCK"}
         assert "riskScore" not in item
 
@@ -1020,7 +1020,7 @@ def test_get_transfer_recommendations_live_against_real_backend() -> None:
 
     assert isinstance(result["recommendations"], list)
     for rec in result["recommendations"]:
-        assert {"productId", "sourceWarehouseId", "destinationWarehouseId", "quantity", "reason"} <= rec.keys()
+        assert {"productId", "fromWarehouseId", "toWarehouseId", "transferQuantity", "reason"} <= rec.keys()
         assert isinstance(rec["reason"], str) and rec["reason"]
 
 
