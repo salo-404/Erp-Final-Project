@@ -19,6 +19,32 @@ interface AvailabilityState {
 
 const IDLE_AVAILABILITY: AvailabilityState = { status: "idle", available: null };
 
+// The backend's error messages are precise for logs/debugging (raw product
+// and warehouse ids, e.g. "Insufficient available stock for product 641 in
+// warehouse 386 (available: 120, requested: 130)") but aren't meant for a
+// reviewer to read — the per-line "Available: N units" hint above already
+// shows which item and by how much, in plain terms. This maps known backend
+// failure shapes to a clean, non-technical sentence for the submit-time
+// banner; anything unrecognized falls back to a generic message rather than
+// leaking raw internals.
+function friendlyOrderError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.statusCode === 409) {
+      return "One or more items exceed the available stock for the selected warehouse. Please adjust the quantities and try again.";
+    }
+    if (err.statusCode === 404) {
+      return "One of the selected items could not be found. Please refresh the page and try again.";
+    }
+    if (err.statusCode === 400) {
+      return "One or more items couldn't be processed. Please review the order details and try again.";
+    }
+  }
+  if (err instanceof Error && !(err instanceof ApiError)) {
+    return err.message;
+  }
+  return "Failed to create customer order. Please try again.";
+}
+
 interface CreateCustomerOrderModalProps {
   warehouses: Warehouse[];
   products: Product[];
@@ -69,7 +95,7 @@ export function CreateCustomerOrderModal({ warehouses, products, onClose, onSubm
       });
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create customer order.");
+      setError(friendlyOrderError(err));
     } finally {
       setSubmitting(false);
     }
