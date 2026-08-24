@@ -1,7 +1,9 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Modal } from "../ui/Modal";
 import { ErrorMessage } from "../ui/ErrorMessage";
 import { PlusIcon, TrashIcon } from "../ui/icons";
+import { ApiError } from "../../lib/api-client";
+import { getProductAvailability } from "../../lib/warehouses.api";
 import type { CreateOutgoingInput, Product, Warehouse } from "../../types/domain";
 
 interface ItemRow {
@@ -9,6 +11,13 @@ interface ItemRow {
   quantity: string;
   price: string;
 }
+
+interface AvailabilityState {
+  status: "idle" | "loading" | "ready" | "error";
+  available: number | null;
+}
+
+const IDLE_AVAILABILITY: AvailabilityState = { status: "idle", available: null };
 
 interface CreateCustomerOrderModalProps {
   warehouses: Warehouse[];
@@ -93,23 +102,15 @@ export function CreateCustomerOrderModal({ warehouses, products, onClose, onSubm
           <label style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8, display: "block" }}>Items</label>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {items.map((row, i) => (
-              <div key={i} style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 0.8fr auto", gap: 8, alignItems: "center" }}>
-                <select value={row.productId} onChange={(e) => updateItem(i, { productId: e.target.value })} style={inputStyle}>
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-                <input type="number" min={1} placeholder="Qty" value={row.quantity} onChange={(e) => updateItem(i, { quantity: e.target.value })} style={inputStyle} />
-                <input type="number" min={0} step="0.01" placeholder="Price (optional)" value={row.price} onChange={(e) => updateItem(i, { price: e.target.value })} style={inputStyle} />
-                <button
-                  type="button"
-                  onClick={() => setItems((rows) => rows.filter((_, idx) => idx !== i))}
-                  disabled={items.length === 1}
-                  style={{ width: 30, height: 30, borderRadius: 6, border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-danger)", cursor: items.length === 1 ? "default" : "pointer", opacity: items.length === 1 ? 0.4 : 1, display: "flex", alignItems: "center", justifyContent: "center" }}
-                >
-                  <TrashIcon className="h-[13px] w-[13px]" />
-                </button>
-              </div>
+              <OrderItemRow
+                key={i}
+                row={row}
+                products={products}
+                warehouseId={sourceWarehouseId ? Number(sourceWarehouseId) : null}
+                onChange={(patch) => updateItem(i, patch)}
+                onRemove={() => setItems((rows) => rows.filter((_, idx) => idx !== i))}
+                removeDisabled={items.length === 1}
+              />
             ))}
           </div>
           <button
@@ -142,5 +143,93 @@ export function CreateCustomerOrderModal({ warehouses, products, onClose, onSubm
         </div>
       </form>
     </Modal>
+  );
+}
+
+interface OrderItemRowProps {
+  row: ItemRow;
+  products: Product[];
+  warehouseId: number | null;
+  onChange: (patch: Partial<ItemRow>) => void;
+  onRemove: () => void;
+  removeDisabled: boolean;
+}
+
+// Live "Available: N units" hint per line — purely informational (the
+// backend's reserve() call remains the sole authority on whether an order
+// actually goes through, see handleSubmit's 409 fallback). Refetches
+// whenever the row's product or the order's warehouse changes.
+function OrderItemRow({ row, products, warehouseId, onChange, onRemove, removeDisabled }: OrderItemRowProps) {
+  const productId = row.productId ? Number(row.productId) : null;
+  const [availability, setAvailability] = useState<AvailabilityState>(IDLE_AVAILABILITY);
+
+  useEffect(() => {
+    if (!productId || !warehouseId) {
+      setAvailability(IDLE_AVAILABILITY);
+      return;
+    }
+    let cancelled = false;
+    setAvailability({ status: "loading", available: null });
+    getProductAvailability(warehouseId, productId)
+      .then((res) => {
+        if (!cancelled) setAvailability({ status: "ready", available: res.available });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        // No WarehouseInventory row for this product/warehouse pair means
+        // it's never been stocked there — that's genuinely zero available,
+        // not a failed lookup.
+        if (err instanceof ApiError && err.statusCode === 404) {
+          setAvailability({ status: "ready", available: 0 });
+        } else {
+          setAvailability({ status: "error", available: null });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [productId, warehouseId]);
+
+  const requestedQuantity = row.quantity ? Number(row.quantity) : null;
+  const isInsufficient =
+    availability.status === "ready" &&
+    availability.available !== null &&
+    requestedQuantity !== null &&
+    requestedQuantity > availability.available;
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 0.8fr auto", gap: 8, alignItems: "center" }}>
+        <select value={row.productId} onChange={(e) => onChange({ productId: e.target.value })} style={inputStyle}>
+          {products.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+        <input type="number" min={1} placeholder="Qty" value={row.quantity} onChange={(e) => onChange({ quantity: e.target.value })} style={inputStyle} />
+        <input type="number" min={0} step="0.01" placeholder="Price (optional)" value={row.price} onChange={(e) => onChange({ price: e.target.value })} style={inputStyle} />
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={removeDisabled}
+          style={{ width: 30, height: 30, borderRadius: 6, border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-danger)", cursor: removeDisabled ? "default" : "pointer", opacity: removeDisabled ? 0.4 : 1, display: "flex", alignItems: "center", justifyContent: "center" }}
+        >
+          <TrashIcon className="h-[13px] w-[13px]" />
+        </button>
+      </div>
+      {productId && warehouseId && availability.status !== "idle" && (
+        <div style={{ fontSize: 11.5, marginTop: 4, paddingLeft: 2, color: isInsufficient ? "var(--color-danger)" : "var(--color-text-muted)", fontWeight: isInsufficient ? 600 : 400 }}>
+          {availability.status === "loading" && "Checking availability..."}
+          {availability.status === "error" && "Could not check availability."}
+          {availability.status === "ready" && !isInsufficient && `Available: ${availability.available} units`}
+          {availability.status === "ready" && isInsufficient && (
+            <>
+              Available: {availability.available} units · Requested: {requestedQuantity}
+              <br />
+              Insufficient available stock
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
