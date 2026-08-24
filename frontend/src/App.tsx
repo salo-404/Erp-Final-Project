@@ -13,6 +13,7 @@ import { InventoryPage } from "./pages/InventoryPage";
 import { ProductDetailPage } from "./pages/ProductDetailPage";
 import { SuppliersPage } from "./pages/SuppliersPage";
 import { OrdersPage } from "./pages/OrdersPage";
+import { TransfersPage } from "./pages/TransfersPage";
 import { DocumentReviewPage } from "./pages/DocumentReviewPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { CalendarPage } from "./pages/CalendarPage";
@@ -36,6 +37,7 @@ function App() {
                       <Route path="/" element={<ControlTowerPage />} />
                       <Route path="/warehouses" element={<WarehousesPage />} />
                       <Route path="/inventory" element={<InventoryPage />} />
+                      <Route path="/transfers" element={<TransfersPage />} />
                       <Route path="/products/:id" element={<ProductDetailPage />} />
                       <Route path="/suppliers" element={<SuppliersPage />} />
                       <Route path="/orders" element={<OrdersPage />} />

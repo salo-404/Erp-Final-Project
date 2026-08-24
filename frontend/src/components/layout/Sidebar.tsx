@@ -12,6 +12,7 @@ import {
   SettingsIcon,
   SuppliersIcon,
   TransactionsIcon,
+  TransferIcon,
   WarehouseIcon,
 } from "../ui/icons";
 import type { ComponentType, SVGProps } from "react";
@@ -40,6 +41,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/warehouses", label: "Warehouses", Icon: WarehouseIcon },
       { to: "/inventory", label: "Inventory", Icon: InventoryIcon },
+      { to: "/transfers", label: "Transfers", Icon: TransferIcon },
       { to: "/calendar", label: "Calendar", Icon: CalendarIcon },
     ],
   },
