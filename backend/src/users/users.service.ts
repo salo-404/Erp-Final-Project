@@ -10,6 +10,7 @@ import { CognitoAdminService } from '../auth/cognito-admin.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { EmailService } from '../integrations/email/email.service';
 
 const safeUserSelect = {
   id: true,
@@ -25,15 +26,20 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cognito: CognitoAdminService,
+    private readonly email: EmailService,
   ) {}
 
   async create(dto: CreateUserDto) {
     const duplicate = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (duplicate) throw new ConflictException('A user with this email already exists');
 
-    let identity: { cognitoSub: string; cognitoUsername: string };
+    let provisioned: {
+      cognitoSub: string;
+      cognitoUsername: string;
+      temporaryPassword: string;
+    };
     try {
-      identity = await this.cognito.createUser({ name: dto.name, email: dto.email });
+      provisioned = await this.cognito.createUser({ name: dto.name, email: dto.email });
     } catch (error) {
       const name = error instanceof Error ? error.name : '';
       if (name === 'UsernameExistsException' || name === 'AliasExistsException') {
@@ -45,10 +51,12 @@ export class UsersService {
       throw error;
     }
 
+    let createdUser: Prisma.UserGetPayload<{ select: typeof safeUserSelect }>;
     try {
-      return await this.prisma.user.create({
+      createdUser = await this.prisma.user.create({
         data: {
-          ...identity,
+          cognitoSub: provisioned.cognitoSub,
+          cognitoUsername: provisioned.cognitoUsername,
           name: dto.name,
           email: dto.email,
           role: dto.role,
@@ -57,7 +65,7 @@ export class UsersService {
       });
     } catch (error) {
       try {
-        await this.cognito.deleteUser(identity.cognitoUsername);
+        await this.cognito.deleteUser(provisioned.cognitoUsername);
       } catch {
         throw new InternalServerErrorException(
           'User provisioning failed and Cognito cleanup requires intervention',
@@ -67,6 +75,47 @@ export class UsersService {
         throw new ConflictException('A user with this email already exists');
       throw error;
     }
+
+    try {
+      await this.email.sendEmail({
+        to: dto.email,
+        subject: 'Welcome to Nexora / Mini ERP',
+        body: [
+          'Welcome to Nexora / Mini ERP',
+          '',
+          'Your account has been created.',
+          '',
+          `Email: ${dto.email}`,
+          `Temporary password: ${provisioned.temporaryPassword}`,
+          '',
+          'Sign in using these credentials.',
+          'On your first login, you will be required to choose a new password.',
+        ].join('\n'),
+      });
+    } catch {
+      let cleanupFailed = false;
+      try {
+        await this.cognito.deleteUser(provisioned.cognitoUsername);
+      } catch {
+        cleanupFailed = true;
+      }
+      try {
+        await this.prisma.user.delete({ where: { id: createdUser.id } });
+      } catch {
+        cleanupFailed = true;
+      }
+
+      if (cleanupFailed) {
+        throw new InternalServerErrorException(
+          'Onboarding email failed and user cleanup requires intervention',
+        );
+      }
+      throw new InternalServerErrorException(
+        'Onboarding email could not be sent; user creation was rolled back',
+      );
+    }
+
+    return createdUser;
   }
 
   findAll() {

@@ -3,6 +3,8 @@ import { useAuth } from "../auth/AuthContext";
 import { useTheme } from "../theme/ThemeContext";
 import { useDisplayName } from "../settings/DisplayNameContext";
 import { CheckIcon, MoonIcon, SunIcon } from "../components/ui/icons";
+import { createUser } from "../lib/users.api";
+import type { UserRole } from "../types/api";
 
 const cardStyle: React.CSSProperties = { background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 12, padding: 22 };
 const labelStyle: React.CSSProperties = { fontSize: 11.5, color: "var(--color-text-secondary)", fontWeight: 600, marginBottom: 6, display: "block" };
@@ -25,11 +27,39 @@ export function SettingsPage() {
 
   const [nameDraft, setNameDraft] = useState(displayName);
   const [saved, setSaved] = useState(false);
+  const [newUserName, setNewUserName] = useState("");
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserRole, setNewUserRole] = useState<UserRole>("EMPLOYEE");
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [createUserError, setCreateUserError] = useState<string | null>(null);
+  const [createUserSuccess, setCreateUserSuccess] = useState<string | null>(null);
 
   function handleSaveName() {
     setDisplayName(nameDraft);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  }
+
+  async function handleCreateUser(event: React.FormEvent) {
+    event.preventDefault();
+    setCreateUserError(null);
+    setCreateUserSuccess(null);
+    setCreatingUser(true);
+    try {
+      const created = await createUser({
+        name: newUserName.trim(),
+        email: newUserEmail.trim(),
+        role: newUserRole,
+      });
+      setCreateUserSuccess(`Account created and invitation sent to ${created.email}.`);
+      setNewUserName("");
+      setNewUserEmail("");
+      setNewUserRole("EMPLOYEE");
+    } catch (error) {
+      setCreateUserError(error instanceof Error ? error.message : "Unable to create the user.");
+    } finally {
+      setCreatingUser(false);
+    }
   }
 
   return (
@@ -85,6 +115,45 @@ export function SettingsPage() {
           </p>
         </div>
       </div>
+
+      {user?.role === "ADMIN" && (
+        <div style={cardStyle}>
+          <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 15, marginBottom: 4 }}>
+            Create user
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--color-text-muted)", marginBottom: 16 }}>
+            The user will receive a temporary password by email and must replace it on first sign-in.
+          </div>
+          <form onSubmit={handleCreateUser} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14 }}>
+              <div>
+                <label style={labelStyle}>Name</label>
+                <input required value={newUserName} onChange={(event) => setNewUserName(event.target.value)} style={inputStyle} />
+              </div>
+              <div>
+                <label style={labelStyle}>Email</label>
+                <input required type="email" value={newUserEmail} onChange={(event) => setNewUserEmail(event.target.value)} style={inputStyle} />
+              </div>
+              <div>
+                <label style={labelStyle}>Role</label>
+                <select value={newUserRole} onChange={(event) => setNewUserRole(event.target.value as UserRole)} style={inputStyle}>
+                  <option value="EMPLOYEE">Employee</option>
+                  <option value="ADMIN">Admin</option>
+                </select>
+              </div>
+            </div>
+            <button
+              type="submit"
+              disabled={creatingUser || !newUserName.trim() || !newUserEmail.trim()}
+              style={{ alignSelf: "flex-start", background: "var(--color-accent)", color: "var(--color-on-accent)", padding: "10px 16px", borderRadius: 8, border: "none", fontWeight: 600, cursor: creatingUser ? "default" : "pointer", opacity: creatingUser ? 0.7 : 1 }}
+            >
+              {creatingUser ? "Creating..." : "Create user and send invitation"}
+            </button>
+            {createUserError && <div style={{ fontSize: 12.5, color: "var(--color-danger)" }}>{createUserError}</div>}
+            {createUserSuccess && <div style={{ fontSize: 12.5, color: "var(--color-success, #10B981)" }}>{createUserSuccess}</div>}
+          </form>
+        </div>
+      )}
 
       {/* Appearance */}
       <div style={cardStyle}>

@@ -139,6 +139,12 @@ describe('Cognito authentication and database roles (e2e)', () => {
       .expect(201);
     await request(app.getHttpServer())
       .post('/users')
+      .set('Authorization', 'Bearer employee-sub')
+      .send(payload)
+      .expect(403);
+    await request(app.getHttpServer()).post('/users').send(payload).expect(401);
+    await request(app.getHttpServer())
+      .post('/users')
       .set('Authorization', 'Bearer admin-sub')
       .send({ ...payload, password: 'retired-password' })
       .expect(400);

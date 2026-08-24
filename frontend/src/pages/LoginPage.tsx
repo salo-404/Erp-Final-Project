@@ -3,6 +3,7 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import loginHero from "../assets/login-hero.png";
+import { getNewPasswordValidationError } from "../auth/passwordPolicy";
 
 // Layout, copy, and styling below are ported 1:1 from the Nexora Claude
 // Design export (frontend/claude_plan handoff) — see the "isLoginPage"
@@ -75,6 +76,11 @@ export function LoginPage() {
   async function handleSetNewPassword(event: FormEvent) {
     event.preventDefault();
     if (!newPasswordChallenge) return;
+    const validationError = getNewPasswordValidationError(newPassword);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
     if (newPassword !== newPasswordConfirm) {
       setError("Passwords don't match.");
       return;

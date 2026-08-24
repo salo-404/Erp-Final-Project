@@ -5,7 +5,7 @@ import {
   AdminUpdateUserAttributesCommand,
   CognitoIdentityProviderClient,
 } from '@aws-sdk/client-cognito-identity-provider';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 @Injectable()
 export class CognitoAdminService {
@@ -21,11 +21,15 @@ export class CognitoAdminService {
 
   async createUser(input: { name: string; email: string }) {
     const username = `erp-${randomUUID()}`;
+    const temporaryPassword = this.generateTemporaryPassword();
     const result = await this.client.send(
       new AdminCreateUserCommand({
         UserPoolId: this.userPoolId,
         Username: username,
-        DesiredDeliveryMediums: ['EMAIL'],
+        TemporaryPassword: temporaryPassword,
+        // The application sends the onboarding message through its existing
+        // Gmail integration so delivery failure is part of provisioning.
+        MessageAction: 'SUPPRESS',
         UserAttributes: [
           { Name: 'email', Value: input.email },
           { Name: 'name', Value: input.name },
@@ -50,7 +54,14 @@ export class CognitoAdminService {
       await this.deleteUser(cognitoUsername);
       throw new Error('Cognito did not return a user subject');
     }
-    return { cognitoSub, cognitoUsername };
+    return { cognitoSub, cognitoUsername, temporaryPassword };
+  }
+
+  private generateTemporaryPassword(): string {
+    // Includes every standard Cognito character class and 144 bits of
+    // cryptographic randomness. Cognito remains authoritative and rejects it
+    // if the deployed pool has a stricter policy.
+    return `Aa1!${randomBytes(18).toString('base64url')}`;
   }
 
   async updateUser(username: string, input: { name?: string; email?: string }) {
