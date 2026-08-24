@@ -95,11 +95,6 @@ export function CalendarPage() {
     await createShipmentReminder(transactionId);
   }
 
-  async function handleSendTest() {
-    if (!user) throw new Error("Not signed in.");
-    await sendEmail(user.email, "Nexora ERP — Test Email", "This is a real test email sent from the Nexora ERP Calendar page.");
-  }
-
   async function handleSendBucketReminder(bucket: "today" | "upcoming" | "overdue") {
     if (!user) throw new Error("Not signed in.");
     const bucketDeliveries = filterDeliveries(allDeliveries, bucket);
@@ -217,9 +212,7 @@ export function CalendarPage() {
 
       <EmailNotificationsCard
         counts={counts}
-        userEmail={user?.email ?? ""}
         connectionStatus={connectionStatus}
-        onSendTest={handleSendTest}
         onSendBucketReminder={handleSendBucketReminder}
       />
     </div>

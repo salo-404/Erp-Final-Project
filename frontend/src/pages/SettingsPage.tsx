@@ -224,13 +224,6 @@ export function SettingsPage() {
           )}
         </div>
       </div>
-
-      {/* Honest scope note */}
-      <div style={{ ...cardStyle, background: "var(--color-surface-2)" }}>
-        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
-          Notifications, AI preferences, and general ERP preferences (default warehouse, currency, timezone, etc.) aren't implemented here — there's no backend storage for them yet, and this page only implements settings that are genuinely real: local display name, theme, and accent color.
-        </div>
-      </div>
     </div>
   );
 }

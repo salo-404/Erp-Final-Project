@@ -7,9 +7,7 @@ export type ConnectionStatus = "checking" | "connected" | "disconnected";
 
 interface EmailNotificationsCardProps {
   counts: DeliveryCounts;
-  userEmail: string;
   connectionStatus: ConnectionStatus;
-  onSendTest: () => Promise<void>;
   onSendBucketReminder: (bucket: "today" | "upcoming" | "overdue") => Promise<void>;
 }
 
@@ -19,23 +17,9 @@ const BUCKET_CARDS: { bucket: "today" | "upcoming" | "overdue"; tag: string; tag
   { bucket: "overdue", tag: "OVERDUE", tagBg: "rgba(239,68,68,0.14)", tagColor: "var(--color-danger)", label: "Deliveries past due" },
 ];
 
-export function EmailNotificationsCard({ counts, userEmail, connectionStatus, onSendTest, onSendBucketReminder }: EmailNotificationsCardProps) {
-  const [testState, setTestState] = useState<"idle" | "sending" | "done" | "error">("idle");
-  const [testError, setTestError] = useState<string | null>(null);
+export function EmailNotificationsCard({ counts, connectionStatus, onSendBucketReminder }: EmailNotificationsCardProps) {
   const [bucketState, setBucketState] = useState<Record<string, "idle" | "sending" | "done" | "error">>({});
   const [bucketError, setBucketError] = useState<Record<string, string>>({});
-
-  async function handleSendTest() {
-    setTestState("sending");
-    setTestError(null);
-    try {
-      await onSendTest();
-      setTestState("done");
-    } catch (err) {
-      setTestState("error");
-      setTestError(err instanceof Error ? err.message : "Failed to send test email.");
-    }
-  }
 
   async function handleBucket(bucket: "today" | "upcoming" | "overdue") {
     setBucketState((s) => ({ ...s, [bucket]: "sending" }));
@@ -113,24 +97,6 @@ export function EmailNotificationsCard({ counts, userEmail, connectionStatus, on
             </div>
           );
         })}
-      </div>
-
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--color-border)", flexWrap: "wrap", gap: 10 }}>
-        <div style={{ fontSize: 11.5, color: "var(--color-text-muted)" }}>
-          {testState === "idle" && "No test email sent yet this session."}
-          {testState === "sending" && "Sending..."}
-          {testState === "done" && `Test email sent to ${userEmail}.`}
-          {testState === "error" && testError}
-        </div>
-        <button
-          type="button"
-          onClick={handleSendTest}
-          disabled={testState === "sending"}
-          style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, fontWeight: 600, padding: "9px 14px", borderRadius: 7, background: "var(--color-accent)", color: "var(--color-on-accent)", border: "none", cursor: testState === "sending" ? "default" : "pointer", opacity: testState === "sending" ? 0.7 : 1 }}
-        >
-          <MailIcon className="h-[13px] w-[13px]" />
-          Send Test Email
-        </button>
       </div>
     </div>
   );
