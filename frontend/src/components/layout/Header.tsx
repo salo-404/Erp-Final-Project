@@ -1,12 +1,14 @@
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { useTheme } from "../../theme/ThemeContext";
 import { useDisplayName } from "../../settings/DisplayNameContext";
-import { BellIcon, MoonIcon, SearchIcon, SunIcon } from "../ui/icons";
+import { BellIcon, MoonIcon, SunIcon } from "../ui/icons";
 
 export function Header() {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { displayName } = useDisplayName();
+  const navigate = useNavigate();
 
   return (
     <header className="flex h-16 flex-shrink-0 items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-surface)] px-6">
@@ -15,18 +17,10 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-3">
-        <div className="flex w-60 items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-          <SearchIcon className="h-[15px] w-[15px] flex-shrink-0 text-[var(--color-text-muted)]" />
-          <input
-            type="text"
-            placeholder="Search products, SKUs..."
-            className="w-full border-none bg-transparent text-sm text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-muted)]"
-          />
-        </div>
-
         <button
           type="button"
           aria-label="Notifications"
+          onClick={() => navigate("/")}
           className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
         >
           <BellIcon className="h-4 w-4" />
