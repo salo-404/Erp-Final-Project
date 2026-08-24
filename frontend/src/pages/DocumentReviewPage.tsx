@@ -12,13 +12,15 @@ import {
   resolveSupplier,
 } from "../lib/documentReview.api";
 import { listWarehouses } from "../lib/warehouses.api";
+import { listProducts } from "../lib/products.api";
 import { DocumentPreviewPane } from "../components/documentReview/DocumentPreviewPane";
 import { ResolveSearchInput } from "../components/documentReview/ResolveSearchInput";
 import { NewProductInput } from "../components/documentReview/NewProductInput";
 import { SampleDocumentsPanel } from "../components/documentReview/SampleDocumentsPanel";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import { ErrorMessage } from "../components/ui/ErrorMessage";
-import type { ApproveDocumentReviewInput, Warehouse } from "../types/domain";
+import { Modal } from "../components/ui/Modal";
+import type { ApproveDocumentReviewInput, Product, Warehouse } from "../types/domain";
 
 interface ItemRow {
   extractedName: string;
@@ -50,8 +52,17 @@ export function DocumentReviewPage() {
 
   const pendingFetch = useFetch(() => listPendingReviews(), []);
   const warehousesFetch = useFetch<Warehouse[]>(() => listWarehouses(), []);
+  const productsFetch = useFetch<Product[]>(() => listProducts(), []);
   const warehouses = useMemo(() => warehousesFetch.data ?? [], [warehousesFetch.data]);
   const pending = useMemo(() => pendingFetch.data ?? [], [pendingFetch.data]);
+  const existingCategories = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of productsFetch.data ?? []) {
+      const trimmed = p.category?.trim();
+      if (trimmed) set.add(trimmed);
+    }
+    return [...set].sort();
+  }, [productsFetch.data]);
 
   const urlId = idParam ? Number(idParam) : null;
 
@@ -378,6 +389,7 @@ export function DocumentReviewPage() {
                         {row.isNewProduct ? (
                           <NewProductInput
                             initialName={row.extractedName}
+                            categories={existingCategories}
                             onCreated={({ productId, name }) => updateItem(i, { productId, resolvedName: name })}
                           />
                         ) : (
@@ -411,8 +423,6 @@ export function DocumentReviewPage() {
                   </div>
                 </div>
 
-                {decisionError && <ErrorMessage message={decisionError} />}
-
                 {!isAdmin ? (
                   <p style={{ fontSize: 12, color: "var(--color-text-muted)", borderTop: "1px solid var(--color-border)", paddingTop: 16 }}>
                     Only an admin can approve or reject a review — you can still resolve items above to help prepare it.
@@ -444,6 +454,21 @@ export function DocumentReviewPage() {
             )}
           </div>
         </div>
+      )}
+
+      {decisionError && (
+        <Modal title="Couldn't complete this action" onClose={() => setDecisionError(null)}>
+          <ErrorMessage message={decisionError} />
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+            <button
+              type="button"
+              onClick={() => setDecisionError(null)}
+              style={{ padding: "9px 16px", borderRadius: 7, border: "none", background: "var(--color-accent)", color: "var(--color-on-accent)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+            >
+              OK
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );

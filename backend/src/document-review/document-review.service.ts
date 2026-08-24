@@ -31,6 +31,13 @@ import {
 export { ALLOWED_DOCUMENT_MIME_TYPES, MAX_DOCUMENT_SIZE_BYTES };
 export type { AllowedDocumentMimeType };
 
+/** resolveProduct()/resolveSupplier() drop anything scoring below this — noise, not a real suggestion. */
+const MIN_SUGGESTION_SCORE = 0.2;
+/** Cap on how many ranked suggestions resolveProduct()/resolveSupplier() return. */
+const MAX_SUGGESTIONS = 10;
+/** matchScore()'s ceiling when the query and candidate each name a different number (e.g. "22-inch" vs "24-inch"). */
+const MAX_SCORE_WITH_CONFLICTING_NUMBERS = 0.4;
+
 export interface UploadDocumentInput {
   filename: string;
   mimeType: string;
@@ -466,9 +473,15 @@ export class DocumentReviewService {
    * Read-only suggestion search for a candidate Product by name — never
    * persists anything and is never invoked as part of approve(); the
    * reviewer is the one who turns a suggestion into a confirmed productId.
-   * Matching is a simple case-insensitive substring heuristic (exact match
-   * scores 1, partial match scores lower) — not a real fuzzy-matching
-   * algorithm, since none exists in this codebase yet.
+   *
+   * Scores EVERY active product (never pre-filtered by a SQL substring
+   * match — that would silently exclude a real candidate whose name
+   * doesn't literally contain the typed query as a substring, e.g. an
+   * abbreviation or reordered words, before matchScore() ever got a
+   * chance to judge it). The catalog is confirmed small (single digits to
+   * low tens), so scoring every active row in memory is cheap. Results
+   * below MIN_SUGGESTION_SCORE are dropped as noise, and only the best
+   * MAX_SUGGESTIONS are returned.
    *
    * Only suggests ACTIVE products — resolving a review to an inactive
    * product would let approve() create a brand-new transaction for a
@@ -485,8 +498,7 @@ export class DocumentReviewService {
     }
     const client = tx ?? this.prisma;
     const candidates = await client.product.findMany({
-      where: { name: { contains: query, mode: 'insensitive' }, isActive: true },
-      take: 10,
+      where: { isActive: true },
     });
 
     return candidates
@@ -495,7 +507,9 @@ export class DocumentReviewService {
         name: product.name,
         score: this.matchScore(query, product.name),
       }))
-      .sort((a, b) => b.score - a.score);
+      .filter((match) => match.score >= MIN_SUGGESTION_SCORE)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_SUGGESTIONS);
   }
 
   /**
@@ -511,8 +525,7 @@ export class DocumentReviewService {
     }
     const client = tx ?? this.prisma;
     const candidates = await client.supplier.findMany({
-      where: { name: { contains: query, mode: 'insensitive' }, isActive: true },
-      take: 10,
+      where: { isActive: true },
     });
 
     return candidates
@@ -521,7 +534,9 @@ export class DocumentReviewService {
         name: supplier.name,
         score: this.matchScore(query, supplier.name),
       }))
-      .sort((a, b) => b.score - a.score);
+      .filter((match) => match.score >= MIN_SUGGESTION_SCORE)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_SUGGESTIONS);
   }
 
   private async approveWithClient(
@@ -656,19 +671,62 @@ export class DocumentReviewService {
     }
   }
 
+  /**
+   * Token-overlap similarity (Jaccard over whitespace/punctuation-split
+   * words), with a substring bonus and — critically — a hard cap when the
+   * query and candidate each contain a number and those numbers disagree
+   * (e.g. "22-inch Monitor" vs "24-inch Monitor"). Plain word overlap
+   * can't tell those apart — both share "inch"/"monitor" — but a
+   * conflicting spec number is a strong, cheap signal that these are
+   * different products, not a match with adjectives in common.
+   */
   private matchScore(query: string, candidateName: string): number {
     const normalizedQuery = query.trim().toLowerCase();
     const normalizedCandidate = candidateName.trim().toLowerCase();
     if (normalizedQuery === normalizedCandidate) {
       return 1;
     }
-    if (
+
+    const queryTokens = this.tokenize(normalizedQuery);
+    const candidateTokens = this.tokenize(normalizedCandidate);
+    const tokenScore = this.jaccardScore(queryTokens, candidateTokens);
+    const substringBonus =
       normalizedCandidate.includes(normalizedQuery) ||
       normalizedQuery.includes(normalizedCandidate)
-    ) {
-      return 0.75;
+        ? 0.25
+        : 0;
+    const score = Math.min(1, tokenScore + substringBonus);
+
+    const queryNumbers = this.extractNumbers(normalizedQuery);
+    const candidateNumbers = this.extractNumbers(normalizedCandidate);
+    const hasConflictingNumbers =
+      queryNumbers.length > 0 &&
+      candidateNumbers.length > 0 &&
+      !queryNumbers.some((n) => candidateNumbers.includes(n));
+
+    return hasConflictingNumbers
+      ? Math.min(score, MAX_SCORE_WITH_CONFLICTING_NUMBERS)
+      : score;
+  }
+
+  private tokenize(text: string): Set<string> {
+    return new Set(text.split(/[^a-z0-9]+/).filter(Boolean));
+  }
+
+  private extractNumbers(text: string): string[] {
+    return text.match(/\d+(\.\d+)?/g) ?? [];
+  }
+
+  private jaccardScore(a: Set<string>, b: Set<string>): number {
+    if (a.size === 0 || b.size === 0) {
+      return 0;
     }
-    return 0.5;
+    let shared = 0;
+    for (const token of a) {
+      if (b.has(token)) shared += 1;
+    }
+    const union = new Set([...a, ...b]).size;
+    return shared / union;
   }
 
   private async throwForNonPendingReview(

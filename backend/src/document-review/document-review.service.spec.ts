@@ -744,15 +744,41 @@ describe('DocumentReviewService.resolveProduct', () => {
     const result = await service.resolveProduct('Widget');
 
     expect(prismaRoot.product.findMany).toHaveBeenCalledWith({
-      where: {
-        name: { contains: 'Widget', mode: 'insensitive' },
-        isActive: true,
-      },
-      take: 10,
+      where: { isActive: true },
     });
     expect(result[0]).toEqual({ productId: 2, name: 'widget', score: 1 });
     expect(result[1].productId).toBe(1);
     expect(result[1].score).toBeLessThan(1);
+  });
+
+  it('scores a conflicting spec number well below a real match, even with heavy word overlap', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([
+      { id: 1, name: '22-inch Monitor' },
+      { id: 2, name: '24-inch Monitor' },
+    ]);
+
+    const result = await service.resolveProduct('24-inch Monitor');
+
+    const exact = result.find((r) => r.productId === 2)!;
+    const conflicting = result.find((r) => r.productId === 1)!;
+    expect(exact.score).toBe(1);
+    expect(conflicting.score).toBeLessThanOrEqual(0.4);
+    expect(conflicting.score).toBeLessThan(exact.score);
+  });
+
+  it('drops candidates below the minimum suggestion score as noise', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([
+      { id: 1, name: 'Laptop Pro 14' },
+      { id: 2, name: 'Office Chair' },
+    ]);
+
+    const result = await service.resolveProduct('Laptop Pro 14');
+
+    expect(result.map((r) => r.productId)).toEqual([1]);
   });
 
   it('rejects an empty query without touching the database', async () => {
@@ -788,11 +814,7 @@ describe('DocumentReviewService.resolveSupplier', () => {
     const result = await service.resolveSupplier('Acme Supplies');
 
     expect(prismaRoot.supplier.findMany).toHaveBeenCalledWith({
-      where: {
-        name: { contains: 'Acme Supplies', mode: 'insensitive' },
-        isActive: true,
-      },
-      take: 10,
+      where: { isActive: true },
     });
     expect(result[0]).toEqual({
       supplierId: 2,

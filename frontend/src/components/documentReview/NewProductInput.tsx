@@ -5,6 +5,7 @@ import { CheckIcon } from "../ui/icons";
 
 interface NewProductInputProps {
   initialName: string;
+  categories: string[];
   onCreated: (product: { productId: number; name: string }) => void;
 }
 
@@ -19,24 +20,40 @@ const inputStyle: React.CSSProperties = {
   outline: "none",
 };
 
+const NEW_CATEGORY_VALUE = "__new_category__";
+
 // Backs the "new product" checkbox in Document Review — lets a reviewer add
 // a product the extracted invoice line doesn't match to anything in the
 // system yet, without leaving the review to go create it on the Inventory
 // page first. Creates immediately on submit (mirrors ResolveSearchInput's
 // resolve-on-click), then reports the new productId back so the row counts
 // as resolved for approval, same as picking an existing match would.
-export function NewProductInput({ initialName, onCreated }: NewProductInputProps) {
+export function NewProductInput({ initialName, categories, onCreated }: NewProductInputProps) {
   const [name, setName] = useState(initialName);
+  const [category, setCategory] = useState("");
+  const [addingNewCategory, setAddingNewCategory] = useState(false);
+  const [newCategory, setNewCategory] = useState("");
   const [creating, setCreating] = useState(false);
   const [createdName, setCreatedName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  function handleCategorySelect(value: string) {
+    if (value === NEW_CATEGORY_VALUE) {
+      setAddingNewCategory(true);
+      setCategory("");
+    } else {
+      setAddingNewCategory(false);
+      setCategory(value);
+    }
+  }
 
   async function handleCreate() {
     if (!name.trim()) return;
     setCreating(true);
     setError(null);
     try {
-      const product = await createProduct({ name: name.trim() });
+      const resolvedCategory = (addingNewCategory ? newCategory : category).trim();
+      const product = await createProduct({ name: name.trim(), category: resolvedCategory || undefined });
       setCreatedName(product.name);
       onCreated({ productId: product.id, name: product.name });
     } catch (err) {
@@ -88,6 +105,30 @@ export function NewProductInput({ initialName, onCreated }: NewProductInputProps
             "Add product"
           )}
         </button>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+        <select
+          value={addingNewCategory ? NEW_CATEGORY_VALUE : category}
+          onChange={(e) => handleCategorySelect(e.target.value)}
+          disabled={!!createdName}
+          style={{ ...inputStyle, flex: 1 }}
+        >
+          <option value="">No category</option>
+          {categories.map((c) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+          <option value={NEW_CATEGORY_VALUE}>+ Add new category...</option>
+        </select>
+        {addingNewCategory && (
+          <input
+            value={newCategory}
+            onChange={(e) => setNewCategory(e.target.value)}
+            placeholder="New category name"
+            disabled={!!createdName}
+            style={inputStyle}
+            autoFocus
+          />
+        )}
       </div>
       {createdName && (
         <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 5, fontSize: 11.5, color: "var(--color-success)", fontWeight: 600 }}>

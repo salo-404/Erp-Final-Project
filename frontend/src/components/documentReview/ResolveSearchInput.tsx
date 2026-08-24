@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { SearchIcon, CheckIcon } from "../ui/icons";
 import { ErrorMessage } from "../ui/ErrorMessage";
 import type { MatchSuggestion } from "../../types/domain";
@@ -30,16 +30,33 @@ export function ResolveSearchInput({ initialQuery, search, resolvedLabel, onReso
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
+  // Guards against an earlier, slower search resolving AFTER a newer one
+  // and clobbering its results — without this, editing the query and
+  // re-searching quickly could intermittently show/keep stale results, or
+  // make a fresh search look like it "didn't take" (see requestId pattern
+  // in lib/useFetch.ts — this component predates that hook and never had
+  // the same guard).
+  const requestIdRef = useRef(0);
+
   async function handleSearch() {
-    if (!query.trim()) return;
+    const trimmed = query.trim();
+    const requestId = ++requestIdRef.current;
+    if (!trimmed) {
+      setResults(null);
+      setSearchError(null);
+      return;
+    }
     setSearching(true);
     setSearchError(null);
     try {
-      setResults(await search(query));
+      const found = await search(trimmed);
+      if (requestId !== requestIdRef.current) return;
+      setResults(found);
     } catch (err) {
+      if (requestId !== requestIdRef.current) return;
       setSearchError(err instanceof Error ? err.message : "Search failed.");
     } finally {
-      setSearching(false);
+      if (requestId === requestIdRef.current) setSearching(false);
     }
   }
 
@@ -79,6 +96,7 @@ export function ResolveSearchInput({ initialQuery, search, resolvedLabel, onReso
               onClick={() => {
                 onResolve(r);
                 setResults(null);
+                setQuery(r.name);
               }}
               style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "6px 9px", borderRadius: 6, border: "1px solid var(--color-border)", background: "var(--color-surface-2)", color: "var(--color-text)", cursor: "pointer", textAlign: "left" }}
             >
