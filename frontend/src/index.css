@@ -103,6 +103,19 @@ body {
   box-shadow: 0 6px 18px rgba(0,0,0,0.12);
 }
 
+.agent-conversation-actions {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.agent-conversation-row:hover .agent-conversation-actions,
+.agent-conversation-row:focus-within .agent-conversation-actions {
+  opacity: 1;
+}
+.agent-conversation-actions button:hover {
+  background: var(--color-surface) !important;
+  color: var(--color-text) !important;
+}
+
 @keyframes agent-float-bob {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-7px); }

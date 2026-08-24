@@ -4,6 +4,7 @@ import { useAgent } from "../agent/AgentContext";
 import { resolvePageContext } from "../agent/pageContext";
 import {
   ControlTowerIcon,
+  EditIcon,
   InventoryIcon,
   PlusIcon,
   SuppliersIcon,
@@ -67,11 +68,36 @@ export function AiAgentPage() {
     newConversation,
     selectConversation,
     deleteConversation,
+    renameConversation,
     sendMessage,
   } = useAgent();
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  useEffect(() => {
+    if (renamingId) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [renamingId]);
+
+  function startRenaming(id: string, currentTitle: string) {
+    setRenamingId(id);
+    setRenameValue(currentTitle);
+  }
+
+  function commitRename() {
+    if (renamingId) renameConversation(renamingId, renameValue);
+    setRenamingId(null);
+  }
+
+  function cancelRenaming() {
+    setRenamingId(null);
+  }
 
   const messages = activeConversation?.messages ?? [];
   const hasMessages = messages.length > 0 || streamingStatus !== null;
@@ -146,59 +172,118 @@ export function AiAgentPage() {
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
               {conversations.map((conv) => {
                 const isActive = conv.id === activeConversationId;
+                const isRenaming = renamingId === conv.id;
                 return (
                   <div
                     key={conv.id}
-                    onClick={() => selectConversation(conv.id)}
+                    onClick={() => !isRenaming && selectConversation(conv.id)}
+                    className={isRenaming ? undefined : "agent-conversation-row"}
                     style={{
                       display: "flex",
                       alignItems: "center",
                       gap: 6,
                       padding: "8px 10px",
                       borderRadius: 8,
-                      cursor: "pointer",
+                      cursor: isRenaming ? "default" : "pointer",
                       background: isActive ? "var(--color-surface-2)" : "transparent",
                       borderLeft: isActive ? "2px solid var(--color-accent)" : "2px solid transparent",
                     }}
                   >
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 12.5,
-                          fontWeight: isActive ? 600 : 500,
-                          color: "var(--color-text)",
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {conv.title}
-                      </div>
+                      {isRenaming ? (
+                        <input
+                          ref={renameInputRef}
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          onBlur={commitRename}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              commitRename();
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              cancelRenaming();
+                            }
+                          }}
+                          style={{
+                            width: "100%",
+                            fontSize: 12.5,
+                            fontWeight: 600,
+                            color: "var(--color-text)",
+                            background: "var(--color-surface)",
+                            border: "1px solid var(--color-accent)",
+                            borderRadius: 5,
+                            padding: "2px 5px",
+                            outline: "none",
+                          }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            fontSize: 12.5,
+                            fontWeight: isActive ? 600 : 500,
+                            color: "var(--color-text)",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {conv.title}
+                        </div>
+                      )}
                       <div style={{ fontSize: 10.5, color: "var(--color-text-muted)", marginTop: 1 }}>{timeAgo(conv.updatedAt)}</div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setConfirmingDeleteId(conv.id);
-                      }}
-                      aria-label="Delete conversation"
-                      style={{
-                        flexShrink: 0,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        width: 22,
-                        height: 22,
-                        borderRadius: 6,
-                        border: "none",
-                        background: "transparent",
-                        color: "var(--color-text-muted)",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <TrashIcon className="h-3 w-3" />
-                    </button>
+                    {!isRenaming && (
+                      <div className="agent-conversation-actions" style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startRenaming(conv.id, conv.title);
+                          }}
+                          aria-label="Rename conversation"
+                          title="Rename"
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            width: 22,
+                            height: 22,
+                            borderRadius: 6,
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--color-text-muted)",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <EditIcon className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmingDeleteId(conv.id);
+                          }}
+                          aria-label="Delete conversation"
+                          title="Delete"
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            width: 22,
+                            height: 22,
+                            borderRadius: 6,
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--color-text-muted)",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <TrashIcon className="h-3 w-3" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}

@@ -52,6 +52,7 @@ interface AgentContextValue {
   newConversation: () => void;
   selectConversation: (id: string) => void;
   deleteConversation: (id: string) => void;
+  renameConversation: (id: string, title: string) => void;
   sendMessage: (text: string, pageContext: AgentPageContext) => Promise<void>;
 }
 
@@ -100,6 +101,16 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  const renameConversation = useCallback((id: string, title: string) => {
+    const nextTitle = makeTitle(title);
+    if (!nextTitle) return;
+    setConversations((prev) => {
+      const next = prev.map((c) => (c.id === id ? { ...c, title: nextTitle } : c));
+      writeConversations(next);
+      return next;
+    });
+  }, []);
 
   const openFloating = useCallback(() => setIsFloatingOpen(true), []);
   const closeFloating = useCallback(() => setIsFloatingOpen(false), []);
@@ -205,6 +216,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       newConversation,
       selectConversation,
       deleteConversation,
+      renameConversation,
       sendMessage,
     }),
     [
@@ -222,6 +234,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       newConversation,
       selectConversation,
       deleteConversation,
+      renameConversation,
       sendMessage,
     ],
   );
