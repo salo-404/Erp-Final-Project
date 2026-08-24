@@ -220,11 +220,12 @@ export class AnalyticsService {
   }
 
   // 5. Completed sales grouped by day.
-  async getSalesTrends() {
+  async getSalesTrends(warehouseId?: number) {
     const transactions = await this.prisma.inventoryTransaction.findMany({
       where: {
         type: 'OUTGOING',
         status: 'COMPLETED',
+        ...(warehouseId !== undefined && { sourceWarehouseId: warehouseId }),
       },
       include: {
         items: true,
@@ -272,11 +273,14 @@ export class AnalyticsService {
   }
 
   // 6. Completed incoming purchases grouped by day.
-  async getPurchaseTrends() {
+  async getPurchaseTrends(warehouseId?: number) {
     const transactions = await this.prisma.inventoryTransaction.findMany({
       where: {
         type: 'INCOMING',
         status: 'COMPLETED',
+        ...(warehouseId !== undefined && {
+          destinationWarehouseId: warehouseId,
+        }),
       },
       include: {
         items: true,

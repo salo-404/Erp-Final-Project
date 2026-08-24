@@ -60,14 +60,20 @@ export class AnalyticsController {
 
   // 5. Sales trends
   @Get('sales-trends')
-  getSalesTrends() {
-    return this.analyticsService.getSalesTrends();
+  getSalesTrends(
+    @Query('warehouseId', new ParseIntPipe({ optional: true }))
+    warehouseId?: number,
+  ) {
+    return this.analyticsService.getSalesTrends(warehouseId);
   }
 
   // 6. Purchase trends
   @Get('purchase-trends')
-  getPurchaseTrends() {
-    return this.analyticsService.getPurchaseTrends();
+  getPurchaseTrends(
+    @Query('warehouseId', new ParseIntPipe({ optional: true }))
+    warehouseId?: number,
+  ) {
+    return this.analyticsService.getPurchaseTrends(warehouseId);
   }
 
   // 7. Stock history for a product

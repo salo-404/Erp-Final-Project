@@ -46,10 +46,6 @@ function money(n: number): string {
 export function AnalyticsPage() {
   const warehousesFetch = useFetch<Warehouse[]>(() => listWarehouses(), []);
   const productsFetch = useFetch<Product[]>(() => listProducts(), []);
-  const salesFetch = useFetch(() => getSalesTrends(), []);
-  const purchasesFetch = useFetch(() => getPurchaseTrends(), []);
-  const warehouseDemandFetch = useFetch(() => getWarehouseDemand(), []);
-  const supplierComparisonFetch = useFetch(() => getSupplierComparison(), []);
 
   const [warehouseFilter, setWarehouseFilter] = useState<number | "all">("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
@@ -57,6 +53,11 @@ export function AnalyticsPage() {
   const [performanceView, setPerformanceView] = useState<ProductPerformanceView>("best");
 
   const warehouseId = warehouseFilter === "all" ? undefined : warehouseFilter;
+  const salesFetch = useFetch(() => getSalesTrends(warehouseId), [warehouseId]);
+  const purchasesFetch = useFetch(() => getPurchaseTrends(warehouseId), [warehouseId]);
+  const warehouseDemandFetch = useFetch(() => getWarehouseDemand(warehouseId), [warehouseId]);
+  const supplierComparisonFetch = useFetch(() => getSupplierComparison(), []);
+
   const bestSellingFetch = useFetch(() => getTopSellingProducts(warehouseId), [warehouseId]);
   const lowestSellingFetch = useFetch(() => getLowestSellingProducts(warehouseId), [warehouseId]);
   const fastMovingFetch = useFetch(() => getFastMovingProducts(30, warehouseId), [warehouseId]);
@@ -136,6 +137,17 @@ export function AnalyticsPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Page-level warehouse filter — scopes KPIs, the revenue chart, warehouse performance, and the product table below */}
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <span style={{ fontSize: 11.5, color: "var(--color-text-muted)" }}>Warehouse:</span>
+        <select value={warehouseFilter === "all" ? "all" : String(warehouseFilter)} onChange={(e) => setWarehouseFilter(e.target.value === "all" ? "all" : Number(e.target.value))} style={inputStyle}>
+          <option value="all">All warehouses</option>
+          {warehouses.map((w) => (
+            <option key={w.id} value={w.id}>{w.name}</option>
+          ))}
+        </select>
+      </div>
+
       {/* KPIs */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
         <div style={{ ...kpiCardStyle, borderLeft: "3px solid var(--color-success)" }}>
@@ -161,7 +173,9 @@ export function AnalyticsPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
           <div>
             <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 15, marginBottom: 2 }}>Revenue vs Purchase Cost</div>
-            <div style={{ fontSize: 11.5, color: "var(--color-text-muted)" }}>Completed transactions, by day</div>
+            <div style={{ fontSize: 11.5, color: "var(--color-text-muted)" }}>
+              Completed transactions, by day{warehouseId !== undefined ? ` — ${warehouses.find((w) => w.id === warehouseId)?.name ?? ""}` : ""}
+            </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {RANGE_OPTIONS.map((r) => (
@@ -192,7 +206,9 @@ export function AnalyticsPage() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14 }}>
         <div style={compactCardStyle}>
           <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 13.5, marginBottom: 2 }}>Warehouse Performance</div>
-          <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 12 }}>Completed customer sales, all-time, all warehouses</div>
+          <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 12 }}>
+            Completed customer sales, all-time{warehouseId !== undefined ? ` — ${warehouses.find((w) => w.id === warehouseId)?.name ?? ""}` : ", all warehouses"}
+          </div>
           {warehouseDemandFetch.loading ? (
             <LoadingSpinner />
           ) : warehouseDemandFetch.error ? (
@@ -217,15 +233,9 @@ export function AnalyticsPage() {
         </div>
       </div>
 
-      {/* Product Performance filters */}
+      {/* Product Performance filters — warehouse comes from the page-level filter above */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <span style={{ fontSize: 11.5, color: "var(--color-text-muted)" }}>Product Performance filters:</span>
-        <select value={warehouseFilter === "all" ? "all" : String(warehouseFilter)} onChange={(e) => setWarehouseFilter(e.target.value === "all" ? "all" : Number(e.target.value))} style={inputStyle}>
-          <option value="all">All warehouses</option>
-          {warehouses.map((w) => (
-            <option key={w.id} value={w.id}>{w.name}</option>
-          ))}
-        </select>
+        <span style={{ fontSize: 11.5, color: "var(--color-text-muted)" }}>Category:</span>
         <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={inputStyle}>
           <option value="all">All categories</option>
           {categories.map((c) => (

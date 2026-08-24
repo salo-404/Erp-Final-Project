@@ -44,12 +44,12 @@ export function getSlowMovingProducts(days?: number, warehouseId?: number): Prom
   return apiRequest<ProductMovementStat[]>(`/analytics/slow-moving-products${qs ? `?${qs}` : ""}`);
 }
 
-export function getSalesTrends(): Promise<SalesTrendPoint[]> {
-  return apiRequest<SalesTrendPoint[]>("/analytics/sales-trends");
+export function getSalesTrends(warehouseId?: number): Promise<SalesTrendPoint[]> {
+  return apiRequest<SalesTrendPoint[]>(withWarehouseParam("/analytics/sales-trends", warehouseId));
 }
 
-export function getPurchaseTrends(): Promise<PurchaseTrendPoint[]> {
-  return apiRequest<PurchaseTrendPoint[]>("/analytics/purchase-trends");
+export function getPurchaseTrends(warehouseId?: number): Promise<PurchaseTrendPoint[]> {
+  return apiRequest<PurchaseTrendPoint[]>(withWarehouseParam("/analytics/purchase-trends", warehouseId));
 }
 
 export function getStockHistory(productId: number): Promise<StockHistoryEntry[]> {
