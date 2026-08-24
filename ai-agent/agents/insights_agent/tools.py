@@ -42,20 +42,32 @@ _DEAD_STOCK_TRANSFER_LOOKBACK_DAYS = 60
 
 @tool
 async def get_available_stock(product_ids: list[int], warehouse_id: Optional[int] = None) -> dict:
-    """Get current available stock (on hand minus reserved) for specific products.
+    """Get current available stock (on hand minus reserved) for one or more
+    SPECIFIC products, each checked INDEPENDENTLY of the others.
 
     product_ids is REQUIRED - there is no "every product, every warehouse"
     mode. The real backend has no endpoint that returns computed available
     stock in bulk; supporting an unfiltered call would mean an unbounded
     number of HTTP requests (enumerate every warehouse, every product held
     in each, then call the per-pair availability endpoint for every row).
-    Always pass the exact product IDs you need - e.g. the matched
-    productIds for a specific order's line items (from the Document
-    agent's extraction). Prefer this targeted form over
-    get_restock_recommendations() when the question is "can we fulfill
-    THIS order" rather than "what should we reorder in general" - it
-    directly answers whether on-hand stock covers what was actually
-    requested, for exactly those items.
+    Always pass the exact product IDs you need.
+
+    Use this for "how much of product X do we have," "is product X in
+    stock," or checking several UNRELATED products' numbers side by side -
+    each product_id is looked up on its own, with no relationship assumed
+    between the products in the list. For a SINGLE product, this directly
+    answers whether on-hand stock covers a specific requested quantity
+    right now - prefer it over get_restock_recommendations() for that,
+    since restock recommendations are about the general reorder picture,
+    not a specific request.
+
+    THIS TOOL DOES NOT CONFIRM WHOLE-ORDER FULFILLMENT. It never checks
+    whether a SINGLE warehouse holds enough of MULTIPLE different products
+    at once - two products can each show real availability while sitting
+    in two different warehouses, and this tool has no way to detect that.
+    For "can we fulfill this order" with 2 or more products that must ship
+    together, call recommend_fulfillment_warehouse() instead - that is the
+    tool that actually checks single-warehouse, whole-order eligibility.
 
     Pass warehouse_id to check a single specific warehouse (one backend
     call per product). Omit it to check every warehouse CURRENTLY stocking
@@ -64,7 +76,8 @@ async def get_available_stock(product_ids: list[int], warehouse_id: Optional[int
     exists).
 
     Args:
-        product_ids: Required, non-empty list of product database IDs to check.
+        product_ids: Required, non-empty list of product database IDs to
+            check, each looked up independently of the others.
         warehouse_id: Optional warehouse database ID to restrict the check
             to. When given and that exact (product, warehouse) pair has
             never been stocked there, this is reported as a real
@@ -77,8 +90,11 @@ async def get_available_stock(product_ids: list[int], warehouse_id: Optional[int
     Returns:
         A dict with an `items` list of per-product/per-warehouse stock
         levels (productName, warehouseId, warehouseName, onHand, reserved,
-        available) and an `asOf` timestamp. productName/warehouseName are
-        None only when the id refers to an inactive/deleted product or
+        available), an `asOf` timestamp, and a `note` field that is
+        non-null only when 2+ distinct products were requested together -
+        a reminder that they were checked independently and this response
+        does not confirm whole-order fulfillment. productName/warehouseName
+        are None only when the id refers to an inactive/deleted product or
         warehouse (the backend's catalog lookups only return active ones) -
         the stock numbers themselves are still real in that case, never
         omitted.
@@ -155,8 +171,18 @@ async def get_available_stock(product_ids: list[int], warehouse_id: Optional[int
                     }
                 )
 
+    distinct_product_count = len(set(product_ids))
+    note = (
+        f"These {distinct_product_count} products were checked independently. "
+        "This does NOT confirm a single warehouse can fulfill all of them "
+        "together as one order - call recommend_fulfillment_warehouse() with "
+        "the exact productId/quantity pairs for that."
+        if distinct_product_count >= 2
+        else None
+    )
+
     return AvailableStockResponse.model_validate(
-        {"items": items, "asOf": datetime.now().isoformat()}
+        {"items": items, "asOf": datetime.now().isoformat(), "note": note}
     ).model_dump(mode="json")
 
 
@@ -173,6 +199,12 @@ async def recommend_fulfillment_warehouse(
     whether one warehouse can fulfill the entire order using onHand minus
     ACTIVE reservations. Geography is best-effort; without confirmed distance,
     eligible warehouses are returned without inventing a nearest choice.
+
+    This is the tool for "can we fulfill this order" whenever 2 or more
+    products must be checked TOGETHER as one order - prefer it over
+    get_available_stock() for that case, which only checks products
+    independently and cannot confirm a single warehouse covers all of them
+    at once.
     """
     if not items:
         raise ValueError("items must not be empty")

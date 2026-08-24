@@ -2,8 +2,17 @@
 
 NOT an automated test - this is for manually sanity-checking a real,
 multi-turn conversation against whichever MODEL_PROVIDER is set in .env
-(defaults to "openai", so this works with just an OPENAI_API_KEY and no AWS
-access - see README.md "Switching providers").
+(defaults to "bedrock" - set MODEL_PROVIDER=openai plus OPENAI_API_KEY in
+.env if you want to test without AWS access - see README.md "Switching
+providers").
+
+This bypasses the scope gate (agents/supervisor/gate.py) and human auth
+(request_context.human_auth_scope) entirely - it calls
+build_supervisor_agent() + agent(query) directly, not handle_query() or
+the AgentCore entrypoint. Gate behavior isn't exercised here, and
+approve_document_review()/reject_document_review() will always fail with
+DocumentReviewAuthorizationRequired since no human bearer token is ever
+supplied.
 
 Usage (from the ai-agent/ directory):
 

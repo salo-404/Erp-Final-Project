@@ -156,8 +156,48 @@ def test_supplier_ranking_prompt_separates_score_from_lead_time_context() -> Non
 def test_fulfillment_prompt_uses_available_stock_and_optional_geography() -> None:
     normalized_prompt = " ".join(INSIGHTS_SYSTEM_PROMPT.split())
     assert "recommend_fulfillment_warehouse()" in normalized_prompt
-    assert "full-order eligibility from AVAILABLE stock" in normalized_prompt
+    # Full-order eligibility is checked via AVAILABLE stock (onHand minus
+    # reservations), not physical onHand alone - real intent, not a fixed
+    # wording, so this checks the substantive claim survives however rule 5
+    # is phrased: a SINGLE warehouse must hold enough of EVERY item, judged
+    # from AVAILABLE stock rather than onHand.
+    assert "SINGLE warehouse holds enough of EVERY item at once" in normalized_prompt
+    assert "AVAILABLE stock rather than physical onHand alone" in normalized_prompt
     assert "delivery country, region, and address" in normalized_prompt
+
+
+def test_get_available_stock_docstring_disclaims_whole_order_fulfillment() -> None:
+    """get_available_stock()'s own docstring previously told the model to
+    prefer it for "the matched productIds for a specific order's line
+    items" / "can we fulfill THIS order" - a direct contradiction of
+    prompts.py rule 5's ban on using it for a 2+-product fulfillment
+    question. That framing must be gone, and the docstring must instead
+    explicitly disclaim whole-order fulfillment and redirect to
+    recommend_fulfillment_warehouse() by name - the fix has to live in the
+    tool description itself, not only the system prompt, since the model
+    reads both."""
+    docstring = " ".join((get_available_stock.__doc__ or "").split())
+
+    # The old contradicting framing must be gone.
+    assert "specific order's line items" not in docstring
+    assert "can we fulfill THIS order" not in docstring
+
+    # The new, accurate framing must be present.
+    assert "checked INDEPENDENTLY" in docstring
+    assert "DOES NOT CONFIRM WHOLE-ORDER FULFILLMENT" in docstring
+    assert "recommend_fulfillment_warehouse() instead" in docstring
+
+
+def test_recommend_fulfillment_warehouse_docstring_claims_whole_order_fulfillment() -> None:
+    """The correct tool must positively claim the "can this whole order be
+    fulfilled" scenario, not just rely on the wrong tool disclaiming it -
+    and cross-reference get_available_stock() so the two docstrings agree
+    with each other, not just with prompts.py."""
+    docstring = " ".join((recommend_fulfillment_warehouse.__doc__ or "").split())
+
+    assert "whether one warehouse can fulfill the entire order" in docstring
+    assert "can we fulfill this order" in docstring
+    assert "get_available_stock()" in docstring
 
 
 def test_get_available_stock_rejects_empty_product_ids() -> None:
@@ -1232,6 +1272,74 @@ def test_get_available_stock_specific_warehouse_wired_end_to_end_against_mocked_
     assert by_product[108]["onHand"] == 0
     assert by_product[108]["reserved"] == 0
     assert by_product[108]["available"] == 0
+
+    # Code-level safety net: 2 distinct products requested together must
+    # carry a note disclaiming whole-order fulfillment, pointing at
+    # recommend_fulfillment_warehouse() by name.
+    assert result["note"] is not None
+    assert "2 products" in result["note"]
+    assert "independently" in result["note"]
+    assert "recommend_fulfillment_warehouse()" in result["note"]
+
+
+def test_get_available_stock_note_is_none_for_a_single_product(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The safety-net note must cost nothing for a legitimate single-product
+    lookup - it should only appear once a second distinct product is in
+    play, never for the common single-item case."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/products":
+            return httpx.Response(
+                200,
+                json=[{"id": 102, "name": "Widget", "category": None, "description": None, "isActive": True}],
+            )
+        if request.url.path == "/warehouses":
+            return httpx.Response(
+                200,
+                json=[{"id": 2, "name": "Main Warehouse", "location": None, "maxCapacity": None, "isActive": True}],
+            )
+        if request.url.path == "/warehouse-inventory/available/2/102":
+            return httpx.Response(
+                200, json={"warehouseId": 2, "productId": 102, "onHand": 40, "reserved": 12, "available": 28}
+            )
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+
+    result = asyncio.run(get_available_stock(product_ids=[102], warehouse_id=2))
+
+    assert result["note"] is None
+
+
+def test_get_available_stock_note_is_none_for_duplicate_ids_of_the_same_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """product_ids=[102, 102] is one DISTINCT product asked about twice, not
+    a multi-product order - the safety net keys on distinct products, not
+    list length, so this must NOT get the whole-order-fulfillment note."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/products":
+            return httpx.Response(
+                200,
+                json=[{"id": 102, "name": "Widget", "category": None, "description": None, "isActive": True}],
+            )
+        if request.url.path == "/warehouses":
+            return httpx.Response(
+                200,
+                json=[{"id": 2, "name": "Main Warehouse", "location": None, "maxCapacity": None, "isActive": True}],
+            )
+        if request.url.path == "/warehouse-inventory/available/2/102":
+            return httpx.Response(
+                200, json={"warehouseId": 2, "productId": 102, "onHand": 40, "reserved": 12, "available": 28}
+            )
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+
+    result = asyncio.run(get_available_stock(product_ids=[102, 102], warehouse_id=2))
+
+    assert result["note"] is None
 
 
 def test_get_available_stock_discovery_mode_wired_end_to_end_against_mocked_backend(

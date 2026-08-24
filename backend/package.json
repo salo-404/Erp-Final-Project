@@ -12,7 +12,8 @@
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
-    "seed": "ts-node prisma/seed.ts",
+    "seed": "ts-node prisma/seed.ts && ts-node prisma/seed-query-examples.ts",
+    "seed:app": "ts-node prisma/seed.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
@@ -20,7 +21,8 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/jest-e2e.json",
     "geoapify:live-check": "ts-node -r tsconfig-paths/register src/path-optimizer/geoapify-geocoding.provider.live-check.ts",
-    "s3:live-check": "ts-node -r tsconfig-paths/register src/document-review/s3-document-storage.service.live-check.ts"
+    "s3:live-check": "ts-node -r tsconfig-paths/register src/document-review/s3-document-storage.service.live-check.ts",
+    "textract:live-check": "ts-node -r tsconfig-paths/register src/document-review/textract-document-extraction.provider.live-check.ts"
   },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1116.0",

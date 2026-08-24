@@ -73,19 +73,28 @@ the SDK does not separately print model/tool internals to process output.
 
 Bedrock is the source default. The locked direct in-region mapping is:
 
-- Supervisor: `openai.gpt-oss-120b-1:0`
-- Insights: `openai.gpt-oss-20b-1:0`
-- Document: `openai.gpt-oss-20b-1:0`
-- Gate: `openai.gpt-oss-20b-1:0`
-- Control Tower narration: `openai.gpt-oss-20b-1:0`
-- SQL generation: `mistral.ministral-3-8b-instruct`
+- Supervisor: `mistral.ministral-3-14b-instruct`
+- Insights: `mistral.ministral-3-14b-instruct`
+- Document: `mistral.ministral-3-14b-instruct`
+- Gate: `mistral.ministral-3-14b-instruct`
+- Control Tower narration: `mistral.ministral-3-14b-instruct`
+- SQL generation: `mistral.ministral-3-14b-instruct`
 - Embeddings: `amazon.titan-embed-text-v2:0`, exactly 512 dimensions
 - Region: `eu-west-1`
 
+Every conversational/classification/narration/SQL role deliberately shares
+one model ID. GPT-OSS (`openai.gpt-oss-120b-1:0` / `-20b-1:0`) and
+Nova/Claude-Haiku were tried first and are unusable in this account -
+GPT-OSS confirmed dead on live testing, Nova blocked by the org Bedrock
+SCP's cross-region inference profile routing, Claude-Haiku denied outright.
+`mistral.ministral-3-14b-instruct` is the one model confirmed reachable and
+reliable, so it is used everywhere, including SQL generation, rather than
+pairing it with a separate unverified smaller model.
+
 `settings.build_model(role)` is the single conversational/narration model
-factory. OpenAI and Ollama remain optional local-development providers, but
-there is intentionally no implicit local model fallback: when selecting either
-provider, configure every role-specific `*_MODEL_ID` with a compatible model.
+factory. OpenAI remains an optional local-development provider, but there
+is intentionally no implicit local model fallback: when selecting it,
+configure every role-specific `*_MODEL_ID` with a compatible model.
 
 AWS credentials are never stored in source; the AWS SDK default credential
 chain or runtime IAM role supplies them.

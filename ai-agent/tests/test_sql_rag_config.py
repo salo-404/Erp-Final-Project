@@ -20,36 +20,27 @@ generate_embeddings_module = importlib.import_module(
 
 
 def test_final_bedrock_model_map_and_dimensions() -> None:
-    assert settings_module._DEFAULT_BEDROCK_SUPERVISOR_MODEL_ID == (
-        "openai.gpt-oss-120b-1:0"
-    )
-    assert settings_module._DEFAULT_BEDROCK_AGENT_MODEL_ID == (
-        "openai.gpt-oss-20b-1:0"
-    )
-    assert settings_module._DEFAULT_BEDROCK_SQL_MODEL_ID == (
-        "mistral.ministral-3-8b-instruct"
+    assert settings_module._DEFAULT_BEDROCK_MODEL_ID == (
+        "mistral.ministral-3-14b-instruct"
     )
     assert settings_module._DEFAULT_BEDROCK_EMBEDDING_MODEL_ID == (
         "amazon.titan-embed-text-v2:0"
     )
     assert settings_module.settings.embedding_dimensions == 512
-    assert "claude" not in settings_module._DEFAULT_BEDROCK_AGENT_MODEL_ID.lower()
-    assert "claude" not in settings_module._DEFAULT_BEDROCK_SUPERVISOR_MODEL_ID.lower()
+    assert "claude" not in settings_module._DEFAULT_BEDROCK_MODEL_ID.lower()
+    assert "gpt-oss" not in settings_module._DEFAULT_BEDROCK_MODEL_ID.lower()
+    assert "nova" not in settings_module._DEFAULT_BEDROCK_MODEL_ID.lower()
     assert not hasattr(settings_module, "_DEFAULT_OPENAI_MODEL_ID")
     assert not hasattr(settings_module, "_DEFAULT_OLLAMA_MODEL_ID")
     assert 'os.getenv("MODEL_PROVIDER", "bedrock")' in inspect.getsource(
         settings_module.Settings
     )
 
-    assert settings_module._default_model_id_for_provider(
-        "bedrock", settings_module._DEFAULT_BEDROCK_SUPERVISOR_MODEL_ID
-    ) == "openai.gpt-oss-120b-1:0"
-    for role in ("insights", "document", "gate", "narration"):
+    for role in ("supervisor", "insights", "document", "gate", "narration"):
         assert settings_module._default_model_id_for_provider(
-            "bedrock", settings_module._DEFAULT_BEDROCK_AGENT_MODEL_ID
-        ) == "openai.gpt-oss-20b-1:0", role
+            "bedrock", settings_module._DEFAULT_BEDROCK_MODEL_ID
+        ) == "mistral.ministral-3-14b-instruct", role
     assert settings_module._default_model_id_for_provider("openai", "unused") == ""
-    assert settings_module._default_model_id_for_provider("ollama", "unused") == ""
 
 
 def test_checked_in_bedrock_runtime_config_has_no_stale_model() -> None:
@@ -57,14 +48,15 @@ def test_checked_in_bedrock_runtime_config_has_no_stale_model() -> None:
     environment = json.loads((project_root / "bedrock-env-vars.json").read_text())
     policy = (project_root / "bedrock-invoke-policy.json").read_text()
 
-    assert environment["SUPERVISOR_MODEL_ID"] == "openai.gpt-oss-120b-1:0"
-    assert environment["INSIGHTS_MODEL_ID"] == "openai.gpt-oss-20b-1:0"
-    assert environment["DOCUMENT_MODEL_ID"] == "openai.gpt-oss-20b-1:0"
-    assert environment["GATE_MODEL_ID"] == "openai.gpt-oss-20b-1:0"
-    assert environment["NARRATION_MODEL_ID"] == "openai.gpt-oss-20b-1:0"
-    assert environment["BEDROCK_SQL_MODEL_ID"] == "mistral.ministral-3-8b-instruct"
+    assert environment["SUPERVISOR_MODEL_ID"] == "mistral.ministral-3-14b-instruct"
+    assert environment["INSIGHTS_MODEL_ID"] == "mistral.ministral-3-14b-instruct"
+    assert environment["DOCUMENT_MODEL_ID"] == "mistral.ministral-3-14b-instruct"
+    assert environment["GATE_MODEL_ID"] == "mistral.ministral-3-14b-instruct"
+    assert environment["NARRATION_MODEL_ID"] == "mistral.ministral-3-14b-instruct"
+    assert environment["BEDROCK_SQL_MODEL_ID"] == "mistral.ministral-3-14b-instruct"
     assert environment["BEDROCK_EMBEDDING_MODEL_ID"] == "amazon.titan-embed-text-v2:0"
     assert environment["EMBEDDING_DIMENSIONS"] == "512"
+    assert "gpt-oss" not in policy.lower()
     assert "nova" not in policy.lower()
     assert "anthropic" not in policy.lower()
 

@@ -9,9 +9,7 @@
         "bedrock:InvokeModelWithResponseStream"
       ],
       "Resource": [
-        "arn:aws:bedrock:eu-west-1::foundation-model/openai.gpt-oss-120b-1:0",
-        "arn:aws:bedrock:eu-west-1::foundation-model/openai.gpt-oss-20b-1:0",
-        "arn:aws:bedrock:eu-west-1::foundation-model/mistral.ministral-3-8b-instruct",
+        "arn:aws:bedrock:eu-west-1::foundation-model/mistral.ministral-3-14b-instruct",
         "arn:aws:bedrock:eu-west-1::foundation-model/amazon.titan-embed-text-v2:0"
       ]
     }

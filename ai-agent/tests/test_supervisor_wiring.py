@@ -4,11 +4,11 @@ Tests the model-driven routing contract through prompt assertions, registry
 checks, scope-gate interaction, structured handoff coverage, and an optional
 live-model flow. It does not introduce a duplicate deterministic router.
 
-Also covers settings.build_model("supervisor") across all three supported
-MODEL_PROVIDER values (openai/ollama/bedrock) using an explicit test model ID.
-None of these need real credentials - every strands Model class only validates
+Also covers settings.build_model("supervisor") across both supported
+MODEL_PROVIDER values (openai/bedrock) using an explicit test model ID.
+Neither needs real credentials - every strands Model class only validates
 credentials/connectivity on the first real call, never at construction -
-so this exercises provider selection under all three without requiring
+so this exercises provider selection under both without requiring
 whichever provider isn't currently active in the environment.
 """
 
@@ -169,7 +169,7 @@ def test_scope_gate_decline_never_constructs_or_invokes_specialists(
     monkeypatch: pytest.MonkeyPatch,
     query: str,
 ) -> None:
-    monkeypatch.setattr(supervisor_agent_module, "is_in_scope", lambda _: (False, "out of scope"))
+    monkeypatch.setattr(supervisor_agent_module, "is_in_scope", lambda _: (False, "out of scope", False))
 
     def forbidden_build():
         raise AssertionError("Supervisor and specialists must not run after a gate decline")
@@ -178,15 +178,47 @@ def test_scope_gate_decline_never_constructs_or_invokes_specialists(
 
     result = handle_query(query)
 
+    # Genuine scope-classification decline: shown verbatim inside the
+    # normal decline template.
     assert "I can only help with inventory" in result
     assert "out of scope" in result
+
+
+def test_scope_gate_internal_error_shows_generic_fallback_not_the_decline_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BUG 1 regression, at the real handle_query() call site: when
+    is_in_scope() reports an internal failure (internal_error=True), the
+    response must be the standalone generic fallback ONLY - not wrapped in
+    the normal "I can only help with..." decline template, and with zero
+    raw exception type/message text anywhere."""
+    distinctive_internal_message = (
+        "I'm having trouble processing that request right now - please try again in a moment."
+    )
+    monkeypatch.setattr(
+        supervisor_agent_module,
+        "is_in_scope",
+        lambda _: (False, distinctive_internal_message, True),
+    )
+
+    def forbidden_build():
+        raise AssertionError("Supervisor and specialists must not run after a gate decline")
+
+    monkeypatch.setattr(supervisor_agent_module, "build_supervisor_agent", forbidden_build)
+
+    result = handle_query("hi")
+
+    assert result == distinctive_internal_message
+    assert "I can only help with inventory" not in result
+    assert "MissingDependencyException" not in result
+    assert "Exception" not in result
+    assert "Traceback" not in result
 
 
 @pytest.mark.parametrize(
     ("provider", "expected_model_class"),
     [
         ("openai", "OpenAIModel"),
-        ("ollama", "OllamaModel"),
         ("bedrock", "BedrockModel"),
     ],
 )
@@ -210,7 +242,7 @@ def test_build_model_supports_supervisor_under_every_provider(
     assert type(model).__name__ == expected_model_class
 
 
-@pytest.mark.parametrize("provider", ["openai", "ollama"])
+@pytest.mark.parametrize("provider", ["openai"])
 def test_local_provider_has_no_implicit_stale_model_fallback(provider: str) -> None:
     provider_settings = replace(
         settings,
@@ -229,7 +261,7 @@ def test_supervisor_still_builds_standalone_under_the_active_provider() -> None:
     construction never makes a real model call.
     """
     agent = build_supervisor_agent()
-    assert type(agent.model).__name__ in {"OpenAIModel", "OllamaModel", "BedrockModel"}
+    assert type(agent.model).__name__ in {"OpenAIModel", "BedrockModel"}
 
 
 def _tool_use_and_result_by_name(messages: list[dict]) -> tuple[dict[str, list[dict]], dict[str, list[dict]]]:
@@ -393,8 +425,26 @@ def test_flagship_scenario_threads_matched_product_ids_from_document_to_insights
 
     # 4. The final answer reflects the real shortage, not generic restock
     # language: the backend returned no warehouse eligible for the full order.
+    # Phrase list intentionally broad, not just the original 5 - live runs
+    # have produced factually correct shortage answers phrased as "no
+    # single warehouse [currently] has enough stock of both items", which
+    # contains none of the original terms despite being an equally honest
+    # "can't be fulfilled" conclusion. Assert on the substantive claim
+    # (a negative fulfillment conclusion), not one fixed wording of it.
     lowered = final_text.lower()
-    shortage_language = ("cannot", "can't", "not currently", "no eligible", "unable to fulfill")
+    shortage_language = (
+        "cannot",
+        "can't",
+        "not currently",
+        "no eligible",
+        "unable to fulfill",
+        "no single warehouse",
+        "does not have enough",
+        "insufficient stock",
+        "no warehouse holds enough",
+        "not enough stock",
+        "neither item can currently be shipped",
+    )
     assert any(term in lowered for term in shortage_language), (
         f"Expected the response to state the order can't be fully fulfilled. Response: {final_text!r}"
     )

@@ -3,17 +3,17 @@
 Everything here is pulled from environment variables (via python-dotenv for
 local development) so that no AWS credentials, OpenAI keys, or other
 account-specific values are hardcoded. Real credential resolution (AWS via
-boto3's default credential chain, OpenAI via OPENAI_API_KEY, Ollama via a
-local/remote host URL) is left to the respective SDKs - we never read or
-store a secret key directly beyond passing it through from the environment.
+boto3's default credential chain, OpenAI via OPENAI_API_KEY) is left to the
+respective SDKs - we never read or store a secret key directly beyond
+passing it through from the environment.
 
 Provider switching
 -------------------
 MODEL_PROVIDER selects which model backend build_model() constructs. Bedrock
 is the deployment default and uses the locked role-specific IDs below. OpenAI
-and Ollama remain explicit local-development options, but they have no implicit
-model fallback: every role's *_MODEL_ID must be set to a provider-compatible
-ID before that provider can be invoked.
+remains an explicit local-development option, but it has no implicit model
+fallback: every role's *_MODEL_ID must be set to a provider-compatible ID
+before that provider can be invoked.
 
 build_model() is the single place that decides which provider to
 instantiate - agents never construct a Model directly, so switching
@@ -22,14 +22,18 @@ providers is a config-only change. See README.md "Switching providers".
 SUPERVISOR_MODEL_ID / build_model("supervisor") is the Supervisor's MAIN
 routing/response model - the one that reads a user query, decides which
 specialist tool(s) to call, and composes the final answer. GATE_MODEL_ID /
-build_model("gate") is a SEPARATE, smaller/cheaper model used only for the
-scope pre-check in agents/supervisor/gate.py - a single fast classification
-call made before the query ever reaches the Supervisor's main model or any
+build_model("gate") is a SEPARATE model instance used only for the scope
+pre-check in agents/supervisor/gate.py - a single fast classification call
+made before the query ever reaches the Supervisor's main model or any
 specialist tool. NARRATION_MODEL_ID / build_model("narration") is yet
-another separate model, used only by narration/control_tower.py's batch
+another separate instance, used only by narration/control_tower.py's batch
 alert narration - a plain, non-tool-calling completion call, not part of
 the agents/ package at all (Control Tower is explicitly not a fourth
-agent). Bedrock Guardrails (agents/supervisor/guardrails.py) remains a
+agent). Every role currently resolves to the same underlying model ID
+(_DEFAULT_BEDROCK_MODEL_ID below) under Bedrock - they stay separate
+*settings*/model *instances*, not one shared object, so any role can be
+pointed at a different model later via its own env var without touching
+the others. Bedrock Guardrails (agents/supervisor/guardrails.py) remains a
 stub - deferred until AWS access returns, not implemented here.
 """
 
@@ -47,12 +51,22 @@ if TYPE_CHECKING:
 # Loaded at import time so every setting below sees .env values immediately.
 load_dotenv()
 
-ModelProvider = Literal["openai", "ollama", "bedrock"]
+ModelProvider = Literal["openai", "bedrock"]
 AgentName = Literal["insights", "document", "supervisor", "gate", "narration"]
 
-_DEFAULT_BEDROCK_SUPERVISOR_MODEL_ID = "openai.gpt-oss-120b-1:0"
-_DEFAULT_BEDROCK_AGENT_MODEL_ID = "openai.gpt-oss-20b-1:0"
-_DEFAULT_BEDROCK_SQL_MODEL_ID = "mistral.ministral-3-8b-instruct"
+# Single Bedrock model for every conversational/classification/narration
+# role (Supervisor, Insights, Document, Gate, Narration) AND SQL generation.
+# GPT-OSS (openai.gpt-oss-120b-1:0 / -20b-1:0) and Nova/Claude-Haiku were all
+# tried first and are unusable in this account - GPT-OSS confirmed dead on
+# live testing, Nova blocked by the org Bedrock SCP's cross-region inference
+# profile routing, Claude-Haiku denied outright. mistral.ministral-3-14b-instruct
+# is the one model confirmed reachable and reliable (live multi-turn +
+# tool-result diagnostic), so it is used everywhere a chat/completion model
+# is needed, including SQL generation - deliberately not paired with a
+# separate smaller SQL model (e.g. ministral-3-8b), since that size was never
+# verified reachable and SQL generation is exactly the kind of precise,
+# rule-heavy task where a smaller model is the wrong place to cut corners.
+_DEFAULT_BEDROCK_MODEL_ID = "mistral.ministral-3-14b-instruct"
 _DEFAULT_BEDROCK_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 
 
@@ -79,8 +93,8 @@ class Settings:
     # ------------------------------------------------------------------
     # Provider selection
     # ------------------------------------------------------------------
-    # Bedrock is the deployment/default provider. OpenAI and Ollama are
-    # explicit local-development options and require explicit role model IDs.
+    # Bedrock is the deployment/default provider. OpenAI is an explicit
+    # local-development option and requires explicit role model IDs.
     model_provider: str = os.getenv("MODEL_PROVIDER", "bedrock").strip().lower()
 
     # ------------------------------------------------------------------
@@ -90,21 +104,18 @@ class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
 
     # ------------------------------------------------------------------
-    # Ollama (used when model_provider == "ollama")
-    # ------------------------------------------------------------------
-    ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-
-    # ------------------------------------------------------------------
     # AWS / Bedrock (used when model_provider == "bedrock"; kept populated
-    # and valid even while running on OpenAI/Ollama, so switching providers
-    # is a single env var change with nothing else to configure).
+    # and valid even while running on OpenAI, so switching providers is a
+    # single env var change with nothing else to configure).
     # ------------------------------------------------------------------
     aws_region: str = os.getenv("AWS_REGION", "eu-west-1")
 
-    # SQL-RAG model used to generate read-only PostgreSQL queries.
+    # SQL-RAG model used to generate read-only PostgreSQL queries. Same
+    # model as every other role (see _DEFAULT_BEDROCK_MODEL_ID above) - not
+    # a separate smaller model, deliberately.
     bedrock_sql_model_id: str = os.getenv(
         "BEDROCK_SQL_MODEL_ID",
-        _DEFAULT_BEDROCK_SQL_MODEL_ID,
+        _DEFAULT_BEDROCK_MODEL_ID,
     )
 
     # Bedrock embedding model used for semantic retrieval of QueryExample rows.
@@ -115,50 +126,40 @@ class Settings:
     embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", "512"))
 
     # Generic Bedrock fallback for any future role without an explicit model.
-    # Keep this on the cost-conscious 20B direct in-region model; the 120B
-    # model is reserved for the Supervisor role below.
     bedrock_model_id: str = os.getenv(
-        "BEDROCK_MODEL_ID", _DEFAULT_BEDROCK_AGENT_MODEL_ID
+        "BEDROCK_MODEL_ID", _DEFAULT_BEDROCK_MODEL_ID
     )
 
     # ------------------------------------------------------------------
-    # Per-role model IDs. Bedrock gets the locked defaults below. OpenAI and
-    # Ollama deliberately get no fallback, preventing a stale local model ID
-    # from becoming an accidental runtime choice.
+    # Per-role model IDs. Bedrock gets the locked default below. OpenAI
+    # deliberately gets no fallback, preventing a stale local model ID from
+    # becoming an accidental runtime choice.
     # ------------------------------------------------------------------
 
     # The Supervisor's main routing/response model (reads the user query,
     # picks which specialist tool(s) to call, composes the final answer).
-    # NOT the gate/classification model below - different job, different
-    # (cheaper) model.
     supervisor_model_id: str = os.getenv("SUPERVISOR_MODEL_ID", "") or _default_model_id_for_provider(
-        model_provider, _DEFAULT_BEDROCK_SUPERVISOR_MODEL_ID
+        model_provider, _DEFAULT_BEDROCK_MODEL_ID
     )
     insights_model_id: str = os.getenv("INSIGHTS_MODEL_ID", "") or _default_model_id_for_provider(
-        model_provider, _DEFAULT_BEDROCK_AGENT_MODEL_ID
+        model_provider, _DEFAULT_BEDROCK_MODEL_ID
     )
     document_model_id: str = os.getenv("DOCUMENT_MODEL_ID", "") or _default_model_id_for_provider(
-        model_provider, _DEFAULT_BEDROCK_AGENT_MODEL_ID
+        model_provider, _DEFAULT_BEDROCK_MODEL_ID
     )
 
     # The Supervisor's scope-gate classification model (agents/supervisor/gate.py)
-    # - a single fast, cheap, tool-free call that decides in-scope vs.
-    # out-of-scope before anything else runs. Deliberately reuses the same
-    # lightweight defaults as the other agents under openai/ollama, since a
-    # classification task doesn't need a bigger model than the specialists
-    # that do the real work.
-    #
+    # - a single fast, tool-free call that decides in-scope vs. out-of-scope
+    # before anything else runs.
     gate_model_id: str = os.getenv("GATE_MODEL_ID", "") or _default_model_id_for_provider(
-        model_provider, _DEFAULT_BEDROCK_AGENT_MODEL_ID
+        model_provider, _DEFAULT_BEDROCK_MODEL_ID
     )
 
     # The Control Tower batch narration model (narration/control_tower.py) -
     # a plain, non-tool-calling completion call per alert, not part of the
-    # agents/ package. Same lightweight per-provider defaults as gate_model_id,
-    # for the same reason: narrating one alert's evidence into plain
-    # language doesn't need a bigger model than the specialists.
+    # agents/ package.
     narration_model_id: str = os.getenv("NARRATION_MODEL_ID", "") or _default_model_id_for_provider(
-        model_provider, _DEFAULT_BEDROCK_AGENT_MODEL_ID
+        model_provider, _DEFAULT_BEDROCK_MODEL_ID
     )
 
     # AWS Bedrock AgentCore deployment identifiers.
@@ -275,8 +276,7 @@ class Settings:
                 each its own (typically smaller/cheaper) model.
 
         Returns:
-            A strands Model instance (OpenAIModel, OllamaModel, or
-            BedrockModel).
+            A strands Model instance (OpenAIModel or BedrockModel).
 
         Raises:
             ValueError: If agent_name or model_provider is unrecognized.
@@ -311,20 +311,13 @@ class Settings:
                 model_id=model_id,
             )
 
-        if self.model_provider == "ollama":
-            # Imported lazily so the optional `ollama` dependency is only
-            # required when it's actually the active provider.
-            from strands.models.ollama import OllamaModel
-
-            return OllamaModel(self.ollama_host, model_id=model_id)
-
         if self.model_provider == "bedrock":
             from strands.models import BedrockModel
 
             return BedrockModel(model_id=model_id, region_name=self.aws_region)
 
         raise ValueError(
-            f"Unknown MODEL_PROVIDER: {self.model_provider!r} (expected 'openai', 'ollama', or 'bedrock')"
+            f"Unknown MODEL_PROVIDER: {self.model_provider!r} (expected 'openai' or 'bedrock')"
         )
 
 

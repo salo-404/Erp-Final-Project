@@ -117,6 +117,12 @@ class AvailableStockItem(BaseModel):
 class AvailableStockResponse(BaseModel):
     items: list[AvailableStockItem]
     asOf: datetime
+    # Non-null only when 2+ distinct product_ids were requested together -
+    # not a backend field, computed tool-side (see tools.py::get_available_stock)
+    # as a code-level safety net alongside the tool's own docstring guidance:
+    # this response checks each product independently and never confirms
+    # whole-order, single-warehouse fulfillment.
+    note: Optional[str] = None
 
 
 class FulfillmentWarehouseItem(BaseModel):

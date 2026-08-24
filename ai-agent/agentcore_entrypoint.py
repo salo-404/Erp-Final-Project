@@ -15,10 +15,10 @@ Runtime - an HTTP service speaking the AgentCore invocation protocol
 Model-agnostic by construction: build_supervisor_agent() already resolves
 its model via settings.build_model("supervisor") (see config/settings.py),
 so this entrypoint works with whichever MODEL_PROVIDER is set in .env -
-"openai", "ollama", or "bedrock" - completely independent of whether the
-deploying AWS account/role even has Bedrock model-invoke permissions. Only
-actually calling Bedrock (MODEL_PROVIDER=bedrock) needs those permissions;
-the AgentCore Runtime *hosting* layer itself does not.
+"openai" or "bedrock" - completely independent of whether the deploying
+AWS account/role even has Bedrock model-invoke permissions. Only actually
+calling Bedrock (MODEL_PROVIDER=bedrock) needs those permissions; the
+AgentCore Runtime *hosting* layer itself does not.
 
 Local test (per the official guide's manual verification steps - see
 README.md "Deploying to AgentCore Runtime" for the full walkthrough):
@@ -330,16 +330,22 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
             await _acquire_invocation_lock(state.invocation_lock)
             lock_acquired = True
 
-            allowed, reason = await asyncio.to_thread(is_in_scope, prompt)
+            allowed, reason, internal_error = await asyncio.to_thread(is_in_scope, prompt)
             if not allowed:
-                yield {
-                    "type": "text_delta",
-                    "text": (
+                # internal_error: reason is already the standalone generic
+                # fallback message (see gate.is_in_scope) - never grafted
+                # into the normal decline template below, and never
+                # containing raw exception details.
+                text = (
+                    reason
+                    if internal_error
+                    else (
                         "I can only help with inventory, warehouses, orders, invoices, "
                         "stock, suppliers, and document processing for this ERP system "
                         f"({reason}). Let me know if you have a question in that area."
-                    ),
-                }
+                    )
+                )
+                yield {"type": "text_delta", "text": text}
                 yield {"type": "done"}
                 return
 

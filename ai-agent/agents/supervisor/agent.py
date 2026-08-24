@@ -45,7 +45,7 @@ def build_supervisor_agent(session_manager: object | None = None) -> Agent:
     inside the Insights agent's tools, and new document-processing
     capabilities belong inside the Document agent's tools.
 
-    The model provider (OpenAI/Ollama for local dev, Bedrock for
+    The model provider (OpenAI for local dev, Bedrock for
     production) is decided entirely by settings.build_model() - see
     config/settings.py - so switching providers never touches this
     function, matching the same pattern already used by
@@ -86,8 +86,14 @@ def handle_query(query: str, human_bearer_token: str | None = None) -> str:
     agentcore_entrypoint.py; routing itself remains the Supervisor model's
     responsibility after the gate passes.
     """
-    allowed, reason = is_in_scope(query)
+    allowed, reason, internal_error = is_in_scope(query)
     if not allowed:
+        if internal_error:
+            # reason is already the standalone generic fallback message
+            # here (see gate.is_in_scope) - never grafted into the normal
+            # decline template below, and never containing raw exception
+            # details.
+            return reason
         return (
             "I can only help with inventory, warehouses, orders, invoices, "
             "stock, suppliers, and document processing for this ERP system "
