@@ -89,6 +89,7 @@ def test_only_safe_text_deltas_are_exposed_and_done_is_emitted_once(
 
     assert events == [
         {"type": "text_delta", "text": "Hello"},
+        {"type": "tool_status", "label": "Querying the database..."},
         {"type": "text_delta", "text": " world"},
         {"type": "done"},
     ]
@@ -239,6 +240,7 @@ def test_human_bearer_exists_for_full_stream_and_resets_after_success(
 
     assert observed == ["exact-token", "exact-token"]
     assert events == [
+        {"type": "tool_status", "label": "Processing the document..."},
         {"type": "text_delta", "text": "approved"},
         {"type": "done"},
     ]

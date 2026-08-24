@@ -1,12 +1,5 @@
 import type { AgentStreamStatus } from "../../types/agent";
 
-const STATUS_LABEL: Record<AgentStreamStatus, string> = {
-  thinking: "Thinking...",
-  analyzing: "Analyzing your request...",
-  "checking-data": "Checking ERP data...",
-  preparing: "Preparing insights...",
-};
-
 export function StreamingStatus({ status }: { status: AgentStreamStatus }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
@@ -26,7 +19,9 @@ export function StreamingStatus({ status }: { status: AgentStreamStatus }) {
           />
         ))}
       </div>
-      <span style={{ fontSize: 12.5, color: "var(--color-text-muted)", fontStyle: "italic" }}>{STATUS_LABEL[status]}</span>
+      <span key={status} style={{ fontSize: 12.5, color: "var(--color-text-muted)", fontStyle: "italic", animation: "agent-msg-in 0.18s ease-out" }}>
+        {status}
+      </span>
     </div>
   );
 }

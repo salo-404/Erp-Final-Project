@@ -4,7 +4,11 @@
 
 export type AgentRole = "user" | "agent";
 
-export type AgentStreamStatus = "thinking" | "analyzing" | "checking-data" | "preparing";
+// A live, human-readable label describing what the agent is doing right
+// now (e.g. "Checking available stock..."). Comes straight from the
+// backend's real tool-call activity (see agentcore_entrypoint.py's
+// tool_status event) — never a fixed/guessed set of phases.
+export type AgentStreamStatus = string;
 
 export type AgentBlockTone = "default" | "success" | "warning" | "danger";
 

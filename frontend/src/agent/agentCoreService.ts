@@ -17,17 +17,17 @@ function runtimeSessionId(userId: number, conversationId: string): string {
 }
 
 interface AgentCoreEvent {
-  type: "text_delta" | "done" | "error";
+  type: "text_delta" | "tool_status" | "done" | "error";
   text?: string;
+  label?: string;
   message?: string;
 }
 
-// The public stream only ever emits text_delta/done/error (see the
-// `invoke()` docstring in agentcore_entrypoint.py) — no status/blocks
-// events. StreamingBubble (components/agent/ConversationView.tsx) already
-// falls back to showing status only while streamingText is still empty, so
-// holding a single "thinking" status until the first token is not a
-// fabricated stage — it's the real wait for the model's first output.
+// The public stream only ever emits text_delta/tool_status/done/error (see
+// the `invoke()` docstring in agentcore_entrypoint.py) — no blocks events.
+// StreamingBubble (components/agent/ConversationView.tsx) already falls
+// back to showing the live status only while streamingText is still empty,
+// so tool_status labels naturally stop mattering once real text starts.
 async function* parseSseStream(body: ReadableStream<Uint8Array>): AsyncGenerator<AgentCoreEvent, void, unknown> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -87,13 +87,15 @@ async function* agentCoreSendMessage(params: AgentSendMessageParams): AsyncGener
     );
   }
 
-  yield { type: "status", status: "thinking" };
+  yield { type: "status", status: "Thinking..." };
 
   let streamed = "";
   for await (const event of parseSseStream(response.body)) {
     if (event.type === "text_delta" && event.text) {
       streamed += event.text;
       yield { type: "token", token: event.text };
+    } else if (event.type === "tool_status" && event.label) {
+      yield { type: "status", status: event.label };
     } else if (event.type === "error") {
       yield { type: "error", error: event.message ?? "The assistant hit an unexpected error." };
       return;

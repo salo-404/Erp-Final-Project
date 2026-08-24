@@ -136,7 +136,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       setActive(snap.id);
 
       setIsSending(true);
-      setStreamingStatus("thinking");
+      setStreamingStatus("Thinking...");
       setStreamingText("");
       setAgentError(null);
 

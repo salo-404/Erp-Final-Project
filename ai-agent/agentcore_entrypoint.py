@@ -196,6 +196,69 @@ async def _acquire_invocation_lock(lock: threading.Lock) -> None:
         await asyncio.sleep(_SESSION_LOCK_POLL_SECONDS)
 
 
+
+# Friendly, non-technical labels for tool calls a user might see while
+# waiting — never the raw function name (Supervisor's hardened prompt
+# already resists revealing internal architecture to adversarial input;
+# this keeps that same spirit for the ordinary status line too). Covers
+# every tool actually registered on Supervisor/Insights/Document (see
+# agents/*/agent.py's *_TOOLS lists) plus the two Supervisor-level
+# specialist calls themselves.
+_TOOL_STATUS_LABELS: dict[str, str] = {
+    "insights_agent_tool": "Checking inventory and analytics...",
+    "document_agent_tool": "Processing the document...",
+    "get_available_stock": "Checking available stock...",
+    "recommend_fulfillment_warehouse": "Finding the best fulfillment warehouse...",
+    "get_low_stock_products": "Checking low-stock products...",
+    "get_stockout_risk": "Assessing stockout risk...",
+    "get_restock_recommendations": "Working out restock recommendations...",
+    "get_transfer_recommendations": "Looking for transfer opportunities...",
+    "analyze_dead_stock": "Analyzing dead stock...",
+    "get_consumption_anomalies": "Checking for consumption anomalies...",
+    "compare_suppliers": "Comparing suppliers...",
+    "get_open_purchase_orders": "Checking open purchase orders...",
+    "query_database": "Querying the database...",
+    "get_pending_document_reviews": "Checking pending document reviews...",
+    "get_document_review": "Looking up the document...",
+    "resolve_document_product": "Matching the product...",
+    "resolve_document_supplier": "Matching the supplier...",
+    "approve_document_review": "Approving the document...",
+    "reject_document_review": "Rejecting the document...",
+    "detect_duplicate_document": "Checking for duplicate documents...",
+}
+
+
+def _humanize_tool_name(name: str) -> str:
+    """Mechanical fallback for a tool with no entry above — a readable
+    rendering of its real name, never an invented description (e.g.
+    "get_open_purchase_orders" -> "Get open purchase orders..."). Only
+    reached for a tool added later that this label table hasn't caught up
+    with yet.
+    """
+    words = name.replace("_", " ").strip()
+    if not words:
+        return "Working..."
+    return f"{words[0].upper()}{words[1:]}..."
+
+
+def _public_tool_status(event: object) -> dict[str, str] | None:
+    """A tool-use-start event, rendered as a friendly live status line —
+    the one piece of otherwise-internal Strands event data that's safe and
+    useful to surface, unlike reasoning/tool-result content (still fully
+    suppressed by _public_text_delta below).
+    """
+    if not isinstance(event, dict):
+        return None
+    tool_use = event.get("current_tool_use")
+    if not isinstance(tool_use, dict):
+        return None
+    name = tool_use.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    label = _TOOL_STATUS_LABELS.get(name) or _humanize_tool_name(name)
+    return {"type": "tool_status", "label": label}
+
+
 def _public_text_delta(event: object) -> dict[str, str] | None:
     """Return the only public form of a safe Strands text-stream event."""
     if not isinstance(event, dict):
@@ -234,8 +297,9 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
             when present, is scoped to this invocation as the human identity.
 
     Returns:
-        An async iterator of safe ``text_delta``, ``done``, or ``error``
-        objects. BedrockAgentCoreApp serializes these objects as SSE.
+        An async iterator of safe ``text_delta``, ``tool_status``, ``done``,
+        or ``error`` objects. BedrockAgentCoreApp serializes these objects
+        as SSE.
 
     Raises:
         ValueError: If payload has no usable "prompt" string. The
@@ -295,6 +359,10 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
                 agent_stream = state.supervisor_agent.stream_async(prompt)
                 try:
                     async for event in agent_stream:
+                        tool_status = _public_tool_status(event)
+                        if tool_status is not None:
+                            yield tool_status
+                            continue
                         public_event = _public_text_delta(event)
                         if public_event is not None:
                             yield public_event

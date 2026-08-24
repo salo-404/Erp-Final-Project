@@ -1,7 +1,9 @@
+import { useEffect, useRef, useState } from "react";
 import { AgentMark } from "./AgentMark";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { ResponseRenderer } from "./ResponseRenderer";
 import { StreamingCursor, StreamingStatus } from "./StreamingStatus";
+import { useTypewriter } from "./useTypewriter";
 import type { AgentMessage, AgentStreamStatus } from "../../types/agent";
 
 interface ConversationViewProps {
@@ -86,17 +88,54 @@ function StreamingBubble({ status, text, compact }: { status: AgentStreamStatus 
 
 export function ConversationView({ messages, streamingStatus, streamingText, compact }: ConversationViewProps) {
   const isStreaming = streamingStatus !== null;
+  const lastMessage = messages[messages.length - 1];
+
+  // "Settling": the brief window right after streaming ends where the
+  // paced reveal (see useTypewriter) may still be a little behind the now-
+  // final message text. Keeping the same tail bubble/typewriter instance
+  // through this transition (rather than swapping to a fresh AgentBubble
+  // the instant "done" fires) avoids a double-animation glitch — the text
+  // would otherwise finish typing once as the streaming bubble, then
+  // instantly restart typing again as the newly-mounted static bubble.
+  const wasStreamingRef = useRef(false);
+  const [settlingMessageId, setSettlingMessageId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (wasStreamingRef.current && !isStreaming && lastMessage?.role === "agent") {
+      setSettlingMessageId(lastMessage.id);
+    }
+    wasStreamingRef.current = isStreaming;
+  }, [isStreaming, lastMessage]);
+
+  const isSettling = !isStreaming && settlingMessageId !== null && lastMessage?.id === settlingMessageId;
+  const tailTarget = isStreaming ? streamingText : isSettling ? lastMessage!.text : "";
+  const tailActive = isStreaming || isSettling;
+  const revealed = useTypewriter(tailTarget, tailActive);
+
+  useEffect(() => {
+    if (isSettling && revealed.length >= tailTarget.length) {
+      setSettlingMessageId(null);
+    }
+  }, [isSettling, revealed, tailTarget]);
+
+  // Only drop the last message from the normal list while settling — that's
+  // when it's the agent's own just-finalized message, still being revealed
+  // by the tail bubble in its place. While plain isStreaming (before "done"),
+  // the last message is the user's own — it must render normally, with the
+  // tail bubble appended after it, not instead of it.
+  const showAnimatedTail = isStreaming || isSettling;
+  const staticMessages = isSettling ? messages.slice(0, -1) : messages;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: compact ? 12 : 16 }}>
-      {messages.map((message) =>
+      {staticMessages.map((message) =>
         message.role === "user" ? (
           <UserBubble key={message.id} message={message} compact={compact} />
         ) : (
           <AgentBubble key={message.id} message={message} compact={compact} />
         ),
       )}
-      {isStreaming && <StreamingBubble status={streamingStatus} text={streamingText} compact={compact} />}
+      {showAnimatedTail && <StreamingBubble status={isStreaming ? streamingStatus : null} text={revealed} compact={compact} />}
     </div>
   );
 }
