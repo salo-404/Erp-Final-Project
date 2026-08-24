@@ -14,6 +14,7 @@ import {
 import { listWarehouses } from "../lib/warehouses.api";
 import { DocumentPreviewPane } from "../components/documentReview/DocumentPreviewPane";
 import { ResolveSearchInput } from "../components/documentReview/ResolveSearchInput";
+import { NewProductInput } from "../components/documentReview/NewProductInput";
 import { SampleDocumentsPanel } from "../components/documentReview/SampleDocumentsPanel";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import { ErrorMessage } from "../components/ui/ErrorMessage";
@@ -25,6 +26,7 @@ interface ItemRow {
   resolvedName: string | null;
   quantity: string;
   price: string;
+  isNewProduct: boolean;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -38,6 +40,7 @@ const inputStyle: React.CSSProperties = {
   outline: "none",
 };
 const labelStyle: React.CSSProperties = { fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6, display: "block" };
+const fieldLabelStyle: React.CSSProperties = { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--color-text-muted)", marginBottom: 4, display: "block" };
 
 export function DocumentReviewPage() {
   const { id: idParam } = useParams();
@@ -89,6 +92,7 @@ export function DocumentReviewPage() {
         resolvedName: null,
         quantity: String(it.quantity),
         price: it.price != null ? String(it.price) : "",
+        isNewProduct: false,
       })),
     );
     setSupplierId(null);
@@ -108,6 +112,17 @@ export function DocumentReviewPage() {
   function updateItem(index: number, patch: Partial<ItemRow>) {
     setItems((rows) => rows.map((r, i) => (i === index ? { ...r, ...patch } : r)));
   }
+
+  const itemsTotal = useMemo(
+    () =>
+      items.reduce((sum, it) => {
+        const quantity = Number(it.quantity);
+        const price = Number(it.price);
+        if (!Number.isFinite(quantity) || !Number.isFinite(price)) return sum;
+        return sum + quantity * price;
+      }, 0),
+    [items],
+  );
 
   async function handleApprove() {
     if (urlId === null || !reviewFetch.data) return;
@@ -348,19 +363,51 @@ export function DocumentReviewPage() {
                     {items.map((row, i) => (
                       <div key={i} style={{ background: "var(--color-surface-2)", border: "1px solid var(--color-border)", borderRadius: 8, padding: 12 }}>
                         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Extracted: "{row.extractedName}"</div>
-                        <ResolveSearchInput
-                          initialQuery={row.extractedName}
-                          search={resolveProduct}
-                          resolvedLabel={row.resolvedName}
-                          placeholder="Search products..."
-                          onResolve={(s) => updateItem(i, { productId: s.productId!, resolvedName: s.name })}
-                        />
+
+                        {review.transactionType === "INCOMING" && (
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 8, cursor: "pointer" }}>
+                            <input
+                              type="checkbox"
+                              checked={row.isNewProduct}
+                              onChange={(e) => updateItem(i, { isNewProduct: e.target.checked, productId: null, resolvedName: null })}
+                            />
+                            This is a new product — not yet in the system
+                          </label>
+                        )}
+
+                        {row.isNewProduct ? (
+                          <NewProductInput
+                            initialName={row.extractedName}
+                            onCreated={({ productId, name }) => updateItem(i, { productId, resolvedName: name })}
+                          />
+                        ) : (
+                          <ResolveSearchInput
+                            initialQuery={row.extractedName}
+                            search={resolveProduct}
+                            resolvedLabel={row.resolvedName}
+                            placeholder="Search products..."
+                            onResolve={(s) => updateItem(i, { productId: s.productId!, resolvedName: s.name })}
+                          />
+                        )}
+
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
-                          <input type="number" min={1} placeholder="Quantity" value={row.quantity} onChange={(e) => updateItem(i, { quantity: e.target.value })} style={{ ...inputStyle, padding: "7px 9px", fontSize: 12.5 }} />
-                          <input type="number" min={0} step="0.01" placeholder="Price" value={row.price} onChange={(e) => updateItem(i, { price: e.target.value })} style={{ ...inputStyle, padding: "7px 9px", fontSize: 12.5 }} />
+                          <div>
+                            {review.transactionType === "INCOMING" && <label style={fieldLabelStyle}>Quantity</label>}
+                            <input type="number" min={1} placeholder="Quantity" value={row.quantity} onChange={(e) => updateItem(i, { quantity: e.target.value })} style={{ ...inputStyle, padding: "7px 9px", fontSize: 12.5 }} />
+                          </div>
+                          <div>
+                            {review.transactionType === "INCOMING" && <label style={fieldLabelStyle}>Price</label>}
+                            <input type="number" min={0} step="0.01" placeholder="Price" value={row.price} onChange={(e) => updateItem(i, { price: e.target.value })} style={{ ...inputStyle, padding: "7px 9px", fontSize: 12.5 }} />
+                          </div>
                         </div>
                       </div>
                     ))}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--color-border)" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--color-text-secondary)" }}>Total</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 15 }}>
+                      ${itemsTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
                   </div>
                 </div>
 
