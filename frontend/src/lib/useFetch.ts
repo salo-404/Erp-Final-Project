@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type DependencyList } from "react";
 import { ApiError } from "./api-client";
+import { friendlyErrorMessage } from "./friendlyError";
 
 interface FetchState<T> {
   data: T | null;
@@ -26,7 +27,7 @@ export function useFetch<T>(fetcher: () => Promise<T>, deps: DependencyList): Fe
           setState({
             data: null,
             loading: false,
-            error: err instanceof ApiError ? err.message : "Something went wrong. Please try again.",
+            error: friendlyErrorMessage(err, "Something went wrong. Please try again."),
             errorStatus: err instanceof ApiError ? err.statusCode : null,
           });
         }

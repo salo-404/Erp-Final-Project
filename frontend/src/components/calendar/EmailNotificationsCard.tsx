@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { MailIcon } from "../ui/icons";
 import { ErrorMessage } from "../ui/ErrorMessage";
+import { friendlyErrorMessage } from "../../lib/friendlyError";
 import type { DeliveryCounts } from "../../lib/calendarStats";
 
 export type ConnectionStatus = "checking" | "connected" | "disconnected";
@@ -29,7 +30,7 @@ export function EmailNotificationsCard({ counts, connectionStatus, onSendBucketR
       setBucketState((s) => ({ ...s, [bucket]: "done" }));
     } catch (err) {
       setBucketState((s) => ({ ...s, [bucket]: "error" }));
-      setBucketError((s) => ({ ...s, [bucket]: err instanceof Error ? err.message : "Failed to send." }));
+      setBucketError((s) => ({ ...s, [bucket]: friendlyErrorMessage(err, "Failed to send.") }));
     }
   }
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { transactionStatusBadge } from "../../lib/transactionStatus";
+import { friendlyErrorMessage } from "../../lib/friendlyError";
 import { CalendarIcon } from "../ui/icons";
 import type { DeliveryTransaction, Product } from "../../types/domain";
 
@@ -35,7 +36,7 @@ export function SelectedDayPanel({ selectedDate, deliveries, productsById, onCre
       setReminderState((s) => ({ ...s, [id]: "done" }));
     } catch (err) {
       setReminderState((s) => ({ ...s, [id]: "error" }));
-      setReminderError((s) => ({ ...s, [id]: err instanceof Error ? err.message : "Failed to add reminder." }));
+      setReminderError((s) => ({ ...s, [id]: friendlyErrorMessage(err, "Failed to add reminder.") }));
     }
   }
 

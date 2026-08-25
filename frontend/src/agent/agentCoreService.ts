@@ -77,14 +77,11 @@ async function* agentCoreSendMessage(params: AgentSendMessageParams): AsyncGener
       body: JSON.stringify({ prompt: userMessage }),
     });
   } catch {
-    throw new Error(`Could not reach the AI service at ${AGENTCORE_URL} — is it running locally?`);
+    throw new Error("Can't reach the AI assistant right now. Please try again shortly.");
   }
 
   if (!response.ok || !response.body) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(
-      `AI service returned ${response.status}${response.statusText ? ` ${response.statusText}` : ""}${detail ? `: ${detail}` : ""}`,
-    );
+    throw new Error("The AI assistant couldn't process that request. Please try again.");
   }
 
   yield { type: "status", status: "Thinking..." };

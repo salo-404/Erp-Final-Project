@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { uploadDocument } from "../../lib/documentReview.api";
+import { friendlyErrorMessage } from "../../lib/friendlyError";
 import { UploadIcon } from "../ui/icons";
 import { ErrorMessage } from "../ui/ErrorMessage";
 
@@ -48,7 +49,7 @@ export function SampleDocumentsPanel({ onUploaded }: SampleDocumentsPanelProps) 
       const review = await uploadDocument(file);
       onUploaded(review.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to upload sample document.");
+      setError(friendlyErrorMessage(err, "Failed to upload sample document."));
     } finally {
       setUploading(false);
     }

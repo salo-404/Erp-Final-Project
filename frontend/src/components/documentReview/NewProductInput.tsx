@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { createProduct } from "../../lib/products.api";
+import { friendlyErrorMessage } from "../../lib/friendlyError";
 import { ErrorMessage } from "../ui/ErrorMessage";
 import { CheckIcon } from "../ui/icons";
 
@@ -63,7 +64,7 @@ export function NewProductInput({ initialName, categories, existingNames, onCrea
       setCreatedName(product.name);
       onCreated({ productId: product.id, name: product.name });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create product.");
+      setError(friendlyErrorMessage(err, "Failed to create product."));
     } finally {
       setCreating(false);
     }

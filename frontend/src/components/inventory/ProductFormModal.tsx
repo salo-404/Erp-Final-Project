@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Modal } from "../ui/Modal";
 import { ErrorMessage } from "../ui/ErrorMessage";
+import { friendlyErrorMessage } from "../../lib/friendlyError";
 import type { Product } from "../../types/domain";
 
 interface ProductFormModalProps {
@@ -40,7 +41,7 @@ export function ProductFormModal({ product, onClose, onSubmit }: ProductFormModa
       });
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save product.");
+      setError(friendlyErrorMessage(err, "Failed to save product."));
     } finally {
       setSubmitting(false);
     }

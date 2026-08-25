@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Modal } from "../ui/Modal";
 import { ErrorMessage } from "../ui/ErrorMessage";
+import { friendlyErrorMessage } from "../../lib/friendlyError";
 import { PlusIcon, TrashIcon } from "../ui/icons";
 import type { CreateIncomingInput, Product, Supplier, Warehouse } from "../../types/domain";
 
@@ -70,7 +71,7 @@ export function CreatePurchaseOrderModal({ suppliers, warehouses, products, init
       });
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create purchase order.");
+      setError(friendlyErrorMessage(err, "Failed to create purchase order."));
     } finally {
       setSubmitting(false);
     }

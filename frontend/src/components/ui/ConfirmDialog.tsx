@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Modal } from "./Modal";
 import { ErrorMessage } from "./ErrorMessage";
+import { friendlyErrorMessage } from "../../lib/friendlyError";
 
 interface ConfirmDialogProps {
   title: string;
@@ -21,7 +22,7 @@ export function ConfirmDialog({ title, message, confirmLabel = "Confirm", danger
     try {
       await onConfirm();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Action failed.");
+      setError(friendlyErrorMessage(err, "Action failed."));
       setSubmitting(false);
     }
   }

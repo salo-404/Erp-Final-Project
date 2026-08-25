@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Modal } from "../ui/Modal";
 import { ErrorMessage } from "../ui/ErrorMessage";
+import { friendlyErrorMessage } from "../../lib/friendlyError";
 import type { Supplier } from "../../types/domain";
 
 interface SupplierFormModalProps {
@@ -40,7 +41,7 @@ export function SupplierFormModal({ supplier, onClose, onSubmit }: SupplierFormM
       });
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save supplier.");
+      setError(friendlyErrorMessage(err, "Failed to save supplier."));
     } finally {
       setSubmitting(false);
     }

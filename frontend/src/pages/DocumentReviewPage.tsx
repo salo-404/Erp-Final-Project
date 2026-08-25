@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useFetch } from "../lib/useFetch";
+import { friendlyErrorMessage } from "../lib/friendlyError";
 import {
   approveReview,
   getReview,
@@ -183,7 +184,7 @@ export function DocumentReviewPage() {
       pendingFetch.refetch();
       reviewFetch.refetch();
     } catch (err) {
-      setDecisionError(err instanceof Error ? err.message : "Failed to approve.");
+      setDecisionError(friendlyErrorMessage(err, "Failed to approve."));
     } finally {
       setSubmitting(false);
     }
@@ -202,7 +203,7 @@ export function DocumentReviewPage() {
       reviewFetch.refetch();
       setRejecting(false);
     } catch (err) {
-      setDecisionError(err instanceof Error ? err.message : "Failed to reject.");
+      setDecisionError(friendlyErrorMessage(err, "Failed to reject."));
     } finally {
       setSubmitting(false);
     }

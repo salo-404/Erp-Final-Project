@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Modal } from "../ui/Modal";
 import { ErrorMessage } from "../ui/ErrorMessage";
+import { friendlyErrorMessage } from "../../lib/friendlyError";
 import type { Warehouse } from "../../types/domain";
 
 interface WarehouseFormModalProps {
@@ -40,7 +41,7 @@ export function WarehouseFormModal({ warehouse, onClose, onSubmit }: WarehouseFo
       });
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save warehouse.");
+      setError(friendlyErrorMessage(err, "Failed to save warehouse."));
     } finally {
       setSubmitting(false);
     }

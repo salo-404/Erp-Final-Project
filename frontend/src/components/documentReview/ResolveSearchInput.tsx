@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { SearchIcon, CheckIcon } from "../ui/icons";
 import { ErrorMessage } from "../ui/ErrorMessage";
+import { friendlyErrorMessage } from "../../lib/friendlyError";
 import type { MatchSuggestion } from "../../types/domain";
 
 interface ResolveSearchInputProps {
@@ -54,7 +55,7 @@ export function ResolveSearchInput({ initialQuery, search, resolvedLabel, onReso
       setResults(found);
     } catch (err) {
       if (requestId !== requestIdRef.current) return;
-      setSearchError(err instanceof Error ? err.message : "Search failed.");
+      setSearchError(friendlyErrorMessage(err, "Search failed."));
     } finally {
       if (requestId === requestIdRef.current) setSearching(false);
     }

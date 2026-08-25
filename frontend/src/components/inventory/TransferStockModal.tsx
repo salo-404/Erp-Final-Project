@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Modal } from "../ui/Modal";
 import { ErrorMessage } from "../ui/ErrorMessage";
+import { friendlyErrorMessage } from "../../lib/friendlyError";
 import type { CreateTransferInput, Warehouse } from "../../types/domain";
 
 interface TransferStockModalProps {
@@ -71,7 +72,7 @@ export function TransferStockModal({
       });
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create transfer.");
+      setError(friendlyErrorMessage(err, "Failed to create transfer."));
     } finally {
       setSubmitting(false);
     }
