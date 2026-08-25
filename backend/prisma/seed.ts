@@ -110,6 +110,42 @@ async function main() {
     },
   });
 
+  // Real personal Cognito accounts for the people actively working on this
+  // repo (confirmed against the eu-west-1_mEm3nENz8 user pool) - hardcoded
+  // rather than env-var-gated like ADMIN/EMPLOYEE above, because these are
+  // the same three specific people on every machine that runs this seed,
+  // not "whoever is testing locally" placeholders.
+
+  await prisma.user.create({
+    data: {
+      cognitoSub: 'b2c55464-6021-7079-5a90-5b9782aedf4e',
+      cognitoUsername: 'erp-b1b0a928-e398-4a2e-b7ef-58f13e3f6bfd',
+      name: 'Salman Bou Diab',
+      email: 'salmanbudiab@gmail.com',
+      role: UserRole.ADMIN,
+    },
+  });
+
+  await prisma.user.create({
+    data: {
+      cognitoSub: 'd215e444-50a1-705d-8839-a544d73556a3',
+      cognitoUsername: 'erp-0f61390c-e65f-482c-b8a6-c4b8a0ea157d',
+      name: 'Ribal Saleh',
+      email: 'rribalsaleh@gmail.com',
+      role: UserRole.EMPLOYEE,
+    },
+  });
+
+  await prisma.user.create({
+    data: {
+      cognitoSub: '1295a424-10d1-702e-5d28-4b028ef7bc23',
+      cognitoUsername: 'erp-d34084db-bf3f-451d-9d8e-b0872c053633',
+      name: 'Joseph Chahine',
+      email: 'josephchahine@gmail.com',
+      role: UserRole.EMPLOYEE,
+    },
+  });
+
   // ---------------------------------------------------
   // 3. SUPPLIERS
   // ---------------------------------------------------
