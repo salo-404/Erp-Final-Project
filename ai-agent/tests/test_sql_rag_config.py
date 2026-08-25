@@ -5,6 +5,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import psycopg
 import pytest
 
 from retrieval import embedding_service, query_example_repository
@@ -332,3 +333,57 @@ def test_unsafe_sql_is_not_retried_or_executed(monkeypatch) -> None:
         query_database_module.query_database("delete products")
 
     assert len(generation_calls) == 1
+
+
+def test_execution_error_retries_once_with_exact_feedback(monkeypatch) -> None:
+    """A real PostgreSQL execution failure (e.g. a GROUP BY violation
+    sql_guard's static AST check can't predict - reproduced live against
+    real data, not hypothetical) gets exactly one regenerate-and-retry,
+    same as a fixable sql_guard rejection above - not left unretried."""
+    _configure_query_database_dependencies(monkeypatch)
+    generation_calls: list[dict] = []
+    execution_calls: list[str] = []
+
+    def generate_sql(**kwargs):
+        generation_calls.append(kwargs)
+        return 'SELECT it.id FROM "InventoryTransaction" it'
+
+    def execute_query(sql):
+        execution_calls.append(sql)
+        if len(execution_calls) == 1:
+            raise psycopg.errors.GroupingError(
+                'column "it.id" must appear in the GROUP BY clause or be used in an aggregate function'
+            )
+        return [{"id": 86}]
+
+    monkeypatch.setattr(query_database_module, "generate_sql", generate_sql)
+    monkeypatch.setattr(query_database_module, "validate_sql", lambda sql: sql)
+    monkeypatch.setattr(query_database_module, "execute_query", execute_query)
+
+    result = query_database_module.query_database("last completed order")
+
+    assert len(generation_calls) == 2
+    assert generation_calls[1]["validation_feedback"] == (
+        'column "it.id" must appear in the GROUP BY clause or be used in an aggregate function'
+    )
+    assert len(execution_calls) == 2
+    assert result["rows"] == [{"id": 86}]
+
+
+def test_execution_error_not_retried_twice(monkeypatch) -> None:
+    """A second consecutive execution failure propagates uncaught rather
+    than retrying again - same "at most one retry" bound as every other
+    retryable error."""
+    _configure_query_database_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        query_database_module, "generate_sql", lambda **kwargs: 'SELECT it.id FROM "InventoryTransaction" it'
+    )
+    monkeypatch.setattr(query_database_module, "validate_sql", lambda sql: sql)
+
+    def always_fails(sql):
+        raise psycopg.errors.GroupingError("still broken")
+
+    monkeypatch.setattr(query_database_module, "execute_query", always_fails)
+
+    with pytest.raises(psycopg.errors.GroupingError, match="still broken"):
+        query_database_module.query_database("last completed order")

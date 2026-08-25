@@ -1,3 +1,4 @@
+import psycopg
 from strands import tool
 
 from retrieval.embedding_service import embed_text
@@ -5,6 +6,30 @@ from retrieval.query_example_repository import TOP_K, find_similar_examples
 from sql.sql_generator import generate_sql
 from sql.sql_guard import IdentifierQuotingError, SchemaValidationError, validate_sql
 from sql.read_only_db import execute_query
+
+# Errors worth exactly one regenerate-and-retry attempt: either sql_guard
+# rejected the SQL for a fixable reason (an unquoted Prisma identifier, a
+# column/table its static AST check disproved), or PostgreSQL itself
+# rejected it at execution time for something sql_guard's static validation
+# can't predict (e.g. a GROUP BY violation - confirmed to happen on live
+# data, not hypothetical). Never retried more than once - see
+# query_database()'s own docstring below.
+_RETRYABLE_ERRORS = (IdentifierQuotingError, SchemaValidationError, psycopg.Error)
+
+
+def _generate_validate_execute(
+    question: str,
+    examples: list[dict],
+    validation_feedback: str | None = None,
+) -> tuple[str, list[dict]]:
+    generated_sql = generate_sql(
+        question=question,
+        examples=examples,
+        validation_feedback=validation_feedback,
+    )
+    safe_sql = validate_sql(generated_sql)
+    rows = execute_query(safe_sql)
+    return safe_sql, rows
 
 
 @tool
@@ -16,6 +41,12 @@ def query_database(question: str) -> dict:
     3. Bedrock SQL generation
     4. SQL safety validation
     5. read-only PostgreSQL execution
+
+    Generation, validation, and execution are retried together, exactly
+    once, if the first attempt fails for a retryable reason (a fixable
+    sql_guard rejection, or a real PostgreSQL execution error sql_guard's
+    static checks couldn't have caught) - see _RETRYABLE_ERRORS. A second
+    failure propagates uncaught rather than retrying again.
     """
 
     if not question or not question.strip():
@@ -35,31 +66,14 @@ def query_database(question: str) -> dict:
             "No similar SQL examples were found"
         )
 
-    # 3. Ask the configured SQL model to generate SQL using:
-    #    - schema
-    #    - business rules
-    #    - retrieved examples
-    #    - user's question
-    generated_sql = generate_sql(
-        question=question,
-        examples=examples,
-    )
-
-    # 4. Programmatically reject unsafe SQL.
+    # 3-5. Generate, validate, and execute - retried once as a unit on a
+    # retryable failure, feeding the real error back to the model.
     try:
-        safe_sql = validate_sql(generated_sql)
-    except (IdentifierQuotingError, SchemaValidationError) as exc:
-        # Retry exactly once for the model's known quoting failure. The
-        # regenerated SQL must still pass the complete guard before execution.
-        generated_sql = generate_sql(
-            question=question,
-            examples=examples,
-            validation_feedback=str(exc),
+        safe_sql, rows = _generate_validate_execute(question, examples)
+    except _RETRYABLE_ERRORS as exc:
+        safe_sql, rows = _generate_validate_execute(
+            question, examples, validation_feedback=str(exc)
         )
-        safe_sql = validate_sql(generated_sql)
-
-    # 5. Execute only the validated SQL.
-    rows = execute_query(safe_sql)
 
     return {
         "question": question,

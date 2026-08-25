@@ -638,12 +638,18 @@ def test_get_stockout_risk_wired_end_to_end_against_mocked_backend(monkeypatch: 
     field names - confirmed against stock-insights.service.ts). Proves
     riskLevel passes through unchanged (no remapping - removed in favor of
     a direct 3-value pass-through matching the real enum exactly), the
-    predictedStockoutDate field-name fix, and the
-    riskScore/productName/warehouseName drops are all actually correct
-    against a realistic payload, not just plausible.
+    predictedStockoutDate field-name fix, the riskScore drop, and that
+    productName/warehouseName are populated from the separate GET /products
+    + GET /warehouses calls (added 2026-08-25 after live confirmation that
+    omitting them caused the agent to guess/fabricate a warehouse name
+    instead) rather than left as None.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/products":
+            return httpx.Response(200, json=[{"id": 101, "name": "Laptop Pro 14"}, {"id": 102, "name": "Wireless Mouse"}, {"id": 108, "name": "USB-C Dock"}])
+        if request.url.path == "/warehouses":
+            return httpx.Response(200, json=[{"id": 1, "name": "Beirut Warehouse"}, {"id": 2, "name": "Tripoli Warehouse"}])
         if request.url.path == "/stock-insights/stockout-risk":
             return httpx.Response(
                 200,
@@ -707,6 +713,10 @@ def test_get_stockout_risk_wired_end_to_end_against_mocked_backend(monkeypatch: 
     assert by_product[101]["riskLevel"] == "OK"
     assert by_product[102]["predictedStockoutDate"] is not None
     assert by_product[101]["predictedStockoutDate"] is None
+    assert by_product[102]["productName"] == "Wireless Mouse"
+    assert by_product[102]["warehouseName"] == "Beirut Warehouse"
+    assert by_product[108]["productName"] == "USB-C Dock"
+    assert by_product[108]["warehouseName"] == "Tripoli Warehouse"
     for item in by_product.values():
         assert {
             "onHand",
@@ -720,8 +730,6 @@ def test_get_stockout_risk_wired_end_to_end_against_mocked_backend(monkeypatch: 
             "daysOfSupply",
         } <= item.keys()
         assert "riskScore" not in item
-        assert "productName" not in item
-        assert "warehouseName" not in item
 
 
 def test_get_stockout_risk_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -754,11 +762,18 @@ def test_analyze_dead_stock_wired_end_to_end_against_mocked_backend(monkeypatch:
     httpx.MockTransport, shaped exactly like the real
     GET /stock-insights/dead-stock (bare array, real DeadStockEntry field
     names). Proves both movement-date pairs pass through independently,
-    including the null case (never had an OUTGOING movement at all), and
-    that reason/tiedUpCapital/productName/warehouseName are all absent.
+    including the null case (never had an OUTGOING movement at all), that
+    reason/tiedUpCapital are absent, and that productName/warehouseName
+    are populated from the separate GET /products + GET /warehouses calls
+    (added 2026-08-25 after live confirmation that omitting them caused
+    the agent to guess/fabricate a warehouse name instead).
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/products":
+            return httpx.Response(200, json=[{"id": 340, "name": "Office Chair"}, {"id": 341, "name": "HD Webcam"}])
+        if request.url.path == "/warehouses":
+            return httpx.Response(200, json=[{"id": 1, "name": "Beirut Warehouse"}, {"id": 2, "name": "Tripoli Warehouse"}])
         if request.url.path == "/stock-insights/dead-stock":
             return httpx.Response(
                 200,
@@ -794,11 +809,13 @@ def test_analyze_dead_stock_wired_end_to_end_against_mocked_backend(monkeypatch:
     assert by_product[340]["daysSinceLastOutgoingMovement"] is None
     assert by_product[340]["daysSinceLastMovement"] == 195
     assert by_product[341]["daysSinceLastOutgoingMovement"] == 75
+    assert by_product[340]["productName"] == "Office Chair"
+    assert by_product[340]["warehouseName"] == "Tripoli Warehouse"
+    assert by_product[341]["productName"] == "HD Webcam"
+    assert by_product[341]["warehouseName"] == "Beirut Warehouse"
     for item in by_product.values():
         assert "reason" not in item
         assert "tiedUpCapital" not in item
-        assert "productName" not in item
-        assert "warehouseName" not in item
 
 
 def test_analyze_dead_stock_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -842,11 +859,18 @@ def test_get_restock_recommendations_wired_end_to_end_against_mocked_backend(
     GET /stock-insights/restock-recommendations (bare array, real
     RestockRecommendation field names). Proves the recommendedQuantity
     rename, the reason enum pass-through, the explanation pass-through,
-    and the needsReorder/candidate/productName/warehouseName drops are
-    all actually correct against a realistic payload.
+    the needsReorder/candidate drops, and that productName/warehouseName
+    are populated from the separate GET /products + GET /warehouses calls
+    (added 2026-08-25 after live confirmation that omitting them caused
+    the agent to guess/fabricate a warehouse name instead) are all
+    actually correct against a realistic payload.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/products":
+            return httpx.Response(200, json=[{"id": 102, "name": "Wireless Mouse"}, {"id": 103, "name": "27in Monitor"}])
+        if request.url.path == "/warehouses":
+            return httpx.Response(200, json=[{"id": 1, "name": "Beirut Warehouse"}, {"id": 2, "name": "Tripoli Warehouse"}])
         if request.url.path == "/stock-insights/restock-recommendations":
             return httpx.Response(
                 200,
@@ -902,6 +926,10 @@ def test_get_restock_recommendations_wired_end_to_end_against_mocked_backend(
     assert by_product[102]["reason"] == "purchase_required"
     assert by_product[103]["reason"] == "transfer_available"
     assert by_product[102]["explanation"].startswith("No pending incoming stock")
+    assert by_product[102]["productName"] == "Wireless Mouse"
+    assert by_product[102]["warehouseName"] == "Beirut Warehouse"
+    assert by_product[103]["productName"] == "27in Monitor"
+    assert by_product[103]["warehouseName"] == "Tripoli Warehouse"
     for rec in by_product.values():
         assert {
             "available",
@@ -915,8 +943,6 @@ def test_get_restock_recommendations_wired_end_to_end_against_mocked_backend(
         } <= rec.keys()
         assert "needsReorder" not in rec
         assert "candidate" not in rec
-        assert "productName" not in rec
-        assert "warehouseName" not in rec
 
 
 def test_get_restock_recommendations_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -953,11 +979,19 @@ def test_get_transfer_recommendations_wired_end_to_end_against_mocked_backend(
     GET /stock-insights/transfer-recommendations (bare array, real
     TransferRecommendation field names - fromWarehouseId/toWarehouseId/
     transferQuantity). Proves the field renames to sourceWarehouseId/
-    destinationWarehouseId/quantity and the deterministic reason-building
-    are both actually correct against a realistic payload.
+    destinationWarehouseId/quantity, the deterministic reason-building,
+    and that productName/fromWarehouseName/toWarehouseName are populated
+    from the separate GET /products + GET /warehouses calls (added
+    2026-08-25 after live confirmation that omitting them caused the
+    agent to guess/fabricate a warehouse name instead) are all actually
+    correct against a realistic payload.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/products":
+            return httpx.Response(200, json=[{"id": 103, "name": "27in Monitor"}])
+        if request.url.path == "/warehouses":
+            return httpx.Response(200, json=[{"id": 1, "name": "Beirut Warehouse"}, {"id": 2, "name": "Tripoli Warehouse"}])
         if request.url.path == "/stock-insights/transfer-recommendations":
             return httpx.Response(
                 200,
@@ -997,7 +1031,9 @@ def test_get_transfer_recommendations_wired_end_to_end_against_mocked_backend(
     assert rec["destinationDaysOfSupply"] == 5.7
     assert "is at risk of stocking out" in rec["reason"]
     assert "5.7 days of supply" in rec["reason"]
-    assert "productName" not in rec
+    assert rec["productName"] == "27in Monitor"
+    assert rec["fromWarehouseName"] == "Tripoli Warehouse"
+    assert rec["toWarehouseName"] == "Beirut Warehouse"
 
 
 def test_get_transfer_recommendations_propagates_typed_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1038,11 +1074,18 @@ def test_get_consumption_anomalies_wired_end_to_end_against_mocked_backend(
     of a field that didn't exist yet). Proves the direction pass-through,
     the null-percentChange (zero-baseline) case, the warehouseId
     pass-through (including two different warehouses for the SAME product,
-    proving they are not merged), and the productName/warehouseName drops
-    are all actually correct against a realistic payload.
+    proving they are not merged), and that productName/warehouseName are
+    populated from the separate GET /products + GET /warehouses calls
+    (added 2026-08-25 after live confirmation that omitting them caused
+    the agent to guess/fabricate a warehouse name instead) are all
+    actually correct against a realistic payload.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/products":
+            return httpx.Response(200, json=[{"id": 102, "name": "Wireless Mouse"}, {"id": 115, "name": "Office Headset"}])
+        if request.url.path == "/warehouses":
+            return httpx.Response(200, json=[{"id": 1, "name": "Beirut Warehouse"}, {"id": 2, "name": "Tripoli Warehouse"}])
         if request.url.path == "/stock-insights/consumption-anomalies":
             return httpx.Response(
                 200,
@@ -1086,9 +1129,11 @@ def test_get_consumption_anomalies_wired_end_to_end_against_mocked_backend(
     assert by_key[(102, 2)]["direction"] == "DECREASE"
     assert by_key[(102, 2)]["percentChange"] == -87.5
     assert by_key[(115, 1)]["percentChange"] is None  # zero-baseline case
+    assert by_key[(102, 1)]["productName"] == "Wireless Mouse"
+    assert by_key[(102, 1)]["warehouseName"] == "Beirut Warehouse"
+    assert by_key[(102, 2)]["warehouseName"] == "Tripoli Warehouse"
+    assert by_key[(115, 1)]["productName"] == "Office Headset"
     for item in by_key.values():
-        assert "productName" not in item
-        assert "warehouseName" not in item
         assert "anomalyType" not in item
 
 
@@ -2206,6 +2251,8 @@ def test_insights_agent_declines_expiry_questions_honestly() -> None:
         "no dedicated",
         "not available",
         "not supported",
+        "do not support",
+        "does not support",
         "cannot",
         "cant",
         "couldnt",

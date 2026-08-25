@@ -259,6 +259,43 @@ def _public_tool_status(event: object) -> dict[str, str] | None:
     return {"type": "tool_status", "label": label}
 
 
+_GATE_CONTEXT_TURNS = 2  # user+assistant pairs - enough to recognize a follow-up, not a full transcript
+
+
+def _recent_conversation_context(agent: Any | None) -> str | None:
+    """Serialize the tail of an existing Supervisor's conversation for the gate.
+
+    Returns None when there's no prior conversation yet (a session's first
+    message, or a session whose Supervisor hasn't been built) - the gate
+    then falls back to judging the message in isolation, which is correct
+    for a genuinely first message. See gate.is_in_scope's docstring for why
+    this exists: without it, an ordinary follow-up with no ERP keyword of
+    its own gets declined by a classifier that never sees what it's
+    following up on.
+    """
+    if agent is None:
+        return None
+    messages = getattr(agent, "messages", None)
+    if not messages:
+        return None
+
+    lines: list[str] = []
+    for message in messages[-(_GATE_CONTEXT_TURNS * 2):]:
+        role = message.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text_parts = [
+            block["text"]
+            for block in message.get("content", [])
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+        ]
+        text = " ".join(text_parts).strip()
+        if text:
+            lines.append(f"{role}: {text}")
+
+    return "\n".join(lines) if lines else None
+
+
 def _public_text_delta(event: object) -> dict[str, str] | None:
     """Return the only public form of a safe Strands text-stream event."""
     if not isinstance(event, dict):
@@ -330,7 +367,18 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
             await _acquire_invocation_lock(state.invocation_lock)
             lock_acquired = True
 
-            allowed, reason, internal_error = await asyncio.to_thread(is_in_scope, prompt)
+            # Only read context off a Supervisor this session ALREADY built on
+            # an earlier turn - never construct Memory/Supervisor just to feed
+            # the gate. A declined query must still never cause either to be
+            # built (see test_gate_decline_uses_stream_contract_without_memory_or_supervisor).
+            # This means a session's first message, or the first message after
+            # a microVM reset drops the in-process cache, is judged without
+            # context (same as before this fix) - the common case this fixes
+            # is an ordinary follow-up later in an already-active session.
+            recent_context = _recent_conversation_context(state.supervisor_agent)
+            allowed, reason, internal_error = await asyncio.to_thread(
+                is_in_scope, prompt, recent_context
+            )
             if not allowed:
                 # internal_error: reason is already the standalone generic
                 # fallback message (see gate.is_in_scope) - never grafted

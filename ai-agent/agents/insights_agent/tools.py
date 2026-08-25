@@ -344,8 +344,15 @@ async def get_stockout_risk() -> dict:
         A dict with an `items` list, each carrying a `riskLevel`
         (OK/AT_RISK/OUT_OF_STOCK - a direct pass-through of the backend's
         own value, no remapping), a `predictedStockoutDate` when
-        available, and `avgDailyConsumption`, plus the backend's physical,
-        reserved, pending-incoming, and projected-stock context.
+        available, `avgDailyConsumption`, the backend's physical,
+        reserved, pending-incoming, and projected-stock context, and
+        productName/warehouseName (fetched via one shared GET /products +
+        GET /warehouses call, same pattern as get_available_stock) - None
+        only for an inactive/deleted product or warehouse. These are
+        included specifically so the agent never has to guess a name for
+        an ID - confirmed live that omitting them caused exactly that: a
+        nonexistent "Trieste Warehouse" and a real warehouse misnamed
+        across repeated runs.
 
     Raises:
         Unauthorized, Forbidden, NotFound, ValidationError, Conflict, or
@@ -357,12 +364,20 @@ async def get_stockout_risk() -> dict:
         fabricate a result.
     """
     client = get_backend_client()
+
+    products = await client.get("/products")
+    product_names = {product["id"]: product["name"] for product in products}
+    warehouses = await client.get("/warehouses")
+    warehouse_names = {warehouse["id"]: warehouse["name"] for warehouse in warehouses}
+
     entries = await client.get("/stock-insights/stockout-risk")
 
     items = [
         {
             "productId": entry["productId"],
+            "productName": product_names.get(entry["productId"]),
             "warehouseId": entry["warehouseId"],
+            "warehouseName": warehouse_names.get(entry["warehouseId"]),
             "onHand": entry["onHand"],
             "activeReserved": entry["activeReserved"],
             "available": entry["available"],
@@ -391,9 +406,13 @@ async def get_restock_recommendations() -> dict:
         A dict with a `recommendations` list. Each item has a
         `recommendedQuantity`, a `reason` (transfer_available/
         purchase_required - a direct pass-through of the backend's own
-        2-value enum, no remapping), and a backend-generated `explanation`
-        sentence. No supplier candidate is included - this endpoint
-        doesn't recommend one; use compare_suppliers() separately for that.
+        2-value enum, no remapping), a backend-generated `explanation`
+        sentence, and productName/warehouseName (fetched via one shared
+        GET /products + GET /warehouses call, same pattern as
+        get_available_stock - see get_stockout_risk for why this matters:
+        without a real name, the agent guesses one). No supplier candidate
+        is included - this endpoint doesn't recommend one; use
+        compare_suppliers() separately for that.
 
     Raises:
         Unauthorized, Forbidden, NotFound, ValidationError, Conflict, or
@@ -402,12 +421,20 @@ async def get_restock_recommendations() -> dict:
         every other wired tool in this file.
     """
     client = get_backend_client()
+
+    products = await client.get("/products")
+    product_names = {product["id"]: product["name"] for product in products}
+    warehouses = await client.get("/warehouses")
+    warehouse_names = {warehouse["id"]: warehouse["name"] for warehouse in warehouses}
+
     entries = await client.get("/stock-insights/restock-recommendations")
 
     recommendations = [
         {
             "productId": entry["productId"],
+            "productName": product_names.get(entry["productId"]),
             "warehouseId": entry["warehouseId"],
+            "warehouseName": warehouse_names.get(entry["warehouseId"]),
             "available": entry["available"],
             "pendingIncomingQuantity": entry["pendingIncomingQuantity"],
             "projectedAvailable": entry["projectedAvailable"],
@@ -469,10 +496,15 @@ async def get_transfer_recommendations() -> dict:
     Returns:
         A dict with a `recommendations` list of source/destination
         warehouse pairs, the product, `transferQuantity`, the backend's
-        post-transfer/source/destination context, and a `reason` string
+        post-transfer/source/destination context, a `reason` string
         the AI layer builds deterministically from real backend fields
         (destinationRiskLevel, destinationDaysOfSupply, sourceIsDeadStock)
-        - never model-generated.
+        - never model-generated - and productName/fromWarehouseName/
+        toWarehouseName (fetched via one shared GET /products +
+        GET /warehouses call, same pattern as get_available_stock - see
+        get_stockout_risk for why this matters: without a real name, the
+        agent guesses one, confirmed live to invent a nonexistent
+        warehouse name).
 
     Raises:
         Unauthorized, Forbidden, NotFound, ValidationError, Conflict, or
@@ -481,13 +513,22 @@ async def get_transfer_recommendations() -> dict:
         every other wired tool in this file.
     """
     client = get_backend_client()
+
+    products = await client.get("/products")
+    product_names = {product["id"]: product["name"] for product in products}
+    warehouses = await client.get("/warehouses")
+    warehouse_names = {warehouse["id"]: warehouse["name"] for warehouse in warehouses}
+
     entries = await client.get("/stock-insights/transfer-recommendations")
 
     recommendations = [
         {
             "productId": entry["productId"],
+            "productName": product_names.get(entry["productId"]),
             "fromWarehouseId": entry["fromWarehouseId"],
+            "fromWarehouseName": warehouse_names.get(entry["fromWarehouseId"]),
             "toWarehouseId": entry["toWarehouseId"],
+            "toWarehouseName": warehouse_names.get(entry["toWarehouseId"]),
             "transferQuantity": entry["transferQuantity"],
             "fromWarehouseAvailableAfterTransfer": entry[
                 "fromWarehouseAvailableAfterTransfer"
@@ -533,7 +574,10 @@ async def analyze_dead_stock() -> dict:
         just "a long time ago". No `reason` category or `tiedUpCapital`
         cost estimate is included - the backend doesn't calculate either,
         and this tool never fabricates a number or category it didn't get
-        from a real source.
+        from a real source. productName/warehouseName ARE included
+        (fetched via one shared GET /products + GET /warehouses call, same
+        pattern as get_available_stock) - see get_stockout_risk for why
+        this matters: without a real name, the agent guesses one.
 
     Raises:
         Unauthorized, Forbidden, NotFound, ValidationError, Conflict, or
@@ -542,12 +586,20 @@ async def analyze_dead_stock() -> dict:
         recommend_dead_stock_transfer() and get_stockout_risk() above.
     """
     client = get_backend_client()
+
+    products = await client.get("/products")
+    product_names = {product["id"]: product["name"] for product in products}
+    warehouses = await client.get("/warehouses")
+    warehouse_names = {warehouse["id"]: warehouse["name"] for warehouse in warehouses}
+
     entries = await client.get("/stock-insights/dead-stock")
 
     items = [
         {
             "productId": entry["productId"],
+            "productName": product_names.get(entry["productId"]),
             "warehouseId": entry["warehouseId"],
+            "warehouseName": warehouse_names.get(entry["warehouseId"]),
             "onHand": entry["onHand"],
             "lastMovementAt": entry["lastMovementAt"],
             "daysSinceLastMovement": entry["daysSinceLastMovement"],
@@ -577,8 +629,12 @@ async def get_consumption_anomalies() -> dict:
         A dict with an `anomalies` list. Each item carries `warehouseId`,
         `recentQuantity`, `baselineQuantity`, a `direction` (INCREASE/
         DECREASE - a direct pass-through of the backend's own value, no
-        remapping), and `percentChange` (null when baselineQuantity is 0 -
-        new consumption appearing from nothing, itself the anomaly).
+        remapping), `percentChange` (null when baselineQuantity is 0 -
+        new consumption appearing from nothing, itself the anomaly), and
+        productName/warehouseName (fetched via one shared GET /products +
+        GET /warehouses call, same pattern as get_available_stock) - see
+        get_stockout_risk for why this matters: without a real name, the
+        agent guesses one.
 
     Raises:
         Unauthorized, Forbidden, NotFound, ValidationError, Conflict, or
@@ -587,12 +643,20 @@ async def get_consumption_anomalies() -> dict:
         every other wired tool in this file.
     """
     client = get_backend_client()
+
+    products = await client.get("/products")
+    product_names = {product["id"]: product["name"] for product in products}
+    warehouses = await client.get("/warehouses")
+    warehouse_names = {warehouse["id"]: warehouse["name"] for warehouse in warehouses}
+
     entries = await client.get("/stock-insights/consumption-anomalies")
 
     anomalies = [
         {
             "productId": entry["productId"],
+            "productName": product_names.get(entry["productId"]),
             "warehouseId": entry["warehouseId"],
+            "warehouseName": warehouse_names.get(entry["warehouseId"]),
             "recentQuantity": entry["recentQuantity"],
             "baselineQuantity": entry["baselineQuantity"],
             "percentChange": entry["percentChange"],

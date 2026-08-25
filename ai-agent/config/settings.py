@@ -69,6 +69,16 @@ AgentName = Literal["insights", "document", "supervisor", "gate", "narration"]
 _DEFAULT_BEDROCK_MODEL_ID = "mistral.ministral-3-14b-instruct"
 _DEFAULT_BEDROCK_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 
+# Every conversational/classification/narration role left Bedrock's own
+# default temperature unset (not near 0), so this 14B model was free to
+# sample loosely - confirmed live to occasionally mutate a real, correctly
+# supplied warehouse name in prose (e.g. "Tripoli Warehouse" -> "Tripolitan
+# Warehouse") on one run and get it right on the next from identical tool
+# data. SQL generation already forces temperature=0 for the same reason.
+# Low but not zero: these roles still need some fluency in composing an
+# answer, unlike single-shot SQL generation.
+_CONVERSATIONAL_TEMPERATURE = 0.1
+
 
 def _environment_flag(name: str, default: bool = False) -> bool:
     """Parse a boolean environment flag without accepting ambiguous values."""
@@ -314,7 +324,11 @@ class Settings:
         if self.model_provider == "bedrock":
             from strands.models import BedrockModel
 
-            return BedrockModel(model_id=model_id, region_name=self.aws_region)
+            return BedrockModel(
+                model_id=model_id,
+                region_name=self.aws_region,
+                temperature=_CONVERSATIONAL_TEMPERATURE,
+            )
 
         raise ValueError(
             f"Unknown MODEL_PROVIDER: {self.model_provider!r} (expected 'openai' or 'bedrock')"

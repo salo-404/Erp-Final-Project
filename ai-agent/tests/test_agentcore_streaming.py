@@ -51,7 +51,7 @@ def test_only_safe_text_deltas_are_exposed_and_done_is_emitted_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"human-token": 7})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt, recent_context=None: (True, "allowed", False))
     monkeypatch.setattr(
         entrypoint, "build_agentcore_memory_session_manager", lambda **kwargs: None
     )
@@ -101,7 +101,9 @@ def test_gate_decline_uses_stream_contract_without_memory_or_supervisor(
 ) -> None:
     _patch_membership(monkeypatch, {"human-token": 7})
     monkeypatch.setattr(
-        entrypoint, "is_in_scope", lambda prompt: (False, "out of scope", False)
+        entrypoint,
+        "is_in_scope",
+        lambda prompt, recent_context=None: (False, "out of scope", False),
     )
     monkeypatch.setattr(
         entrypoint,
@@ -137,7 +139,7 @@ def test_gate_internal_error_streams_generic_fallback_not_the_decline_template(
     monkeypatch.setattr(
         entrypoint,
         "is_in_scope",
-        lambda prompt: (False, distinctive_internal_message, True),
+        lambda prompt, recent_context=None: (False, distinctive_internal_message, True),
     )
     monkeypatch.setattr(
         entrypoint,
@@ -165,7 +167,7 @@ def test_same_session_is_serialized_for_the_full_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"same-human": 7})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt, recent_context=None: (True, "allowed", False))
     monkeypatch.setattr(
         entrypoint, "build_agentcore_memory_session_manager", lambda **kwargs: None
     )
@@ -206,7 +208,7 @@ def test_different_sessions_stream_concurrently(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"same-human": 7})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt, recent_context=None: (True, "allowed", False))
     monkeypatch.setattr(
         entrypoint, "build_agentcore_memory_session_manager", lambda **kwargs: None
     )
@@ -255,7 +257,7 @@ def test_human_bearer_exists_for_full_stream_and_resets_after_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"exact-token": 7})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt, recent_context=None: (True, "allowed", False))
     monkeypatch.setattr(
         entrypoint, "build_agentcore_memory_session_manager", lambda **kwargs: None
     )
@@ -292,7 +294,7 @@ def test_streaming_exception_is_safe_and_resets_context_and_state(
 ) -> None:
     token = "secret-human-token"
     _patch_membership(monkeypatch, {token: 7})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt, recent_context=None: (True, "allowed", False))
     monkeypatch.setattr(
         entrypoint, "build_agentcore_memory_session_manager", lambda **kwargs: None
     )
@@ -338,7 +340,7 @@ def test_cancellation_releases_lock_state_and_allows_same_session_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"same-human": 7})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt, recent_context=None: (True, "allowed", False))
     monkeypatch.setattr(
         entrypoint, "build_agentcore_memory_session_manager", lambda **kwargs: None
     )
@@ -388,7 +390,7 @@ def test_cancellation_while_waiting_for_session_lock_does_not_leak_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"same-human": 7})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt, recent_context=None: (True, "allowed", False))
     monkeypatch.setattr(
         entrypoint, "build_agentcore_memory_session_manager", lambda **kwargs: None
     )

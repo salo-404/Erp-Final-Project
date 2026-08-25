@@ -93,7 +93,11 @@ class RecordingAgent:
 
 
 def _allow_scope(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(
+        entrypoint,
+        "is_in_scope",
+        lambda prompt, recent_context=None: (True, "allowed", False),
+    )
 
 
 def test_human_bearer_token_extraction_is_case_insensitive() -> None:

@@ -168,7 +168,11 @@ def test_configured_memory_restoration_failure_streams_error_without_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"same-human": 7})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(
+        entrypoint,
+        "is_in_scope",
+        lambda prompt, recent_context=None: (True, "allowed", False),
+    )
     manager = object()
     monkeypatch.setattr(
         entrypoint,
@@ -194,7 +198,11 @@ def test_authoritative_context_and_auth_identity_feed_memory_not_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"real-human": 7})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(
+        entrypoint,
+        "is_in_scope",
+        lambda prompt, recent_context=None: (True, "allowed", False),
+    )
     memory_calls: list[dict[str, str]] = []
     manager = object()
     built: list[object] = []
@@ -230,7 +238,11 @@ def test_same_live_session_builds_one_manager_and_one_supervisor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"same-human": 7})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(
+        entrypoint,
+        "is_in_scope",
+        lambda prompt, recent_context=None: (True, "allowed", False),
+    )
     managers: list[object] = []
     agents: list[_Agent] = []
 
@@ -263,7 +275,11 @@ def test_actor_and_session_isolation_create_separate_managers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"user-seven": 7, "user-eight": 8})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(
+        entrypoint,
+        "is_in_scope",
+        lambda prompt, recent_context=None: (True, "allowed", False),
+    )
     identities: list[tuple[str, str]] = []
 
     def build_memory(*, actor_id: str, session_id: str) -> object:
@@ -308,7 +324,7 @@ def test_cross_user_takeover_fails_before_memory_gate_or_supervisor(
     monkeypatch.setattr(
         entrypoint,
         "is_in_scope",
-        lambda prompt: pytest.fail("Gate must not run"),
+        lambda prompt, recent_context=None: pytest.fail("Gate must not run"),
     )
     monkeypatch.setattr(
         entrypoint,
@@ -327,7 +343,11 @@ def test_registry_reset_rebuilds_same_memory_identity_and_restores_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_membership(monkeypatch, {"same-human": 7})
-    monkeypatch.setattr(entrypoint, "is_in_scope", lambda prompt: (True, "allowed", False))
+    monkeypatch.setattr(
+        entrypoint,
+        "is_in_scope",
+        lambda prompt, recent_context=None: (True, "allowed", False),
+    )
     persisted: dict[tuple[str, str], list[str]] = {}
     manager_keys: list[tuple[str, str]] = []
     restored_histories: list[list[str]] = []

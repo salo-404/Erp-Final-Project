@@ -195,11 +195,17 @@ class LowStockResponse(BaseModel):
 # against the ACTUAL StockoutRiskEntry returned by
 # backend/src/stock-insights/stock-insights.service.ts's getStockoutRisk() -
 # confirmed directly against that source, not assumed:
-#   - No productName/warehouseName field exists on the real entry - the
-#     backend never joins Product/Warehouse for this endpoint. Dropped
-#     rather than left as a required field the real payload can't satisfy,
-#     or silently defaulted to a misleading placeholder - same
-#     no-fabrication principle as riskScore/predictedStockoutDate below.
+#   - productName/warehouseName do NOT exist on the real entry itself (the
+#     backend never joins Product/Warehouse for this endpoint) - but ARE
+#     included here, fetched separately via one shared GET /products +
+#     GET /warehouses call (see tools.py::get_stockout_risk), same pattern
+#     as get_available_stock. Originally dropped entirely under the same
+#     no-fabrication principle as riskScore below; reversed on 2026-08-25
+#     after confirming live that omitting them just moves the fabrication
+#     risk downstream - the agent guessed a name instead, inventing a
+#     nonexistent "Trieste Warehouse" and misnaming a real warehouse
+#     across repeated runs. Fetching the real name is not fabrication;
+#     leaving the agent to guess one is worse than the field being absent.
 #   - No riskScore exists on the real entry either - dropped, not
 #     computed/estimated by the AI layer.
 #   - riskLevel is a direct pass-through of the real 3-value enum (OK/
@@ -219,7 +225,9 @@ class LowStockResponse(BaseModel):
 
 class StockoutRiskItem(BaseModel):
     productId: int
+    productName: Optional[str] = None
     warehouseId: int
+    warehouseName: Optional[str] = None
     onHand: int
     activeReserved: int
     available: int
@@ -245,9 +253,12 @@ class StockoutRiskResponse(BaseModel):
 # against the ACTUAL RestockRecommendation returned by
 # backend/src/stock-insights/stock-insights.service.ts's
 # getRestockRecommendations():
-#   - No productName/warehouseName - same no-fabrication call as
-#     get_stockout_risk/analyze_dead_stock above; this endpoint doesn't
-#     join Product/Warehouse either.
+#   - productName/warehouseName ARE included (fetched separately, same
+#     shared GET /products + GET /warehouses pattern as get_available_stock)
+#     even though this endpoint itself doesn't join Product/Warehouse -
+#     see StockoutRiskItem above for why this reverses an earlier
+#     no-fabrication call that turned out to just push the fabrication
+#     onto the agent instead.
 #   - No needsReorder boolean - dropped. Every row this real endpoint
 #     returns already needs a reorder by construction (rows a pending
 #     incoming would fully resolve are excluded server-side, per
@@ -270,7 +281,9 @@ class StockoutRiskResponse(BaseModel):
 
 class RestockRecommendation(BaseModel):
     productId: int
+    productName: Optional[str] = None
     warehouseId: int
+    warehouseName: Optional[str] = None
     available: int
     pendingIncomingQuantity: int
     projectedAvailable: int
@@ -296,8 +309,10 @@ class RestockRecommendationsResponse(BaseModel):
 # against the ACTUAL TransferRecommendation returned by
 # backend/src/stock-insights/stock-insights.service.ts's
 # getTransferRecommendations():
-#   - No productName/sourceWarehouseName/destinationWarehouseName - same
-#     no-fabrication call as elsewhere in this file.
+#   - productName/fromWarehouseName/toWarehouseName ARE included (fetched
+#     separately, same shared GET /products + GET /warehouses pattern as
+#     get_available_stock) - see StockoutRiskItem above for why this
+#     reverses an earlier no-fabrication call.
 #   - The real backend names fromWarehouseId/toWarehouseId/transferQuantity
 #     and all backend-calculated post-transfer/source/destination fields are
 #     preserved verbatim.
@@ -312,8 +327,11 @@ class RestockRecommendationsResponse(BaseModel):
 
 class TransferRecommendation(BaseModel):
     productId: int
+    productName: Optional[str] = None
     fromWarehouseId: int
+    fromWarehouseName: Optional[str] = None
     toWarehouseId: int
+    toWarehouseName: Optional[str] = None
     transferQuantity: int
     fromWarehouseAvailableAfterTransfer: int
     toWarehouseProjectedAvailableAfterTransfer: int
@@ -342,11 +360,12 @@ class TransferRecommendationsResponse(BaseModel):
 # Wired to the real backend (see agents/insights_agent/tools.py). Reshaped
 # against the ACTUAL DeadStockEntry returned by
 # backend/src/stock-insights/stock-insights.service.ts's getDeadStock():
-#   - No productName/warehouseName, no reason enum, no tiedUpCapital exist
-#     on the real entry - all dropped rather than fabricated (reason/
-#     tiedUpCapital per explicit instruction; productName/warehouseName by
-#     the same no-fabrication principle, same call made for
-#     get_stockout_risk above).
+#   - No reason enum, no tiedUpCapital exist on the real entry - dropped
+#     rather than fabricated, per explicit instruction.
+#   - productName/warehouseName do NOT exist on the real entry either, but
+#     ARE included here (fetched separately, same shared GET /products +
+#     GET /warehouses pattern as get_available_stock) - see StockoutRiskItem
+#     above for why this reverses an earlier no-fabrication call.
 #   - The real entry carries TWO separate movement timestamps:
 #     lastMovementAt (ANY movement type - informational only) and
 #     lastOutgoingMovementAt (OUTGOING only - what actually determines
@@ -364,7 +383,9 @@ class TransferRecommendationsResponse(BaseModel):
 
 class DeadStockItem(BaseModel):
     productId: int
+    productName: Optional[str] = None
     warehouseId: int
+    warehouseName: Optional[str] = None
     onHand: int
     lastMovementAt: Optional[datetime] = None
     daysSinceLastMovement: Optional[int] = None
@@ -390,13 +411,18 @@ class ConsumptionAnomaly(BaseModel):
     consumption across all its warehouses - a previous wiring pass
     correctly dropped this field because it didn't exist on the backend
     entry yet; this reverses that specific omission now that it does.
-    productName/warehouseName are still dropped (no product/warehouse join
-    exists on this endpoint) - same no-fabrication rule as every other
-    wired tool.
+    productName/warehouseName are now included too (fetched separately,
+    same shared GET /products + GET /warehouses pattern as
+    get_available_stock) - see StockoutRiskItem above for why this
+    reverses an earlier no-fabrication call (no product/warehouse join
+    exists on this endpoint itself, but the names are fetched, not
+    invented).
     """
 
     productId: int
+    productName: Optional[str] = None
     warehouseId: int
+    warehouseName: Optional[str] = None
     recentQuantity: int
     baselineQuantity: int
     percentChange: Optional[float] = Field(
