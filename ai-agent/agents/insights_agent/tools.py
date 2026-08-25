@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
+from rapidfuzz import fuzz, utils
 from strands import tool
 
 from backend_client import BackendError, NotFound, get_backend_client
@@ -29,6 +30,7 @@ from tools.schemas.insights_schema import (
     OpenPurchaseOrdersResponse,
     RecommendDeadStockTransferResponse,
     ReorderQuantityResult,
+    ResolveProductNameResponse,
     RestockRecommendationsResponse,
     StockoutRiskResponse,
     SupplierComparisonResponse,
@@ -38,6 +40,124 @@ from tools.schemas.insights_schema import (
 # How far back recommend_dead_stock_transfer() looks for OUTGOING activity
 # at OTHER warehouses before treating one as a viable transfer destination.
 _DEAD_STOCK_TRANSFER_LOOKBACK_DAYS = 60
+
+# resolve_product_name() classification thresholds - identical values to
+# agents/document_agent/tools.py's _MATCH_THRESHOLD/_AMBIGUOUS_FLOOR/
+# _AMBIGUOUS_GAP, validated there against the real product catalog (see
+# that module's comment for the evidence: every genuine match tested
+# scored 85.5-100, every genuinely unrelated text scored 40.0-42.4). Kept
+# as its own local copy rather than imported, so Insights has no
+# dependency on document_agent - see ResolveProductNameResponse's
+# docstring in tools/schemas/insights_schema.py for why.
+_PRODUCT_MATCH_THRESHOLD = 80.0
+_PRODUCT_AMBIGUOUS_FLOOR = 60.0
+_PRODUCT_AMBIGUOUS_GAP = 8.0
+
+
+def _classify_product_name_match(raw_name: str, candidates: list[dict]) -> dict:
+    """Score raw_name against real {"id","name"} candidates via rapidfuzz.
+
+    Returns {"status","id","name","confidence","candidates"} - see
+    ResolveProductNameResponse's docstring for the classification rules
+    (MATCHED >= 80 with no close runner-up; AMBIGUOUS for [60,80) or a
+    close tie >= 80; NOT_FOUND < 60). Pure function, no I/O - independently
+    testable without a backend call.
+    """
+    if not candidates:
+        return {"status": "NOT_FOUND", "id": None, "name": None, "confidence": None, "candidates": []}
+
+    scored = sorted(
+        (
+            {
+                "id": candidate["id"],
+                "name": candidate["name"],
+                "score": fuzz.WRatio(raw_name, candidate["name"], processor=utils.default_process),
+            }
+            for candidate in candidates
+        ),
+        key=lambda entry: entry["score"],
+        reverse=True,
+    )
+
+    top = scored[0]
+    second = scored[1] if len(scored) > 1 else None
+
+    if top["score"] < _PRODUCT_AMBIGUOUS_FLOOR:
+        return {"status": "NOT_FOUND", "id": None, "name": None, "confidence": None, "candidates": []}
+
+    has_close_runner_up = (
+        second is not None
+        and second["score"] >= _PRODUCT_MATCH_THRESHOLD
+        and (top["score"] - second["score"]) < _PRODUCT_AMBIGUOUS_GAP
+    )
+
+    if top["score"] >= _PRODUCT_MATCH_THRESHOLD and not has_close_runner_up:
+        return {"status": "MATCHED", "id": top["id"], "name": top["name"], "confidence": top["score"], "candidates": []}
+
+    return {
+        "status": "AMBIGUOUS",
+        "id": None,
+        "name": None,
+        "confidence": top["score"],
+        "candidates": [{"id": entry["id"], "name": entry["name"], "score": entry["score"]} for entry in scored[:3]],
+    }
+
+
+@tool
+async def resolve_product_name(product_name: str) -> dict:
+    """Resolve a raw product name the user typed to a real catalog Product ID.
+
+    ALWAYS use this to turn a product NAME into a productId before calling
+    any ID-based tool (get_available_stock, get_low_stock_products, etc.) -
+    never query_database() for this. Matching is deterministic (rapidfuzz
+    fuzzy text similarity against the real ACTIVE product catalog, one
+    GET /products call), case-insensitive, and tolerant of minor spelling/
+    spacing/capitalization differences - "wireless mouse", "Wireless
+    mouse", and "Wireless Mouse" all resolve to the exact same result.
+
+    Returns exactly ONE row per candidate PRODUCT (never one row per
+    warehouse) - unlike a stock/inventory query, there is no per-warehouse
+    join here, so there is no risk of mistaking "this product is stocked
+    in 3 warehouses" for "3 different products matched."
+
+    Returns:
+        A dict with `status` (MATCHED/AMBIGUOUS/NOT_FOUND), `confidence`
+        (rapidfuzz's real 0-100 score; None only for NOT_FOUND), and either
+        a resolved productId/productName (MATCHED) or a `candidates` list
+        of the top 2-3 scored options (AMBIGUOUS) to put in front of the
+        user. NOT_FOUND means no real product scored high enough to be
+        plausible - report that honestly rather than guessing an ID.
+
+        IMPORTANT: a MATCHED result is a confident SUGGESTION, not a
+        certainty - text similarity can be fooled by a different-but-
+        similar real product name. If the result seems surprising given
+        the rest of the conversation, say so rather than treating it as
+        certain.
+
+    Raises:
+        Unauthorized, Forbidden, NotFound, ValidationError, Conflict, or
+        ServiceUnavailable (see backend_client.py) if the backend call
+        fails. Deliberately NOT caught/swallowed here - same pattern as
+        every other wired tool in this file.
+    """
+    client = get_backend_client()
+    products = await client.get("/products")
+    candidates = [{"id": product["id"], "name": product["name"]} for product in products]
+    classification = _classify_product_name_match(product_name, candidates)
+
+    return ResolveProductNameResponse.model_validate(
+        {
+            "productNameRaw": product_name,
+            "status": classification["status"],
+            "productId": classification["id"],
+            "productName": classification["name"],
+            "confidence": classification["confidence"],
+            "candidates": [
+                {"productId": entry["id"], "productName": entry["name"], "score": entry["score"]}
+                for entry in classification["candidates"]
+            ],
+        }
+    ).model_dump(mode="json")
 
 
 @tool

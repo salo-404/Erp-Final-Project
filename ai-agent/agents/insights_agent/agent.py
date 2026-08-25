@@ -26,11 +26,13 @@ from agents.insights_agent.tools import (
     get_stockout_risk,
     get_transfer_recommendations,
     recommend_fulfillment_warehouse,
+    resolve_product_name,
 )
 from config.settings import settings
 from tools.query_database import query_database
 
 INSIGHTS_TOOLS = [
+    resolve_product_name,
     get_available_stock,
     get_low_stock_products,
     get_stockout_risk,

@@ -658,4 +658,64 @@ class DeadStockTransferRecommendation(BaseModel):
 
 class RecommendDeadStockTransferResponse(BaseModel):
     recommendations: list[DeadStockTransferRecommendation]
+
+
+# ---------------------------------------------------------------------------
+# resolve_product_name
+# ---------------------------------------------------------------------------
+#
+# Deterministic product-name resolution, mirroring
+# agents/document_agent/tools.py's _classify_fuzzy_match/match_products
+# pattern (same rapidfuzz thresholds, same MATCHED/AMBIGUOUS/NOT_FOUND
+# shape) but reimplemented locally rather than imported, so Insights stays
+# fully standalone - it must not depend on document_agent internals, the
+# same independence already enforced at the Supervisor level (Document is
+# deliberately not wired into Supervisor's routing).
+#
+# Exists because query_database() (model-generated SQL, variable per-call
+# result shape) was an unreliable way to answer "which product is the user
+# referring to by name" - a small model has to both choose how to phrase
+# the discovery question AND correctly interpret whatever columns/row
+# count that specific SQL happened to produce. A fixed-schema tool removes
+# that entire interpretation step: the agent gets a real MATCHED/AMBIGUOUS/
+# NOT_FOUND verdict directly, the same way every other Insights tool
+# already returns a fixed, unambiguous shape.
+
+
+class ProductNameMatchStatus(str, Enum):
+    MATCHED = "MATCHED"
+    AMBIGUOUS = "AMBIGUOUS"
+    NOT_FOUND = "NOT_FOUND"
+
+
+class ProductNameMatchCandidate(BaseModel):
+    """One scored candidate, populated only when status is AMBIGUOUS."""
+
+    productId: int
+    productName: str
+    score: float = Field(..., ge=0, le=100, description="rapidfuzz WRatio score, native 0-100 scale - not rescaled.")
+
+
+class ResolveProductNameResponse(BaseModel):
+    """See ProductMatch in tools/schemas/document_schema.py for the same
+    confidence/candidates convention this mirrors. confidence is None only
+    when status is NOT_FOUND. candidates (top 2-3 by score) is populated
+    only when status is AMBIGUOUS.
+
+    A MATCHED result is a confident SUGGESTION, not a certainty - text
+    similarity can be fooled by a different-but-similar real product name
+    (e.g. "Mouse Pad" can score high enough to match "Wireless Mouse"
+    despite being a different, possibly nonexistent product). Insights
+    must still sanity-check a surprising MATCHED result against context,
+    same as Document does for its own fuzzy matches.
+    """
+
+    productNameRaw: str
+    status: ProductNameMatchStatus
+    productId: Optional[int] = None
+    productName: Optional[str] = None
+    confidence: Optional[float] = Field(None, ge=0, le=100, description="rapidfuzz WRatio score. None only when status is NOT_FOUND.")
+    candidates: list[ProductNameMatchCandidate] = Field(
+        default_factory=list, description="Top 2-3 scored candidates, populated only when status is AMBIGUOUS."
+    )
     asOf: datetime

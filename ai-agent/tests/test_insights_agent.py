@@ -45,6 +45,7 @@ from agents.insights_agent.tools import (
     get_transfer_recommendations,
     recommend_fulfillment_warehouse,
     recommend_dead_stock_transfer,
+    resolve_product_name,
 )
 from backend_client import BackendClient, ServiceUnavailable
 from config.settings import settings
@@ -66,11 +67,12 @@ def test_insights_agent_builds_standalone() -> None:
     agent = build_insights_agent()
     assert agent.name == "insights_agent"
     assert agent.callback_handler.__name__ == "null_callback_handler"
-    assert len(INSIGHTS_TOOLS) == 11
+    assert len(INSIGHTS_TOOLS) == 12
 
 
 def test_active_insights_tool_registry_is_exact() -> None:
     assert INSIGHTS_TOOLS == [
+        resolve_product_name,
         get_available_stock,
         get_low_stock_products,
         get_stockout_risk,
@@ -84,6 +86,7 @@ def test_active_insights_tool_registry_is_exact() -> None:
         query_database,
     ]
     assert INSIGHTS_TOOLS.count(query_database) == 1
+    assert INSIGHTS_TOOLS.count(resolve_product_name) == 1
 
 
 def test_deprecated_tools_are_not_active() -> None:
@@ -134,12 +137,13 @@ def test_insights_prompt_resolves_pure_request_product_names_without_guessing_id
     prompt = " ".join(INSIGHTS_SYSTEM_PROMPT.split())
 
     assert "A user may naturally identify a product by name" in prompt
-    assert "ALWAYS ATTEMPT the existing read-only query_database() discovery path FIRST" in prompt
-    assert "CASE-INSENSITIVE AND TOLERANT OF PARTIAL/FUZZY PHRASING" in prompt
-    assert "Proceed once the result uniquely identifies one product" in prompt
-    assert "report the genuine not-found/ambiguity result" in prompt
-    assert "never invent or guess a productId" in prompt
-    assert "make exactly ONE more query_database() attempt with a" in prompt
+    assert "ALWAYS CALL resolve_product_name(product_name=<the name as given>) FIRST" in prompt
+    assert "never use query_database() for this - resolve_product_name() is the dedicated tool" in prompt
+    assert "CASE-INSENSITIVE / TOLERANT OF MINOR SPELLING" in prompt
+    assert "MATCHED: use the returned productId directly" in prompt
+    assert "AMBIGUOUS: report the `candidates` list" in prompt
+    assert "NOT_FOUND: report honestly that no real product matched" in prompt
+    assert "never invent a productId either way" in prompt
 
 
 def test_supplier_ranking_prompt_separates_score_from_lead_time_context() -> None:

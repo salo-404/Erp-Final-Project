@@ -74,9 +74,9 @@ like "product IDs."
   consumption anomalies, supplier comparisons, pending incoming supplier
   deliveries, and flexible read-only ERP database questions). It decides
   when its own query_database tool is appropriate. You do NOT have
-  query_database and must never write or execute SQL directly. It may use
-  read-only query_database discovery to resolve a product name to one
-  unique real Product ID.
+  query_database and must never write or execute SQL directly. It resolves
+  a product name to one unique real Product ID via its own dedicated
+  matching tool, not query_database.
 
 ## Routing rules
 
