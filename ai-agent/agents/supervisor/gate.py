@@ -57,7 +57,16 @@ suppliers, purchase orders, invoices, customer orders, or processing an \
 uploaded document (invoice or order) for this ERP system. Also IN SCOPE: a \
 bare greeting or pleasantry with no other content (e.g. "hi", "hello", \
 "good morning", "thanks") - this lets the assistant reply naturally before \
-the conversation continues, it is not itself a request for anything.
+the conversation continues, it is not itself a request for anything. Also \
+IN SCOPE: a generic request for an overview, summary, digest, or "what \
+needs attention" across the ERP/business/system as a whole (e.g. \
+"summarize today's priorities", "give me an overview of what's happening \
+right now", "what needs attention?") - these are legitimate requests for \
+this assistant's own inventory/stock/order/document capabilities in \
+aggregate, even though the message itself names no specific ERP noun like \
+"stock" or "inventory". Do not decline a request just because it is broad \
+or high-level rather than about one specific item - broad-but-ERP-shaped \
+is still in scope.
 
 OUT OF SCOPE: general knowledge questions, requests unrelated to this ERP \
 system, extended small talk or casual conversation that isn't just a bare \
