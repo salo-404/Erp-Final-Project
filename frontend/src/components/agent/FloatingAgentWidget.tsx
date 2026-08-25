@@ -1,9 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAgent } from "../../agent/AgentContext";
 import { usePageContext } from "../../agent/pageContext";
 import agentLogo from "../../assets/ai-agent-logo.png";
-import { CloseIcon, ExpandIcon, MinusIcon } from "../ui/icons";
+import { ChevronDownIcon, CloseIcon, ExpandIcon, MinusIcon } from "../ui/icons";
 import { AgentMark } from "./AgentMark";
 import { ConversationView } from "./ConversationView";
 import { QuickActionChips } from "./QuickActionChips";
@@ -23,7 +23,12 @@ export function FloatingAgentWidget() {
     closeFloating,
     toggleFloating,
     sendMessage,
+    composerDraft,
+    setComposerDraft,
   } = useAgent();
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [showScrollButton, setShowScrollButton] = useState(false);
 
   // Closing (not just hiding) the panel here means it doesn't silently
   // reappear on the next page if the user reached /ai-agent via the
@@ -33,6 +38,23 @@ export function FloatingAgentWidget() {
       closeFloating();
     }
   }, [pageContext.path, closeFloating]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    function handleScroll() {
+      if (!el) return;
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setShowScrollButton(distanceFromBottom > 120);
+    }
+    el.addEventListener("scroll", handleScroll);
+    handleScroll();
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, [isFloatingOpen]);
+
+  function scrollToBottom() {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }
 
   if (pageContext.path.startsWith("/ai-agent")) return null;
 
@@ -127,7 +149,8 @@ export function FloatingAgentWidget() {
           </div>
 
           {/* Body */}
-          <div style={{ flex: 1, overflowY: "auto", padding: 14 }}>
+          <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+          <div ref={scrollRef} style={{ height: "100%", overflowY: "auto", padding: 14 }}>
             {!hasMessages ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
@@ -144,6 +167,35 @@ export function FloatingAgentWidget() {
             )}
           </div>
 
+          {showScrollButton && (
+            <button
+              type="button"
+              onClick={scrollToBottom}
+              aria-label="Scroll to latest message"
+              title="Scroll to latest message"
+              style={{
+                position: "absolute",
+                bottom: 10,
+                left: "50%",
+                transform: "translateX(-50%)",
+                width: 28,
+                height: 28,
+                borderRadius: "50%",
+                border: "1px solid var(--color-border)",
+                background: "var(--color-surface)",
+                color: "var(--color-text-secondary)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+              }}
+            >
+              <ChevronDownIcon className="h-3.5 w-3.5" />
+            </button>
+          )}
+          </div>
+
           {/* Composer */}
           <div style={{ padding: 12, borderTop: "1px solid var(--color-border)", background: "var(--color-surface)", flexShrink: 0 }}>
             {agentError && (
@@ -151,7 +203,7 @@ export function FloatingAgentWidget() {
                 <ErrorMessage message={agentError} />
               </div>
             )}
-            <Composer onSend={handleSend} disabled={isSending} placeholder="Ask about this page..." />
+            <Composer value={composerDraft} onChange={setComposerDraft} onSend={handleSend} disabled={isSending} placeholder="Ask about this page..." />
           </div>
         </div>
       )}

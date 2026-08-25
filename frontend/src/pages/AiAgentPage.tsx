@@ -3,6 +3,7 @@ import type { ComponentType, SVGProps } from "react";
 import { useAgent } from "../agent/AgentContext";
 import { resolvePageContext } from "../agent/pageContext";
 import {
+  ChevronDownIcon,
   ControlTowerIcon,
   EditIcon,
   InventoryIcon,
@@ -15,7 +16,6 @@ import {
 import { AgentMark } from "../components/agent/AgentMark";
 import { ConversationView } from "../components/agent/ConversationView";
 import { Composer } from "../components/agent/Composer";
-import { QuickActionChips } from "../components/agent/QuickActionChips";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { ErrorMessage } from "../components/ui/ErrorMessage";
 
@@ -70,6 +70,8 @@ export function AiAgentPage() {
     deleteConversation,
     renameConversation,
     sendMessage,
+    composerDraft,
+    setComposerDraft,
   } = useAgent();
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -77,6 +79,7 @@ export function AiAgentPage() {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [showScrollButton, setShowScrollButton] = useState(false);
 
   useEffect(() => {
     if (renamingId) {
@@ -107,6 +110,23 @@ export function AiAgentPage() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages.length, streamingText, streamingStatus]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    function handleScroll() {
+      if (!el) return;
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setShowScrollButton(distanceFromBottom > 120);
+    }
+    el.addEventListener("scroll", handleScroll);
+    handleScroll();
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, [hasMessages]);
+
+  function scrollToBottom() {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }
 
   function handleSend(text: string) {
     void sendMessage(text, WORKSPACE_CONTEXT);
@@ -313,7 +333,8 @@ export function AiAgentPage() {
           </div>
         </div>
 
-        <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: 20, position: "relative" }}>
+        <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        <div ref={scrollRef} style={{ height: "100%", overflowY: "auto", padding: 20 }}>
           {!hasMessages ? (
             <div style={{ position: "relative", maxWidth: 660, margin: "24px auto 0" }}>
               {/* Decorative ambient glow, theme- and accent-aware via opacity only */}
@@ -395,18 +416,42 @@ export function AiAgentPage() {
           )}
         </div>
 
+        {showScrollButton && (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            aria-label="Scroll to latest message"
+            title="Scroll to latest message"
+            style={{
+              position: "absolute",
+              bottom: 14,
+              left: "50%",
+              transform: "translateX(-50%)",
+              width: 34,
+              height: 34,
+              borderRadius: "50%",
+              border: "1px solid var(--color-border)",
+              background: "var(--color-surface)",
+              color: "var(--color-text-secondary)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+            }}
+          >
+            <ChevronDownIcon className="h-4 w-4" />
+          </button>
+        )}
+        </div>
+
         <div style={{ padding: 16, borderTop: "1px solid var(--color-border)" }}>
           {agentError && (
             <div style={{ marginBottom: 10 }}>
               <ErrorMessage message={agentError} />
             </div>
           )}
-          {hasMessages && (
-            <div style={{ marginBottom: 10 }}>
-              <QuickActionChips actions={WORKSPACE_CONTEXT.quickActions} onSelect={handleSend} disabled={isSending} />
-            </div>
-          )}
-          <Composer onSend={handleSend} disabled={isSending} placeholder="Ask the Nexora assistant anything..." large />
+          <Composer value={composerDraft} onChange={setComposerDraft} onSend={handleSend} disabled={isSending} placeholder="Ask the Nexora assistant anything..." large />
         </div>
       </div>
 

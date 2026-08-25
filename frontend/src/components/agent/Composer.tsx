@@ -1,21 +1,21 @@
-import { useState, type KeyboardEvent } from "react";
+import type { KeyboardEvent } from "react";
 import { SendIcon } from "../ui/icons";
 
 interface ComposerProps {
+  value: string;
+  onChange: (text: string) => void;
   onSend: (text: string) => void;
   disabled?: boolean;
   placeholder?: string;
   large?: boolean;
 }
 
-export function Composer({ onSend, disabled, placeholder = "Ask about your ERP data...", large }: ComposerProps) {
-  const [value, setValue] = useState("");
-
+export function Composer({ value, onChange, onSend, disabled, placeholder = "Ask about your ERP data...", large }: ComposerProps) {
   function submit() {
     const trimmed = value.trim();
     if (!trimmed || disabled) return;
     onSend(trimmed);
-    setValue("");
+    onChange("");
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -42,11 +42,10 @@ export function Composer({ onSend, disabled, placeholder = "Ask about your ERP d
     >
       <textarea
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         rows={large ? 2 : 1}
-        disabled={disabled}
         style={{
           flex: 1,
           border: "none",

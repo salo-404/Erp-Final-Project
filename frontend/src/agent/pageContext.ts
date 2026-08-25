@@ -54,6 +54,15 @@ const ENTRIES: PageContextEntry[] = [
     ],
   },
   {
+    match: (p) => p.startsWith("/transfers"),
+    label: "Transfers",
+    quickActions: [
+      { id: "tr-analyze", label: "Analyze pending transfers", prompt: "Analyze the pending warehouse transfers." },
+      { id: "tr-recommend", label: "Recommend transfers", prompt: "Should we transfer any stock between warehouses right now?" },
+      { id: "tr-delays", label: "Find delayed transfers", prompt: "Find any transfers that are delayed or overdue." },
+    ],
+  },
+  {
     match: (p) => p.startsWith("/document-review"),
     label: "Document Review",
     quickActions: [

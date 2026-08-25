@@ -54,6 +54,8 @@ interface AgentContextValue {
   deleteConversation: (id: string) => void;
   renameConversation: (id: string, title: string) => void;
   sendMessage: (text: string, pageContext: AgentPageContext) => Promise<void>;
+  composerDraft: string;
+  setComposerDraft: (text: string) => void;
 }
 
 const AgentContext = createContext<AgentContextValue | null>(null);
@@ -67,6 +69,11 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const [streamingText, setStreamingText] = useState("");
   const [agentError, setAgentError] = useState<string | null>(null);
   const [isFloatingOpen, setIsFloatingOpen] = useState(false);
+  // Lives here (not inside Composer's own state) specifically so it
+  // survives navigating away from /ai-agent and back - the page unmounts
+  // and remounts Composer on route change, which would otherwise wipe an
+  // unsent draft.
+  const [composerDraft, setComposerDraft] = useState("");
 
   const setActive = useCallback((id: string | null) => {
     setActiveConversationId(id);
@@ -218,6 +225,8 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       deleteConversation,
       renameConversation,
       sendMessage,
+      composerDraft,
+      setComposerDraft,
     }),
     [
       conversations,
@@ -236,6 +245,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       deleteConversation,
       renameConversation,
       sendMessage,
+      composerDraft,
     ],
   );
 
