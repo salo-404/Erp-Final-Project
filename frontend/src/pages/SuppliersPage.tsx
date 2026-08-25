@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { useFetch } from "../lib/useFetch";
+import { friendlyErrorMessage } from "../lib/friendlyError";
 import {
   createSupplier,
   deleteSupplier,
@@ -79,7 +80,17 @@ export function SuppliersPage() {
     [perfSupplierId],
   );
 
-  const purchases = useMemo(() => purchasesFetch.data ?? [], [purchasesFetch.data]);
+  // Newest arrival/expected date first - see the matching comment on
+  // OrdersPage's `orders` for why this differs from the backend's default
+  // createdAt-desc ordering.
+  const purchases = useMemo(() => {
+    const list = purchasesFetch.data ?? [];
+    return [...list].sort((a, b) => {
+      const aTime = a.expectedDate ? new Date(a.expectedDate).getTime() : -Infinity;
+      const bTime = b.expectedDate ? new Date(b.expectedDate).getTime() : -Infinity;
+      return bTime - aTime;
+    });
+  }, [purchasesFetch.data]);
   const purchasesShowMore = useShowMore(purchases, 10, 10);
 
   const filteredSuppliers = useMemo(() => {
@@ -127,7 +138,7 @@ export function SuppliersPage() {
       const review = await uploadDocument(file);
       navigate(`/document-review/${review.id}`);
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Upload failed.");
+      setUploadError(friendlyErrorMessage(err, "Upload failed."));
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";

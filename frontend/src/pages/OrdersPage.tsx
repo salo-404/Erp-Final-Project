@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useFetch } from "../lib/useFetch";
+import { friendlyErrorMessage } from "../lib/friendlyError";
 import { listWarehouses } from "../lib/warehouses.api";
 import { listProducts } from "../lib/products.api";
 import { getTopSellingProducts } from "../lib/analytics.api";
@@ -40,7 +41,17 @@ export function OrdersPage() {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const orders = useMemo(() => ordersFetch.data ?? [], [ordersFetch.data]);
+  // Newest arrival/expected date first - distinct from the backend's default
+  // createdAt-desc ordering (when the record was entered, not when it's due).
+  // A missing expectedDate sorts last, since there's no arrival date to rank by.
+  const orders = useMemo(() => {
+    const list = ordersFetch.data ?? [];
+    return [...list].sort((a, b) => {
+      const aTime = a.expectedDate ? new Date(a.expectedDate).getTime() : -Infinity;
+      const bTime = b.expectedDate ? new Date(b.expectedDate).getTime() : -Infinity;
+      return bTime - aTime;
+    });
+  }, [ordersFetch.data]);
   const ordersShowMore = useShowMore(orders, 10, 10);
   const warehouses = useMemo(() => warehousesFetch.data ?? [], [warehousesFetch.data]);
   const products = useMemo(() => productsFetch.data ?? [], [productsFetch.data]);
@@ -82,7 +93,7 @@ export function OrdersPage() {
       const review = await uploadDocument(file);
       navigate(`/document-review/${review.id}`);
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Upload failed.");
+      setUploadError(friendlyErrorMessage(err, "Upload failed."));
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
