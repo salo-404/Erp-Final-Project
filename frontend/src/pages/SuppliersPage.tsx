@@ -82,12 +82,16 @@ export function SuppliersPage() {
 
   // Newest arrival/expected date first - see the matching comment on
   // OrdersPage's `orders` for why this differs from the backend's default
-  // createdAt-desc ordering.
+  // createdAt-desc ordering. Ranked by the same date the row displays
+  // (actualDate once completed, otherwise expectedDate).
   const purchases = useMemo(() => {
     const list = purchasesFetch.data ?? [];
+    const effectiveDate = (o: (typeof list)[number]) => (o.status === "COMPLETED" && o.actualDate ? o.actualDate : o.expectedDate);
     return [...list].sort((a, b) => {
-      const aTime = a.expectedDate ? new Date(a.expectedDate).getTime() : -Infinity;
-      const bTime = b.expectedDate ? new Date(b.expectedDate).getTime() : -Infinity;
+      const aDate = effectiveDate(a);
+      const bDate = effectiveDate(b);
+      const aTime = aDate ? new Date(aDate).getTime() : -Infinity;
+      const bTime = bDate ? new Date(bDate).getTime() : -Infinity;
       return bTime - aTime;
     });
   }, [purchasesFetch.data]);

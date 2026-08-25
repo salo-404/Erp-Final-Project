@@ -43,12 +43,17 @@ export function OrdersPage() {
 
   // Newest arrival/expected date first - distinct from the backend's default
   // createdAt-desc ordering (when the record was entered, not when it's due).
-  // A missing expectedDate sorts last, since there's no arrival date to rank by.
+  // Ranked by the same date the row displays (actualDate once completed,
+  // otherwise expectedDate) so a just-completed order with no expectedDate
+  // doesn't sort as if it had no date at all. Missing both sorts last.
   const orders = useMemo(() => {
     const list = ordersFetch.data ?? [];
+    const effectiveDate = (o: (typeof list)[number]) => (o.status === "COMPLETED" && o.actualDate ? o.actualDate : o.expectedDate);
     return [...list].sort((a, b) => {
-      const aTime = a.expectedDate ? new Date(a.expectedDate).getTime() : -Infinity;
-      const bTime = b.expectedDate ? new Date(b.expectedDate).getTime() : -Infinity;
+      const aDate = effectiveDate(a);
+      const bDate = effectiveDate(b);
+      const aTime = aDate ? new Date(aDate).getTime() : -Infinity;
+      const bTime = bDate ? new Date(bDate).getTime() : -Infinity;
       return bTime - aTime;
     });
   }, [ordersFetch.data]);
