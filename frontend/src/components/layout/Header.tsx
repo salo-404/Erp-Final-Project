@@ -5,7 +5,7 @@ import { useDisplayName } from "../../settings/DisplayNameContext";
 import { BellIcon, MoonIcon, SunIcon } from "../ui/icons";
 
 export function Header() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { displayName } = useDisplayName();
   const navigate = useNavigate();
@@ -37,7 +37,12 @@ export function Header() {
         </button>
 
         {user && (
-          <div className="flex items-center gap-2 text-sm">
+          <button
+            type="button"
+            onClick={() => navigate("/settings")}
+            aria-label="Open settings"
+            className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-sm hover:bg-[var(--color-surface-2)]"
+          >
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-accent)] text-xs font-semibold text-[var(--color-on-accent)]">
               {displayName.slice(0, 1).toUpperCase()}
             </div>
@@ -45,16 +50,8 @@ export function Header() {
               <p className="font-medium text-[var(--color-text)]">{displayName}</p>
               <p className="text-xs text-[var(--color-text-muted)]">{user.role}</p>
             </div>
-          </div>
+          </button>
         )}
-
-        <button
-          type="button"
-          onClick={logout}
-          className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
-        >
-          Log out
-        </button>
       </div>
     </header>
   );

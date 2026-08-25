@@ -4,6 +4,7 @@ import { useTheme } from "../theme/ThemeContext";
 import { useDisplayName } from "../settings/DisplayNameContext";
 import { CheckIcon, MoonIcon, SunIcon } from "../components/ui/icons";
 import { createUser } from "../lib/users.api";
+import { friendlyErrorMessage } from "../lib/friendlyError";
 import type { UserRole } from "../types/api";
 
 const cardStyle: React.CSSProperties = { background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 12, padding: 22 };
@@ -21,7 +22,7 @@ const ACCENT_SWATCHES = [
 ];
 
 export function SettingsPage() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const { theme, toggleTheme, accentColor, setAccentColor } = useTheme();
   const { displayName, isOverridden, setDisplayName, resetDisplayName } = useDisplayName();
 
@@ -56,7 +57,7 @@ export function SettingsPage() {
       setNewUserEmail("");
       setNewUserRole("EMPLOYEE");
     } catch (error) {
-      setCreateUserError(error instanceof Error ? error.message : "Unable to create the user.");
+      setCreateUserError(friendlyErrorMessage(error, "Unable to create the user."));
     } finally {
       setCreatingUser(false);
     }
@@ -66,14 +67,23 @@ export function SettingsPage() {
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 760 }}>
       {/* Account */}
       <div style={cardStyle}>
-        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
-          <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--color-accent)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 18, color: "var(--color-on-accent)", flexShrink: 0 }}>
-            {(displayName || user?.email || "?").slice(0, 1).toUpperCase()}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--color-accent)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 18, color: "var(--color-on-accent)", flexShrink: 0 }}>
+              {(displayName || user?.email || "?").slice(0, 1).toUpperCase()}
+            </div>
+            <div>
+              <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 17 }}>{displayName || "Unnamed"}</div>
+              <div style={{ fontSize: 12.5, color: "var(--color-text-muted)", marginTop: 3 }}>{user?.role ?? "—"}</div>
+            </div>
           </div>
-          <div>
-            <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 17 }}>{displayName || "Unnamed"}</div>
-            <div style={{ fontSize: 12.5, color: "var(--color-text-muted)", marginTop: 3 }}>{user?.role ?? "—"}</div>
-          </div>
+          <button
+            type="button"
+            onClick={logout}
+            style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 600, padding: "9px 14px", borderRadius: 8, background: "transparent", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", cursor: "pointer" }}
+          >
+            Log out
+          </button>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 16 }}>
