@@ -716,6 +716,136 @@ async function main() {
   });
 
   // ---------------------------------------------------
+  // 11b. MORE OVERDUE + UPCOMING DELIVERIES FOR THE CALENDAR
+  // ---------------------------------------------------
+  // A wider spread of PENDING transactions (both overdue and upcoming, both
+  // customer OUTGOING orders and supplier INCOMING deliveries) so the
+  // Calendar page - which reads GET /inventory-transactions/overdue and
+  // /upcoming-deliveries directly, no separate calendar data of its own -
+  // has more than a single example of each to show.
+
+  const overdueOutgoingBeirut = await prisma.inventoryTransaction.create({
+    data: {
+      type: InventoryTransactionType.OUTGOING,
+      status: InventoryTransactionStatus.PENDING,
+      sourceWarehouseId: beirut.id,
+      partyName: 'Beirut Retail Co',
+      deliveryCountry: 'Lebanon',
+      deliveryRegion: 'Beirut',
+      deliveryAddress: 'Hamra',
+      expectedDate: daysAgo(2),
+      items: {
+        create: {
+          productId: keyboard.id,
+          quantity: 12,
+        },
+      },
+    },
+  });
+
+  await prisma.reservation.create({
+    data: {
+      transactionId: overdueOutgoingBeirut.id,
+      productId: keyboard.id,
+      warehouseId: beirut.id,
+      quantity: 12,
+      status: ReservationStatus.ACTIVE,
+    },
+  });
+
+  const overdueOutgoingSaida = await prisma.inventoryTransaction.create({
+    data: {
+      type: InventoryTransactionType.OUTGOING,
+      status: InventoryTransactionStatus.PENDING,
+      sourceWarehouseId: saida.id,
+      partyName: 'Saida Wholesale Traders',
+      deliveryCountry: 'Lebanon',
+      deliveryRegion: 'South Lebanon',
+      deliveryAddress: 'Saida Old Souk',
+      expectedDate: daysAgo(6),
+      items: {
+        create: {
+          productId: headset.id,
+          quantity: 8,
+        },
+      },
+    },
+  });
+
+  await prisma.reservation.create({
+    data: {
+      transactionId: overdueOutgoingSaida.id,
+      productId: headset.id,
+      warehouseId: saida.id,
+      quantity: 8,
+      status: ReservationStatus.ACTIVE,
+    },
+  });
+
+  await prisma.inventoryTransaction.create({
+    data: {
+      type: InventoryTransactionType.INCOMING,
+      status: InventoryTransactionStatus.PENDING,
+      supplierId: levantTrading.id,
+      destinationWarehouseId: tripoli.id,
+      expectedDate: daysAgo(1),
+      items: {
+        create: {
+          productId: webcam.id,
+          quantity: 18,
+          price: 55,
+        },
+      },
+    },
+  });
+
+  const upcomingOutgoingTripoli = await prisma.inventoryTransaction.create({
+    data: {
+      type: InventoryTransactionType.OUTGOING,
+      status: InventoryTransactionStatus.PENDING,
+      sourceWarehouseId: tripoli.id,
+      partyName: 'North Region Distributors',
+      deliveryCountry: 'Lebanon',
+      deliveryRegion: 'North Lebanon',
+      deliveryAddress: 'Tripoli Port Road',
+      expectedDate: daysFromNow(2),
+      items: {
+        create: {
+          productId: dock.id,
+          quantity: 6,
+        },
+      },
+    },
+  });
+
+  await prisma.reservation.create({
+    data: {
+      transactionId: upcomingOutgoingTripoli.id,
+      productId: dock.id,
+      warehouseId: tripoli.id,
+      quantity: 6,
+      status: ReservationStatus.ACTIVE,
+    },
+  });
+
+  await prisma.inventoryTransaction.create({
+    data: {
+      type: InventoryTransactionType.INCOMING,
+      status: InventoryTransactionStatus.PENDING,
+      supplierId: cedarElectronics.id,
+      destinationWarehouseId: beirut.id,
+      expectedDate: daysFromNow(10),
+      items: {
+        create: {
+          productId: mouse.id,
+          quantity: 40,
+          price: 12,
+        },
+      },
+    },
+  });
+
+  // ---------------------------------------------------
   // 12. CANCELLED OUTGOING + CANCELLED RESERVATION
   // ---------------------------------------------------
 
