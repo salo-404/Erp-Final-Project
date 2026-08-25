@@ -22,7 +22,7 @@ export function CalendarGrid({ cells, deliveriesByDay, selectedKey, onSelectDay,
           </div>
         ))}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridAutoRows: 84, gap: 8 }}>
         {cells.map((cell) => {
           const deliveries = deliveriesByDay.get(cell.key) ?? [];
           const shown = deliveries.slice(0, MAX_CHIPS);
@@ -34,7 +34,7 @@ export function CalendarGrid({ cells, deliveriesByDay, selectedKey, onSelectDay,
               key={cell.key}
               onClick={() => onSelectDay(cell.key)}
               style={{
-                minHeight: 84,
+                height: 84,
                 borderRadius: 8,
                 padding: "6px 6px 8px",
                 cursor: "pointer",
@@ -44,6 +44,7 @@ export function CalendarGrid({ cells, deliveriesByDay, selectedKey, onSelectDay,
                 display: "flex",
                 flexDirection: "column",
                 gap: 5,
+                overflow: "hidden",
               }}
             >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
