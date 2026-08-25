@@ -6,6 +6,7 @@ import { CheckIcon } from "../ui/icons";
 interface NewProductInputProps {
   initialName: string;
   categories: string[];
+  existingNames: string[];
   onCreated: (product: { productId: number; name: string }) => void;
 }
 
@@ -28,7 +29,7 @@ const NEW_CATEGORY_VALUE = "__new_category__";
 // page first. Creates immediately on submit (mirrors ResolveSearchInput's
 // resolve-on-click), then reports the new productId back so the row counts
 // as resolved for approval, same as picking an existing match would.
-export function NewProductInput({ initialName, categories, onCreated }: NewProductInputProps) {
+export function NewProductInput({ initialName, categories, existingNames, onCreated }: NewProductInputProps) {
   const [name, setName] = useState(initialName);
   const [category, setCategory] = useState("");
   const [addingNewCategory, setAddingNewCategory] = useState(false);
@@ -36,6 +37,11 @@ export function NewProductInput({ initialName, categories, onCreated }: NewProdu
   const [creating, setCreating] = useState(false);
   const [createdName, setCreatedName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const trimmedName = name.trim();
+  const duplicateMatch = !createdName && trimmedName
+    ? existingNames.find((n) => n.toLowerCase() === trimmedName.toLowerCase())
+    : undefined;
 
   function handleCategorySelect(value: string) {
     if (value === NEW_CATEGORY_VALUE) {
@@ -48,7 +54,7 @@ export function NewProductInput({ initialName, categories, onCreated }: NewProdu
   }
 
   async function handleCreate() {
-    if (!name.trim()) return;
+    if (!name.trim() || duplicateMatch) return;
     setCreating(true);
     setError(null);
     try {
@@ -77,7 +83,7 @@ export function NewProductInput({ initialName, categories, onCreated }: NewProdu
         <button
           type="button"
           onClick={handleCreate}
-          disabled={creating || !!createdName}
+          disabled={creating || !!createdName || !!duplicateMatch}
           style={{
             display: "flex",
             alignItems: "center",
@@ -91,7 +97,7 @@ export function NewProductInput({ initialName, categories, onCreated }: NewProdu
             color: createdName ? "var(--color-success)" : "var(--color-text-secondary)",
             fontSize: 12,
             fontWeight: 600,
-            cursor: creating || createdName ? "default" : "pointer",
+            cursor: creating || createdName || duplicateMatch ? "default" : "pointer",
             flexShrink: 0,
           }}
         >
@@ -134,6 +140,11 @@ export function NewProductInput({ initialName, categories, onCreated }: NewProdu
         <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 5, fontSize: 11.5, color: "var(--color-success)", fontWeight: 600 }}>
           <CheckIcon className="h-3 w-3" />
           Added to system: {createdName}
+        </div>
+      )}
+      {duplicateMatch && (
+        <div style={{ marginTop: 5, fontSize: 11.5, color: "var(--color-warning)", fontWeight: 600 }}>
+          "{duplicateMatch}" already exists — uncheck "new product" and search for it instead.
         </div>
       )}
       {error && (

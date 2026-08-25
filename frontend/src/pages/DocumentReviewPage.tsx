@@ -124,6 +124,18 @@ export function DocumentReviewPage() {
     setItems((rows) => rows.map((r, i) => (i === index ? { ...r, ...patch } : r)));
   }
 
+  // Catalog names plus anything already resolved/created for another line
+  // item in this same review, so the "new product" flow can't create the
+  // same product twice - once for this document, once again for a
+  // duplicate/near-duplicate extracted line.
+  const existingProductNames = useMemo(() => {
+    const names = (productsFetch.data ?? []).map((p) => p.name);
+    for (const it of items) {
+      if (it.resolvedName) names.push(it.resolvedName);
+    }
+    return names;
+  }, [productsFetch.data, items]);
+
   const itemsTotal = useMemo(
     () =>
       items.reduce((sum, it) => {
@@ -390,6 +402,7 @@ export function DocumentReviewPage() {
                           <NewProductInput
                             initialName={row.extractedName}
                             categories={existingCategories}
+                            existingNames={existingProductNames}
                             onCreated={({ productId, name }) => updateItem(i, { productId, resolvedName: name })}
                           />
                         ) : (
