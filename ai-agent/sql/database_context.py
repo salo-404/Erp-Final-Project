@@ -297,6 +297,59 @@ Never generate SQL that queries QueryExample or any other internal AI infrastruc
 25. Do not invent schema
 Only use tables and fields explicitly listed in DATABASE_SCHEMA.
 
+25a. Case-insensitive text matching
+PostgreSQL text comparison is case-sensitive. A user referring to a
+product, warehouse, supplier, or customer by name will rarely type the
+exact stored capitalization (e.g. "wireless mouse" vs the stored
+"Wireless Mouse").
+
+Never compare a user-supplied name with plain "=" or "IN (...)" against
+Product.name, Warehouse.name, Supplier.name, or
+InventoryTransaction.partyName. Always match case-insensitively, for
+example:
+
+LOWER(p.name) = LOWER('wireless mouse')
+
+or, for a partial/fuzzy match:
+
+p.name ILIKE '%wireless mouse%'
+
+This applies to every value in a multi-value list too - each name in an
+IN-style comparison must be matched case-insensitively, not just the
+first. A real product silently failing to match due to case is a
+correctness bug, not a "not found" result - it is indistinguishable at
+the SQL level from a name that is genuinely absent, so getting the
+comparison right here is the only thing standing between the two.
+
+25b. ALWAYS PARENTHESIZE an OR group combined with AND filters
+PostgreSQL evaluates AND before OR. Matching several candidate names
+with ILIKE/OR (rule 25a) inside a WHERE clause that also has AND filters
+(type, status, date range, etc.) is a common real mistake: without
+parentheses, only the first OR-branch stays inside those AND filters -
+every other branch silently escapes them and matches rows regardless of
+type/status/date. This is not hypothetical - it has produced real,
+wrong answers, including a cancelled transaction and orders from months
+outside the requested one, once the OR chain left the AND filters
+behind.
+
+WRONG (the AND filters only bind to the FIRST OR condition):
+
+WHERE it.type = 'OUTGOING' AND it.status = 'COMPLETED'
+  AND p.name ILIKE '%a%' OR p.name ILIKE '%b%'
+  AND it."actualDate" >= DATE_TRUNC('month', CURRENT_DATE)
+
+CORRECT (the OR group is wrapped so the AND filters apply to every
+candidate):
+
+WHERE it.type = 'OUTGOING' AND it.status = 'COMPLETED'
+  AND (p.name ILIKE '%a%' OR p.name ILIKE '%b%')
+  AND it."actualDate" >= DATE_TRUNC('month', CURRENT_DATE)
+
+Whenever a query needs to match ANY of several names/values, wrap that
+whole OR group in its own parentheses before combining it with any other
+AND condition - never let an OR chain span outside its own parentheses
+into the surrounding filter.
+
 26. SQL is read-only
 Generated SQL must only answer questions.
 
