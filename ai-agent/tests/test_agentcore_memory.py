@@ -415,7 +415,7 @@ def test_supervisor_accepts_session_manager_without_changing_tools(
 
     assert captured["session_manager"] is manager
     assert captured["tools"] == supervisor_agent_module.SUPERVISOR_TOOLS
-    assert len(captured["tools"]) == 2
+    assert len(captured["tools"]) == 1
     assert "conversation_manager" not in captured
     assert "agent_id" not in captured
 

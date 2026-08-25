@@ -125,7 +125,7 @@ def test_insights_prompt_rejects_document_work_and_fake_failure_recovery() -> No
 
     assert "Do not approve or reject reviews" in prompt
     assert "resolve document product/supplier names" in prompt
-    assert "accept only exact resolved IDs and quantities" in prompt
+    assert "this assistant has no document-processing capability at all" in prompt
     assert "Unauthorized, forbidden, not-found, conflict, validation" in prompt
     assert "Never fabricate an ID, quantity, stock value, supplier recommendation" in prompt
 
@@ -134,12 +134,12 @@ def test_insights_prompt_resolves_pure_request_product_names_without_guessing_id
     prompt = " ".join(INSIGHTS_SYSTEM_PROMPT.split())
 
     assert "A user may naturally identify a product by name" in prompt
-    assert "use the existing read-only query_database() discovery path" in prompt
-    assert "then call the specific ID-based tool" in prompt
-    assert "only when the result uniquely identifies one product" in prompt
-    assert "report that not-found/ambiguity result" in prompt
+    assert "ALWAYS ATTEMPT the existing read-only query_database() discovery path FIRST" in prompt
+    assert "CASE-INSENSITIVE AND TOLERANT OF PARTIAL/FUZZY PHRASING" in prompt
+    assert "Proceed once the result uniquely identifies one product" in prompt
+    assert "report the genuine not-found/ambiguity result" in prompt
     assert "never invent or guess a productId" in prompt
-    assert "raw line-item names from a document" in prompt
+    assert "make exactly ONE more query_database() attempt with a" in prompt
 
 
 def test_supplier_ranking_prompt_separates_score_from_lead_time_context() -> None:
@@ -2249,6 +2249,9 @@ def test_insights_agent_declines_expiry_questions_honestly() -> None:
         "cant check",
         "no expiry",
         "no dedicated",
+        "does not track",
+        "does not directly track",
+        "doesnt track",
         "not available",
         "not supported",
         "do not support",

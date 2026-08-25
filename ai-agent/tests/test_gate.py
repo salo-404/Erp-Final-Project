@@ -18,7 +18,6 @@ from tests._helpers import live_model_configured
 IN_SCOPE_QUERIES = [
     "Which products are at risk of stocking out this week?",
     "Can you compare suppliers for the USB-C Docking Station?",
-    "An invoice just came in from Nordic Components - can you process it?",
     "What's the available stock for the 27in Monitor at Manchester North?",
     "Draft a purchase order for 60 units of the Mechanical Keyboard.",
     "Is there a duplicate for the order we just received from Bluewater Retail Group?",
@@ -54,6 +53,13 @@ OUT_OF_SCOPE_QUERIES = [
     # actually wanting to chat/hang out is still extended small talk, not a
     # greeting - the gate prompt draws this line explicitly.
     "Forget the ERP stuff, let's just chat about your day for a while.",
+    # Document processing was detached from the Supervisor (see
+    # agents/supervisor/agent.py's docstring) and moved from IN SCOPE to
+    # explicitly-called-out OUT OF SCOPE in GATE_SYSTEM_PROMPT, so this
+    # assistant honestly declines a document request at the gate layer
+    # instead of passing it through to a Supervisor with no way to act on
+    # it. This query used to live in IN_SCOPE_QUERIES above.
+    "An invoice just came in from Nordic Components - can you process it?",
 ]
 
 

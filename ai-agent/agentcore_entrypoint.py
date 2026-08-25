@@ -389,7 +389,7 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
                     if internal_error
                     else (
                         "I can only help with inventory, warehouses, orders, invoices, "
-                        "stock, suppliers, and document processing for this ERP system "
+                        "stock, and suppliers for this ERP system "
                         f"({reason}). Let me know if you have a question in that area."
                     )
                 )
