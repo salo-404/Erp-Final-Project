@@ -43,8 +43,9 @@ interface TransferModalState {
   productId: number;
   productName: string;
   sourceWarehouseId: number;
-  destinationWarehouseId: number;
-  quantity: number;
+  /** Omitted when there's no single recommended destination (e.g. dead stock) — the modal then offers every other warehouse. */
+  destinationWarehouseId?: number;
+  quantity?: number;
   available: number;
 }
 
@@ -110,10 +111,22 @@ export function ControlTowerPage() {
     });
   }
 
+  function openTransferForDeadStock(d: DeadStockAlertData) {
+    setTransferModal({
+      productId: d.productId,
+      productName: productName(d.productId),
+      sourceWarehouseId: d.warehouseId,
+      available: d.onHand,
+    });
+  }
+
   function renderAttentionAction(alert: ControlTowerAlert) {
     if (alert.category === "STOCKOUT_RISK") {
       const d = alert.data as unknown as StockoutRiskAlertData;
-      return { label: "View Product", onClick: () => navigate(`/products/${d.productId}`) };
+      return {
+        label: "Buy Product",
+        onClick: () => setPoModal({ warehouseId: d.warehouseId, productId: d.productId, quantity: Math.max(d.reorderThreshold - d.available, 1) }),
+      };
     }
     if (alert.category === "RESTOCK_RECOMMENDATION") {
       const d = alert.data as unknown as RestockRecommendation;
@@ -283,17 +296,22 @@ export function ControlTowerPage() {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, maxWidth: 900 }}>
                 {grouped.insights.map((alert, i) => {
                   const badge = severityBadge(alert.severity);
-                  const productId =
-                    alert.category === "DEAD_STOCK"
-                      ? (alert.data as unknown as DeadStockAlertData).productId
-                      : (alert.data as unknown as ConsumptionAnomalyAlertData).productId;
+                  const deadStock = alert.category === "DEAD_STOCK" ? (alert.data as unknown as DeadStockAlertData) : null;
+                  const productId = deadStock ? deadStock.productId : (alert.data as unknown as ConsumptionAnomalyAlertData).productId;
                   return (
                     <div key={i} style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderLeft: `3px solid ${badge.color}`, borderRadius: 8, padding: "16px 18px" }}>
                       <div style={{ fontSize: 10, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{CATEGORY_LABELS[alert.category]}</div>
                       <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{productName(productId)}</div>
                       <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>{alert.message}</div>
-                      <div onClick={() => navigate(`/products/${productId}`)} style={{ fontSize: 12, color: "var(--color-accent)", fontWeight: 600, cursor: "pointer" }}>
-                        View Product
+                      <div style={{ display: "flex", gap: 16 }}>
+                        <div onClick={() => navigate(`/products/${productId}`)} style={{ fontSize: 12, color: "var(--color-accent)", fontWeight: 600, cursor: "pointer" }}>
+                          View Product
+                        </div>
+                        {deadStock && (
+                          <div onClick={() => openTransferForDeadStock(deadStock)} style={{ fontSize: 12, color: "var(--color-accent)", fontWeight: 600, cursor: "pointer" }}>
+                            Transfer
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -337,7 +355,13 @@ export function ControlTowerPage() {
           available={transferModal.available}
           initialQuantity={transferModal.quantity}
           sourceWarehouse={warehousesById.get(transferModal.sourceWarehouseId)!}
-          destinationWarehouses={warehousesById.get(transferModal.destinationWarehouseId) ? [warehousesById.get(transferModal.destinationWarehouseId)!] : []}
+          destinationWarehouses={
+            transferModal.destinationWarehouseId !== undefined
+              ? warehousesById.get(transferModal.destinationWarehouseId)
+                ? [warehousesById.get(transferModal.destinationWarehouseId)!]
+                : []
+              : warehouses.filter((w) => w.id !== transferModal.sourceWarehouseId)
+          }
           onClose={() => setTransferModal(null)}
           onSubmit={handleTransferSubmit}
         />
