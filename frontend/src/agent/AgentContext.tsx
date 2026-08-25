@@ -64,10 +64,13 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const [conversations, setConversations] = useState<AgentConversation[]>(readConversations);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(readActiveId);
-  const [isSending, setIsSending] = useState(false);
-  const [streamingStatus, setStreamingStatus] = useState<AgentStreamStatus | null>(null);
-  const [streamingText, setStreamingText] = useState("");
-  const [agentError, setAgentError] = useState<string | null>(null);
+  // Keyed by conversation id so a response still streaming in one conversation
+  // never bleeds into whichever conversation the user is currently looking at
+  // (e.g. after opening a new chat while the previous one is still "thinking").
+  const [pendingByConversation, setPendingByConversation] = useState<
+    Record<string, { status: AgentStreamStatus | null; text: string }>
+  >({});
+  const [errorByConversation, setErrorByConversation] = useState<Record<string, string>>({});
   const [isFloatingOpen, setIsFloatingOpen] = useState(false);
   // Lives here (not inside Composer's own state) specifically so it
   // survives navigating away from /ai-agent and back - the page unmounts
@@ -81,6 +84,11 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const streamGeneration = useRef(0);
+  const generationByConversation = useRef<Map<string, number>>(new Map());
+  // Guards against sending a second message into a conversation that's
+  // already mid-response. Kept as a ref (not state) so it doesn't force
+  // sendMessage to be recreated on every streamed token.
+  const pendingIds = useRef<Set<string>>(new Set());
 
   const newConversation = useCallback(() => {
     setActive(null);
@@ -126,9 +134,19 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const sendMessage = useCallback(
     async (text: string, pageContext: AgentPageContext) => {
       const trimmed = text.trim();
-      if (!trimmed || isSending || !user) return;
+      if (!trimmed || !user) return;
+
+      const existing = activeConversationId ? conversations.find((c) => c.id === activeConversationId) ?? null : null;
+      const targetId = existing ? existing.id : crypto.randomUUID();
+
+      // Already streaming a response into this exact conversation - ignore
+      // the duplicate send. A different (e.g. brand-new) conversation is
+      // free to send concurrently; its own targetId won't collide with this.
+      if (pendingIds.current.has(targetId)) return;
+      pendingIds.current.add(targetId);
 
       const generation = ++streamGeneration.current;
+      generationByConversation.current.set(targetId, generation);
       const now = new Date().toISOString();
 
       const userMessage: AgentMessage = {
@@ -139,11 +157,9 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         pageContextLabel: pageContext.label,
       };
 
-      const existing = activeConversationId ? conversations.find((c) => c.id === activeConversationId) ?? null : null;
-
       const snap: AgentConversation = existing
         ? { ...existing, updatedAt: now, messages: [...existing.messages, userMessage] }
-        : { id: crypto.randomUUID(), title: makeTitle(trimmed), createdAt: now, updatedAt: now, messages: [userMessage] };
+        : { id: targetId, title: makeTitle(trimmed), createdAt: now, updatedAt: now, messages: [userMessage] };
 
       const nextConversations = existing
         ? [snap, ...conversations.filter((c) => c.id !== existing.id)]
@@ -153,10 +169,22 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       writeConversations(nextConversations);
       setActive(snap.id);
 
-      setIsSending(true);
-      setStreamingStatus("Thinking...");
-      setStreamingText("");
-      setAgentError(null);
+      setPendingByConversation((prev) => ({ ...prev, [targetId]: { status: "Thinking...", text: "" } }));
+      setErrorByConversation((prev) => {
+        if (!(targetId in prev)) return prev;
+        const next = { ...prev };
+        delete next[targetId];
+        return next;
+      });
+
+      const isStale = () => generationByConversation.current.get(targetId) !== generation;
+      const clearPending = () =>
+        setPendingByConversation((prev) => {
+          if (!(targetId in prev)) return prev;
+          const next = { ...prev };
+          delete next[targetId];
+          return next;
+        });
 
       try {
         for await (const event of agentCoreService.sendMessage({
@@ -165,47 +193,54 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           pageContext,
           userId: user.id,
         })) {
-          if (streamGeneration.current !== generation) return;
+          if (isStale()) return;
 
           if (event.type === "status") {
-            setStreamingStatus(event.status);
+            setPendingByConversation((prev) => ({ ...prev, [targetId]: { status: event.status, text: prev[targetId]?.text ?? "" } }));
           } else if (event.type === "token") {
-            setStreamingText((prev) => prev + event.token);
+            setPendingByConversation((prev) => ({
+              ...prev,
+              [targetId]: { status: prev[targetId]?.status ?? null, text: (prev[targetId]?.text ?? "") + event.token },
+            }));
           } else if (event.type === "done") {
             setConversations((prev) => {
               const next = prev.map((c) =>
-                c.id === snap.id ? { ...c, updatedAt: new Date().toISOString(), messages: [...c.messages, event.message] } : c,
+                c.id === targetId ? { ...c, updatedAt: new Date().toISOString(), messages: [...c.messages, event.message] } : c,
               );
               writeConversations(next);
               return next;
             });
-            setStreamingStatus(null);
-            setStreamingText("");
+            clearPending();
           } else if (event.type === "error") {
-            setStreamingStatus(null);
-            setStreamingText("");
-            setAgentError(event.error);
+            clearPending();
+            setErrorByConversation((prev) => ({ ...prev, [targetId]: event.error }));
           }
         }
       } catch (err) {
-        if (streamGeneration.current === generation) {
-          setStreamingStatus(null);
-          setStreamingText("");
-          setAgentError(err instanceof Error ? err.message : "The assistant hit an unexpected error.");
+        if (!isStale()) {
+          clearPending();
+          setErrorByConversation((prev) => ({
+            ...prev,
+            [targetId]: err instanceof Error ? err.message : "The assistant hit an unexpected error.",
+          }));
         }
       } finally {
-        if (streamGeneration.current === generation) {
-          setIsSending(false);
-        }
+        pendingIds.current.delete(targetId);
       }
     },
-    [activeConversationId, conversations, isSending, setActive, user],
+    [activeConversationId, conversations, setActive, user],
   );
 
   const activeConversation = useMemo(
     () => conversations.find((c) => c.id === activeConversationId) ?? null,
     [conversations, activeConversationId],
   );
+
+  const activePending = activeConversationId ? pendingByConversation[activeConversationId] : undefined;
+  const isSending = activePending !== undefined;
+  const streamingStatus = activePending?.status ?? null;
+  const streamingText = activePending?.text ?? "";
+  const agentError = activeConversationId ? errorByConversation[activeConversationId] ?? null : null;
 
   const value = useMemo<AgentContextValue>(
     () => ({
