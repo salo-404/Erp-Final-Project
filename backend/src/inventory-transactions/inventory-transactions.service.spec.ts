@@ -2008,8 +2008,8 @@ describe('InventoryTransactionsService.getUpcomingDeliveries', () => {
       where: {
         status: 'PENDING',
         expectedDate: {
-          gte: NOW,
-          lte: new Date('2026-01-17T12:00:00.000Z'),
+          gte: new Date('2026-01-10T00:00:00.000Z'),
+          lte: new Date('2026-01-17T23:59:59.999Z'),
         },
       },
       include: { items: true, supplier: true },
@@ -2064,15 +2064,15 @@ describe('InventoryTransactionsService.getUpcomingDeliveries', () => {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- jest matcher, not real data
         where: expect.objectContaining({
           expectedDate: {
-            gte: referenceDate,
-            lte: new Date('2026-02-01T23:00:00.000Z'),
+            gte: new Date('2026-01-31T00:00:00.000Z'),
+            lte: new Date('2026-02-01T23:59:59.999Z'),
           },
         }),
       }),
     );
   });
 
-  it('treats windowDays=0 as "due exactly now" (gte === lte === referenceDate)', async () => {
+  it('treats windowDays=0 as the entire current UTC calendar day', async () => {
     const tx = createMockTx();
     const { service, prismaRoot } = buildService(tx);
     prismaRoot.inventoryTransaction.findMany.mockResolvedValue([]);
@@ -2083,7 +2083,10 @@ describe('InventoryTransactionsService.getUpcomingDeliveries', () => {
       expect.objectContaining({
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- jest matcher, not real data
         where: expect.objectContaining({
-          expectedDate: { gte: NOW, lte: NOW },
+          expectedDate: {
+            gte: new Date('2026-01-10T00:00:00.000Z'),
+            lte: new Date('2026-01-10T23:59:59.999Z'),
+          },
         }),
       }),
     );
@@ -2161,14 +2164,17 @@ describe('InventoryTransactionsService.getOverdueTransactions', () => {
     const result = await service.getOverdueTransactions(NOW);
 
     expect(prismaRoot.inventoryTransaction.findMany).toHaveBeenCalledWith({
-      where: { status: 'PENDING', expectedDate: { lt: NOW } },
+      where: {
+        status: 'PENDING',
+        expectedDate: { lt: new Date('2026-01-10T00:00:00.000Z') },
+      },
       include: { items: true, supplier: true },
       orderBy: { expectedDate: 'asc' },
     });
     expect(result).toEqual(rows);
   });
 
-  it('excludes a transaction due exactly now via a strict less-than boundary', async () => {
+  it('does not mark a pending delivery overdue anywhere on its expected UTC date', async () => {
     const tx = createMockTx();
     const { service, prismaRoot } = buildService(tx);
     prismaRoot.inventoryTransaction.findMany.mockResolvedValue([]);
@@ -2178,7 +2184,9 @@ describe('InventoryTransactionsService.getOverdueTransactions', () => {
     expect(prismaRoot.inventoryTransaction.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- jest matcher, not real data
-        where: expect.objectContaining({ expectedDate: { lt: NOW } }),
+        where: expect.objectContaining({
+          expectedDate: { lt: new Date('2026-01-10T00:00:00.000Z') },
+        }),
       }),
     );
   });

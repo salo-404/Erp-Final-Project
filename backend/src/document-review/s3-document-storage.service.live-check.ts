@@ -4,6 +4,7 @@ import {
   HeadObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import { createAwsCredentialProvider } from '../common/aws-credential-provider';
 import { S3DocumentStorageService } from './s3-document-storage.service';
 
 /**
@@ -40,7 +41,10 @@ async function main() {
   console.log('URL:', uploaded.url);
 
   const key = new URL(uploaded.url).pathname.replace(/^\//, '');
-  const client = new S3Client({ region });
+  const client = new S3Client({
+    region,
+    credentials: createAwsCredentialProvider(),
+  });
 
   try {
     await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));

@@ -216,7 +216,7 @@ class Settings:
     # forwards the exact authenticated human bearer; it never falls back to
     # this service identity.
     # ------------------------------------------------------------------
-    backend_url: str = os.getenv("BACKEND_URL", "http://localhost:3000")
+    backend_url: str = os.getenv("BACKEND_URL", "http://localhost:3000/api")
     cognito_user_pool_id: str = os.getenv("COGNITO_USER_POOL_ID", "")
     cognito_app_client_id: str = os.getenv("COGNITO_APP_CLIENT_ID", "")
     cognito_service_app_client_id: str = os.getenv(

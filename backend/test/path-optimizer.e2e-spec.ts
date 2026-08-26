@@ -82,6 +82,7 @@ describe('Path Optimizer (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    app.setGlobalPrefix('api');
 
     app.useGlobalPipes(
       new ValidationPipe({
@@ -114,7 +115,7 @@ describe('Path Optimizer (e2e)', () => {
 
   it('finds the nearest warehouse that can fulfill the requested quantity', async () => {
     const response = await request(app.getHttpServer())
-      .post('/path-optimizer/nearest-warehouse')
+      .post('/api/path-optimizer/nearest-warehouse')
       .send({
         productId: laptopId,
         requiredQuantity: 5,
@@ -146,7 +147,7 @@ describe('Path Optimizer (e2e)', () => {
 
   it('rejects a request with no delivery location', async () => {
     await request(app.getHttpServer())
-      .post('/path-optimizer/nearest-warehouse')
+      .post('/api/path-optimizer/nearest-warehouse')
       .send({
         productId: laptopId,
         requiredQuantity: 5,
@@ -156,7 +157,7 @@ describe('Path Optimizer (e2e)', () => {
 
   it('rejects invalid required quantity', async () => {
     await request(app.getHttpServer())
-      .post('/path-optimizer/nearest-warehouse')
+      .post('/api/path-optimizer/nearest-warehouse')
       .send({
         productId: laptopId,
         requiredQuantity: 0,
@@ -168,7 +169,7 @@ describe('Path Optimizer (e2e)', () => {
 
   it('returns 404 when no warehouse has enough stock', async () => {
     await request(app.getHttpServer())
-      .post('/path-optimizer/nearest-warehouse')
+      .post('/api/path-optimizer/nearest-warehouse')
       .send({
         productId: laptopId,
         requiredQuantity: 999999,

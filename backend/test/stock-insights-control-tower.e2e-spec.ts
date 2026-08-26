@@ -19,6 +19,7 @@ describe('Stock Insights + Control Tower (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    app.setGlobalPrefix('api');
 
     app.useGlobalPipes(
       new ValidationPipe({
@@ -39,7 +40,7 @@ describe('Stock Insights + Control Tower (e2e)', () => {
 
   it('returns dead-stock results', async () => {
     const response = await request(app.getHttpServer())
-      .get('/stock-insights/dead-stock')
+      .get('/api/stock-insights/dead-stock')
       .query({
         inactivityDays: 60,
       })
@@ -60,7 +61,7 @@ describe('Stock Insights + Control Tower (e2e)', () => {
 
   it('returns consumption anomalies', async () => {
     const response = await request(app.getHttpServer())
-      .get('/stock-insights/consumption-anomalies')
+      .get('/api/stock-insights/consumption-anomalies')
       .query({
         windowDays: 7,
         thresholdPercent: 50,
@@ -85,7 +86,7 @@ describe('Stock Insights + Control Tower (e2e)', () => {
 
   it('returns stockout-risk calculations', async () => {
     const response = await request(app.getHttpServer())
-      .get('/stock-insights/stockout-risk')
+      .get('/api/stock-insights/stockout-risk')
       .query({
         consumptionWindowDays: 30,
       })
@@ -116,7 +117,7 @@ describe('Stock Insights + Control Tower (e2e)', () => {
 
   it('returns restock recommendations', async () => {
     const response = await request(app.getHttpServer())
-      .get('/stock-insights/restock-recommendations')
+      .get('/api/stock-insights/restock-recommendations')
       .query({
         consumptionWindowDays: 30,
       })
@@ -145,7 +146,7 @@ describe('Stock Insights + Control Tower (e2e)', () => {
 
   it('returns transfer recommendations with valid warehouse movement', async () => {
     const response = await request(app.getHttpServer())
-      .get('/stock-insights/transfer-recommendations')
+      .get('/api/stock-insights/transfer-recommendations')
       .query({
         consumptionWindowDays: 30,
       })
@@ -179,7 +180,7 @@ describe('Stock Insights + Control Tower (e2e)', () => {
 
   it('returns structured Control Tower alerts', async () => {
     const response = await request(app.getHttpServer())
-      .get('/control-tower/alerts')
+      .get('/api/control-tower/alerts')
       .query({
         deadStockInactivityDays: 60,
         consumptionWindowDays: 30,

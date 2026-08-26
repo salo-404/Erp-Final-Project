@@ -7,6 +7,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { createAwsCredentialProvider } from '../common/aws-credential-provider';
 import {
   DocumentStorageProvider,
   UploadedDocument,
@@ -55,7 +56,10 @@ export class S3DocumentStorageService implements DocumentStorageProvider {
     }
 
     this.bucket = bucket;
-    this.client = new S3Client({ region });
+    this.client = new S3Client({
+      region,
+      credentials: createAwsCredentialProvider(),
+    });
   }
 
   /**

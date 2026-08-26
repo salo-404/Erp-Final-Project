@@ -11,7 +11,7 @@ export interface MonthCell {
 }
 
 function dateKey(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
 /** Always a 6x7 grid (42 cells) so the calendar's height never jumps between months. */
@@ -45,7 +45,7 @@ export function filterDeliveries(deliveries: DeliveryTransaction[], filter: Deli
   return deliveries.filter((d) => d.expectedDate && deliveryBucket(d.expectedDate, referenceDate) === filter);
 }
 
-/** Groups by calendar day (local, YYYY-MM-DD from expectedDate) — only transactions with a real expectedDate participate. */
+/** Groups by UTC calendar day (YYYY-MM-DD) — only transactions with a real expectedDate participate. */
 export function groupDeliveriesByDay(deliveries: DeliveryTransaction[]): Map<string, DeliveryTransaction[]> {
   const map = new Map<string, DeliveryTransaction[]>();
   for (const d of deliveries) {

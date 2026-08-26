@@ -36,7 +36,7 @@ _AI_AGENT_ROOT = Path(__file__).resolve().parent.parent
 _ENTRYPOINT = _AI_AGENT_ROOT / "agentcore_entrypoint.py"
 
 _BASE_URL = "http://localhost:8080"
-_BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3000").rstrip("/")
+_BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3000/api").rstrip("/")
 _STARTUP_TIMEOUT_SECONDS = 30.0
 _POLL_INTERVAL_SECONDS = 0.5
 

@@ -573,9 +573,9 @@ class OpenPurchaseOrder(BaseModel):
     backend/src/inventory-transactions/inventory-transactions.service.ts).
     supplierName/warehouseName are dropped - GET /inventory-transactions
     doesn't join supplier/warehouse, only items. lineItemCount and
-    totalValue are not backend fields - they're computed in the tool's own
-    code from the transaction's real items[] array (see
-    tools.py::_sum_transaction_value), not fabricated.
+    totalValue and isOverdue are not backend fields - they're computed in
+    the tool's own code from the transaction's real items[] and the shared
+    UTC calendar-day rule, not fabricated.
     """
 
     purchaseOrderId: int
@@ -583,6 +583,10 @@ class OpenPurchaseOrder(BaseModel):
     warehouseId: int
     status: PurchaseOrderStatus
     expectedDate: Optional[datetime] = None
+    isOverdue: bool = Field(
+        ...,
+        description="True only when still PENDING after its expected UTC calendar date.",
+    )
     lineItemCount: int
     totalValue: Optional[float] = Field(
         None,

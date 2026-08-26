@@ -44,7 +44,8 @@ interface RequestOptions {
 }
 
 // Every list/detail endpoint on this backend returns raw JSON (no {data,meta}
-// envelope, no /api prefix) — see the full survey in project memory.
+// envelope). API_URL owns the global /api prefix; endpoint paths stay relative
+// to that centralized backend base.
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = "GET", body, auth = true } = options;
 

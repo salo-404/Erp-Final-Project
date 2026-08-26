@@ -91,6 +91,7 @@ async function createTestApp(
     .compile();
 
   const app = moduleRef.createNestApplication();
+  app.setGlobalPrefix('api');
   await app.init();
   return app;
 }
@@ -127,7 +128,7 @@ describe('DocumentReviewController.upload', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer())
-      .post('/document-review/upload')
+      .post('/api/document-review/upload')
       .attach('file', Buffer.from('%PDF-1.4 fake content'), {
         filename: 'invoice.pdf',
         contentType: 'application/pdf',
@@ -177,7 +178,7 @@ describe('DocumentReviewController.upload', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer())
-      .post('/document-review/upload')
+      .post('/api/document-review/upload')
       .attach('file', Buffer.from('fake png bytes'), {
         filename: 'scan.png',
         contentType: 'image/png',
@@ -200,7 +201,7 @@ describe('DocumentReviewController.upload', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer())
-      .post('/document-review/upload')
+      .post('/api/document-review/upload')
       .attach('file', Buffer.from('fake jpeg bytes'), {
         filename: 'scan.jpg',
         contentType: 'image/jpeg',
@@ -223,7 +224,7 @@ describe('DocumentReviewController.upload', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer())
-      .post('/document-review/upload')
+      .post('/api/document-review/upload')
       .attach('file', Buffer.from('fake word bytes'), {
         filename,
         contentType,
@@ -239,7 +240,7 @@ describe('DocumentReviewController.upload', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer())
-      .post('/document-review/upload')
+      .post('/api/document-review/upload')
       .attach('file', Buffer.alloc(0), {
         filename: 'empty.pdf',
         contentType: 'application/pdf',
@@ -255,7 +256,7 @@ describe('DocumentReviewController.upload', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer())
-      .post('/document-review/upload')
+      .post('/api/document-review/upload')
       .attach('file', Buffer.from('hello'), {
         filename: 'notes.txt',
         contentType: 'text/plain',
@@ -270,7 +271,7 @@ describe('DocumentReviewController.upload', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer())
-      .post('/document-review/upload')
+      .post('/api/document-review/upload')
       .attach('file', Buffer.alloc(MAX_DOCUMENT_SIZE_BYTES + 1), {
         filename: 'oversized.pdf',
         contentType: 'application/pdf',
@@ -285,7 +286,7 @@ describe('DocumentReviewController.upload', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer()).post(
-      '/document-review/upload',
+      '/api/document-review/upload',
     );
 
     expect(response.status).toBe(400);
@@ -299,7 +300,7 @@ describe('DocumentReviewController.upload', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer())
-      .post('/document-review/upload')
+      .post('/api/document-review/upload')
       .attach('file', Buffer.from('%PDF-1.4 fake'), {
         filename: 'invoice.pdf',
         contentType: 'application/pdf',
@@ -319,7 +320,7 @@ describe('DocumentReviewController.upload', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer())
-      .post('/document-review/upload')
+      .post('/api/document-review/upload')
       .attach('file', Buffer.from('%PDF-1.4 fake'), {
         filename: 'invoice.pdf',
         contentType: 'application/pdf',
@@ -349,7 +350,7 @@ describe('DocumentReviewController.getDocumentPresignedUrl', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer()).get(
-      '/document-review/1/presigned-url',
+      '/api/document-review/1/presigned-url',
     );
 
     expect(response.status).toBe(200);
@@ -365,7 +366,7 @@ describe('DocumentReviewController.getDocumentPresignedUrl', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer()).get(
-      '/document-review/999/presigned-url',
+      '/api/document-review/999/presigned-url',
     );
 
     expect(response.status).toBe(404);
@@ -378,7 +379,7 @@ describe('DocumentReviewController.getDocumentPresignedUrl', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer()).get(
-      '/document-review/1/presigned-url',
+      '/api/document-review/1/presigned-url',
     );
 
     expect(response.status).toBe(404);
@@ -398,7 +399,7 @@ describe('DocumentReviewController.getDocumentPresignedUrl', () => {
     app = await createTestApp(service);
 
     const response = await request(app.getHttpServer()).get(
-      '/document-review/1/presigned-url',
+      '/api/document-review/1/presigned-url',
     );
 
     expect(response.status).toBe(500);

@@ -343,6 +343,25 @@ def test_human_client_uses_only_supplied_bearer_and_never_logs_in() -> None:
     assert paths == ["/auth/me", "/document-review/501/approve"]
 
 
+def test_clients_preserve_api_base_path_for_leading_slash_tool_paths() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(200, json={"ok": True})
+
+    service_client = _client(handler, base_url="http://backend.test/api")
+    human_client = HumanAuthenticatedBackendClient(
+        "human-jwt",
+        base_url="http://backend.test/api",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert _run(service_client.get("/products")) == {"ok": True}
+    assert _run(human_client.get("/auth/me")) == {"ok": True}
+    assert paths == ["/api/products", "/api/auth/me"]
+
+
 def test_human_client_does_not_retry_unauthorized_as_another_identity() -> None:
     calls = {"count": 0}
 

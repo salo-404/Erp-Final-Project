@@ -30,6 +30,7 @@ describe('Inventory transaction flows (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    app.setGlobalPrefix('api');
 
     app.useGlobalPipes(
       new ValidationPipe({
@@ -100,7 +101,7 @@ describe('Inventory transaction flows (e2e)', () => {
     });
 
     const createResponse = await request(app.getHttpServer())
-      .post('/inventory-transactions/incoming')
+      .post('/api/inventory-transactions/incoming')
       .set('Authorization', authHeader)
       .send({
         supplierId,
@@ -134,7 +135,7 @@ describe('Inventory transaction flows (e2e)', () => {
     expect(afterCreate.onHand).toBe(before.onHand);
 
     await request(app.getHttpServer())
-      .post(`/inventory-transactions/${transactionId}/complete`)
+      .post(`/api/inventory-transactions/${transactionId}/complete`)
       .set('Authorization', authHeader)
       .expect(201);
 
@@ -184,7 +185,7 @@ describe('Inventory transaction flows (e2e)', () => {
     });
 
     const createResponse = await request(app.getHttpServer())
-      .post('/inventory-transactions/outgoing')
+      .post('/api/inventory-transactions/outgoing')
       .set('Authorization', authHeader)
       .send({
         sourceWarehouseId: beirutId,
@@ -227,7 +228,7 @@ describe('Inventory transaction flows (e2e)', () => {
     expect(afterCreate.onHand).toBe(before.onHand);
 
     await request(app.getHttpServer())
-      .post(`/inventory-transactions/${transactionId}/complete`)
+      .post(`/api/inventory-transactions/${transactionId}/complete`)
       .set('Authorization', authHeader)
       .expect(201);
 
@@ -289,7 +290,7 @@ describe('Inventory transaction flows (e2e)', () => {
     );
 
     const createResponse = await request(app.getHttpServer())
-      .post('/inventory-transactions/transfer')
+      .post('/api/inventory-transactions/transfer')
       .set('Authorization', authHeader)
       .send({
         sourceWarehouseId: beirutId,
@@ -316,7 +317,7 @@ describe('Inventory transaction flows (e2e)', () => {
     expect(reservation.warehouseId).toBe(beirutId);
 
     await request(app.getHttpServer())
-      .post(`/inventory-transactions/${transactionId}/complete`)
+      .post(`/api/inventory-transactions/${transactionId}/complete`)
       .set('Authorization', authHeader)
       .expect(201);
 
@@ -397,13 +398,13 @@ describe('Inventory transaction flows (e2e)', () => {
         })),
       };
       const created = await request(app.getHttpServer())
-        .post(`/inventory-transactions/${kind}`)
+        .post(`/api/inventory-transactions/${kind}`)
         .set('Authorization', authHeader)
         .send(payload)
         .expect(201);
 
       await request(app.getHttpServer())
-        .patch(`/inventory-transactions/${created.body.id}`)
+        .patch(`/api/inventory-transactions/${created.body.id}`)
         .set('Authorization', authHeader)
         .send({
           items: [
@@ -451,7 +452,7 @@ describe('Inventory transaction flows (e2e)', () => {
       );
 
       await request(app.getHttpServer())
-        .post(`/inventory-transactions/${created.body.id}/cancel`)
+        .post(`/api/inventory-transactions/${created.body.id}/cancel`)
         .set('Authorization', authHeader)
         .expect(201);
     },
@@ -472,7 +473,7 @@ describe('Inventory transaction flows (e2e)', () => {
     });
 
     const createResponse = await request(app.getHttpServer())
-      .post('/inventory-transactions/outgoing')
+      .post('/api/inventory-transactions/outgoing')
       .set('Authorization', authHeader)
       .send({
         sourceWarehouseId: beirutId,
@@ -498,7 +499,7 @@ describe('Inventory transaction flows (e2e)', () => {
     expect(reservation.status).toBe('ACTIVE');
 
     await request(app.getHttpServer())
-      .post(`/inventory-transactions/${transactionId}/cancel`)
+      .post(`/api/inventory-transactions/${transactionId}/cancel`)
       .set('Authorization', authHeader)
       .expect(201);
 

@@ -17,7 +17,6 @@ import { listProducts } from "../lib/products.api";
 import { DocumentPreviewPane } from "../components/documentReview/DocumentPreviewPane";
 import { ResolveSearchInput } from "../components/documentReview/ResolveSearchInput";
 import { NewProductInput } from "../components/documentReview/NewProductInput";
-import { SampleDocumentsPanel } from "../components/documentReview/SampleDocumentsPanel";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import { ErrorMessage } from "../components/ui/ErrorMessage";
 import { Modal } from "../components/ui/Modal";
@@ -246,13 +245,6 @@ export function DocumentReviewPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18, height: "100%" }}>
-      <SampleDocumentsPanel
-        onUploaded={(reviewId) => {
-          pendingFetch.refetch();
-          navigate(`/document-review/${reviewId}`);
-        }}
-      />
-
       {pending.length > 0 && (
         <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 }}>
           {pending.map((p) => (

@@ -21,6 +21,7 @@ describe('Suppliers (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    app.setGlobalPrefix('api');
 
     app.useGlobalPipes(
       new ValidationPipe({
@@ -42,7 +43,7 @@ describe('Suppliers (e2e)', () => {
   afterAll(async () => {
     if (createdSupplierId) {
       await request(app.getHttpServer())
-        .delete(`/suppliers/${createdSupplierId}`)
+        .delete(`/api/suppliers/${createdSupplierId}`)
         .set('Authorization', authHeader);
     }
     if (app) {
@@ -52,7 +53,7 @@ describe('Suppliers (e2e)', () => {
 
   it('round-trips leadTimeDays through create, get, list, and update', async () => {
     const createResponse = await request(app.getHttpServer())
-      .post('/suppliers')
+      .post('/api/suppliers')
       .set('Authorization', authHeader)
       .send({ name: 'E2E Lead Time Test Supplier', leadTimeDays: 7 })
       .expect(201);
@@ -61,14 +62,14 @@ describe('Suppliers (e2e)', () => {
     createdSupplierId = createResponse.body.id;
 
     const getResponse = await request(app.getHttpServer())
-      .get(`/suppliers/${createdSupplierId}`)
+      .get(`/api/suppliers/${createdSupplierId}`)
       .set('Authorization', authHeader)
       .expect(200);
 
     expect(getResponse.body.leadTimeDays).toBe(7);
 
     const listResponse = await request(app.getHttpServer())
-      .get('/suppliers')
+      .get('/api/suppliers')
       .set('Authorization', authHeader)
       .expect(200);
 
@@ -79,7 +80,7 @@ describe('Suppliers (e2e)', () => {
     expect(listed.leadTimeDays).toBe(7);
 
     const updateResponse = await request(app.getHttpServer())
-      .patch(`/suppliers/${createdSupplierId}`)
+      .patch(`/api/suppliers/${createdSupplierId}`)
       .set('Authorization', authHeader)
       .send({ leadTimeDays: 14 })
       .expect(200);
@@ -89,7 +90,7 @@ describe('Suppliers (e2e)', () => {
 
   it('defaults leadTimeDays to null when not provided on create', async () => {
     const response = await request(app.getHttpServer())
-      .post('/suppliers')
+      .post('/api/suppliers')
       .set('Authorization', authHeader)
       .send({ name: 'E2E No Lead Time Supplier' })
       .expect(201);
@@ -97,7 +98,7 @@ describe('Suppliers (e2e)', () => {
     expect(response.body.leadTimeDays).toBeNull();
 
     await request(app.getHttpServer())
-      .delete(`/suppliers/${response.body.id}`)
+      .delete(`/api/suppliers/${response.body.id}`)
       .set('Authorization', authHeader);
   });
 });

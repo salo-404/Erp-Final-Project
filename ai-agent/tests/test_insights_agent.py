@@ -31,6 +31,7 @@ from agents.insights_agent.tools import (
     _build_dead_stock_transfer_reason,
     _build_transfer_recommendation_reason,
     _compute_recommended_transfers,
+    _is_overdue,
     _qualifying_warehouses_by_recency,
     _sum_transaction_value,
     analyze_dead_stock,
@@ -103,6 +104,8 @@ def test_insights_prompt_matches_active_tool_boundaries() -> None:
     assert "query_database()" in INSIGHTS_SYSTEM_PROMPT
     assert "flexible read-only ERP questions" in INSIGHTS_SYSTEM_PROMPT
     assert "specialized tools" in INSIGHTS_SYSTEM_PROMPT
+    assert "explicit `isOverdue` field" in INSIGHTS_SYSTEM_PROMPT
+    assert "Never infer it" in INSIGHTS_SYSTEM_PROMPT
     for removed_tool_name in (
         "calculate_reorder_quantity",
         "recommend_dead_stock_transfer",
@@ -265,6 +268,15 @@ def test_get_open_purchase_orders_status_matches_real_backend_enum() -> None:
         PurchaseOrderStatus.COMPLETED,
         PurchaseOrderStatus.CANCELLED,
     }
+
+
+def test_overdue_status_uses_utc_calendar_days_and_pending_status() -> None:
+    reference = datetime.fromisoformat("2026-08-26T18:00:00+00:00")
+
+    assert _is_overdue("PENDING", "2026-08-26T00:00:00.000Z", reference) is False
+    assert _is_overdue("PENDING", "2026-08-20T00:00:00.000Z", reference) is True
+    assert _is_overdue("PENDING", "2026-08-29T00:00:00.000Z", reference) is False
+    assert _is_overdue("COMPLETED", "2026-08-20T00:00:00.000Z", reference) is False
 
 
 def test_sum_transaction_value_excludes_items_with_no_price() -> None:

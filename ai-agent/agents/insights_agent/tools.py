@@ -14,7 +14,7 @@ for every figure the agent reports.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from rapidfuzz import fuzz, utils
@@ -957,6 +957,19 @@ def _sum_transaction_value(items: list[dict]) -> Optional[float]:
     return sum(item["quantity"] * float(item["price"]) for item in priced_items)
 
 
+def _is_overdue(status: str, expected_date: str | None, reference_date: datetime) -> bool:
+    """Apply the ERP's UTC calendar-day overdue rule deterministically."""
+    if status != "PENDING" or not expected_date:
+        return False
+    expected = datetime.fromisoformat(expected_date.replace("Z", "+00:00"))
+    if expected.tzinfo is None:
+        expected = expected.replace(tzinfo=timezone.utc)
+    reference = reference_date
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    return expected.astimezone(timezone.utc).date() < reference.astimezone(timezone.utc).date()
+
+
 @tool
 async def get_open_purchase_orders() -> dict:
     """Get all currently open (PENDING, not yet received) purchase orders across all warehouses.
@@ -968,8 +981,9 @@ async def get_open_purchase_orders() -> dict:
     Returns:
         A dict with an `orders` list. Each item carries `status` (always
         PENDING here - a direct pass-through of the backend's own 3-value
-        enum, no remapping), `expectedDate`, `lineItemCount` (the real
-        number of line items on the order), and `totalValue` (quantity *
+        enum, no remapping), `expectedDate`, deterministic `isOverdue`
+        (UTC calendar-date comparison), `lineItemCount` (the real number
+        of line items on the order), and `totalValue` (quantity *
         price summed across items that have a recorded price - items
         without one are excluded, not treated as free; see
         _sum_transaction_value). No supplierName/warehouseName - the
@@ -987,6 +1001,7 @@ async def get_open_purchase_orders() -> dict:
         params={"type": "INCOMING", "status": "PENDING"},
     )
 
+    as_of = datetime.now(timezone.utc)
     orders = [
         {
             "purchaseOrderId": transaction["id"],
@@ -994,6 +1009,9 @@ async def get_open_purchase_orders() -> dict:
             "warehouseId": transaction["destinationWarehouseId"],
             "status": transaction["status"],
             "expectedDate": transaction["expectedDate"],
+            "isOverdue": _is_overdue(
+                transaction["status"], transaction["expectedDate"], as_of
+            ),
             "lineItemCount": len(transaction["items"]),
             "totalValue": _sum_transaction_value(transaction["items"]),
         }
@@ -1001,7 +1019,7 @@ async def get_open_purchase_orders() -> dict:
     ]
 
     return OpenPurchaseOrdersResponse.model_validate(
-        {"orders": orders, "asOf": datetime.now().isoformat()}
+        {"orders": orders, "asOf": as_of.isoformat()}
     ).model_dump(mode="json")
 
 

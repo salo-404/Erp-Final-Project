@@ -503,8 +503,8 @@ export class InventoryTransactionsService {
   }
 
   /**
-   * Returns PENDING transactions whose expectedDate falls between now and
-   * `windowDays` from now (inclusive), i.e. deliveries that are due soon —
+   * Returns PENDING transactions due from the start of today's UTC calendar
+   * date through the end of the UTC date `windowDays` later —
    * a supplier delivery (INCOMING), a customer delivery (OUTGOING), or a
    * warehouse transfer (TRANSFER), whichever schema-tracked type has a
    * scheduled date. Includes items and supplier so the frontend and later
@@ -527,14 +527,21 @@ export class InventoryTransactionsService {
       );
     }
     const client = tx ?? this.prisma;
+    const startOfToday = new Date(
+      Date.UTC(
+        referenceDate.getUTCFullYear(),
+        referenceDate.getUTCMonth(),
+        referenceDate.getUTCDate(),
+      ),
+    );
     const windowEnd = new Date(
-      referenceDate.getTime() + windowDays * 24 * 60 * 60 * 1000,
+      startOfToday.getTime() + (windowDays + 1) * 24 * 60 * 60 * 1000 - 1,
     );
 
     return client.inventoryTransaction.findMany({
       where: {
         status: InventoryTransactionStatus.PENDING,
-        expectedDate: { gte: referenceDate, lte: windowEnd },
+        expectedDate: { gte: startOfToday, lte: windowEnd },
       },
       include: { items: true, supplier: true },
       orderBy: { expectedDate: 'asc' },
@@ -555,11 +562,18 @@ export class InventoryTransactionsService {
     tx?: Prisma.TransactionClient,
   ): Promise<InventoryTransactionWithItemsAndSupplier[]> {
     const client = tx ?? this.prisma;
+    const startOfToday = new Date(
+      Date.UTC(
+        referenceDate.getUTCFullYear(),
+        referenceDate.getUTCMonth(),
+        referenceDate.getUTCDate(),
+      ),
+    );
 
     return client.inventoryTransaction.findMany({
       where: {
         status: InventoryTransactionStatus.PENDING,
-        expectedDate: { lt: referenceDate },
+        expectedDate: { lt: startOfToday },
       },
       include: { items: true, supplier: true },
       orderBy: { expectedDate: 'asc' },

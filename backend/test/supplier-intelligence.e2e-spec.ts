@@ -24,6 +24,7 @@ describe('Supplier Intelligence (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    app.setGlobalPrefix('api');
 
     app.useGlobalPipes(
       new ValidationPipe({
@@ -59,7 +60,7 @@ describe('Supplier Intelligence (e2e)', () => {
 
   it('returns supplier statistics from transaction history', async () => {
     const response = await request(app.getHttpServer())
-      .get(`/supplier-intelligence/${techSourceId}/stats`)
+      .get(`/api/supplier-intelligence/${techSourceId}/stats`)
       .set('Authorization', authHeader)
       .expect(200);
 
@@ -79,7 +80,7 @@ describe('Supplier Intelligence (e2e)', () => {
 
   it('compares only suppliers that supplied the requested product', async () => {
     const response = await request(app.getHttpServer())
-      .get('/supplier-intelligence/compare')
+      .get('/api/supplier-intelligence/compare')
       .set('Authorization', authHeader)
       .query({
         productId: laptopId,
@@ -108,7 +109,7 @@ describe('Supplier Intelligence (e2e)', () => {
 
   it('ranks suppliers and clearly marks insufficient data', async () => {
     const response = await request(app.getHttpServer())
-      .get('/supplier-intelligence/rank')
+      .get('/api/supplier-intelligence/rank')
       .set('Authorization', authHeader)
       .query({
         productId: laptopId,
@@ -143,7 +144,7 @@ describe('Supplier Intelligence (e2e)', () => {
 
   it('returns null for best supplier when no supplier has enough ranking evidence', async () => {
     const rankedResponse = await request(app.getHttpServer())
-      .get('/supplier-intelligence/rank')
+      .get('/api/supplier-intelligence/rank')
       .set('Authorization', authHeader)
       .query({
         productId: laptopId,
@@ -155,7 +156,7 @@ describe('Supplier Intelligence (e2e)', () => {
     );
 
     const bestResponse = await request(app.getHttpServer())
-      .get('/supplier-intelligence/best')
+      .get('/api/supplier-intelligence/best')
       .set('Authorization', authHeader)
       .query({
         productId: laptopId,

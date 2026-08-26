@@ -89,6 +89,7 @@ describe('Cognito authentication and database roles (e2e)', () => {
       ],
     }).compile();
     app = moduleRef.createNestApplication();
+    app.setGlobalPrefix('api');
     app.useGlobalPipes(
       new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
     );
@@ -98,53 +99,53 @@ describe('Cognito authentication and database roles (e2e)', () => {
   afterAll(async () => app.close());
 
   it('removes the custom login route', () =>
-    request(app.getHttpServer()).post('/auth/login').send({}).expect(404));
+    request(app.getHttpServer()).post('/api/auth/login').send({}).expect(404));
 
-  it('returns the mapped ERP profile from /auth/me', () =>
+  it('returns the mapped ERP profile from /api/auth/me', () =>
     request(app.getHttpServer())
-      .get('/auth/me')
+      .get('/api/auth/me')
       .set('Authorization', 'Bearer admin-sub')
       .expect(200)
       .expect({ id: 1, email: 'admin@example.com', role: UserRole.ADMIN }));
 
   it('allows a mapped ADMIN through ADMIN authorization', () =>
     request(app.getHttpServer())
-      .get('/test-role/admin')
+      .get('/api/test-role/admin')
       .set('Authorization', 'Bearer admin-sub')
       .expect(200));
 
   it('rejects a mapped EMPLOYEE from ADMIN authorization', () =>
     request(app.getHttpServer())
-      .get('/test-role/admin')
+      .get('/api/test-role/admin')
       .set('Authorization', 'Bearer employee-sub')
       .expect(403));
 
   it('rejects invalid and unmapped Cognito tokens', async () => {
     await request(app.getHttpServer())
-      .get('/auth/me')
+      .get('/api/auth/me')
       .set('Authorization', 'Bearer invalid')
       .expect(401);
     await request(app.getHttpServer())
-      .get('/auth/me')
+      .get('/api/auth/me')
       .set('Authorization', 'Bearer unmapped-sub')
       .expect(401);
   });
 
-  it('POST /users requires no password and rejects the retired password field', async () => {
+  it('POST /api/users requires no password and rejects the retired password field', async () => {
     const payload = { name: 'Provisioned', email: 'new@example.com', role: UserRole.EMPLOYEE };
     await request(app.getHttpServer())
-      .post('/users')
+      .post('/api/users')
       .set('Authorization', 'Bearer admin-sub')
       .send(payload)
       .expect(201);
     await request(app.getHttpServer())
-      .post('/users')
+      .post('/api/users')
       .set('Authorization', 'Bearer employee-sub')
       .send(payload)
       .expect(403);
-    await request(app.getHttpServer()).post('/users').send(payload).expect(401);
+    await request(app.getHttpServer()).post('/api/users').send(payload).expect(401);
     await request(app.getHttpServer())
-      .post('/users')
+      .post('/api/users')
       .set('Authorization', 'Bearer admin-sub')
       .send({ ...payload, password: 'retired-password' })
       .expect(400);
@@ -152,32 +153,32 @@ describe('Cognito authentication and database roles (e2e)', () => {
 
   it('allows only ADMIN users to list the user directory', async () => {
     await request(app.getHttpServer())
-      .get('/users')
+      .get('/api/users')
       .set('Authorization', 'Bearer admin-sub')
       .expect(200);
     await request(app.getHttpServer())
-      .get('/users')
+      .get('/api/users')
       .set('Authorization', 'Bearer employee-sub')
       .expect(403);
-    await request(app.getHttpServer()).get('/users').expect(401);
+    await request(app.getHttpServer()).get('/api/users').expect(401);
   });
 
   it('allows only ADMIN users to read one directory user', async () => {
     await request(app.getHttpServer())
-      .get('/users/1')
+      .get('/api/users/1')
       .set('Authorization', 'Bearer admin-sub')
       .expect(200);
     await request(app.getHttpServer())
-      .get('/users/1')
+      .get('/api/users/1')
       .set('Authorization', 'Bearer employee-sub')
       .expect(403);
-    await request(app.getHttpServer()).get('/users/1').expect(401);
+    await request(app.getHttpServer()).get('/api/users/1').expect(401);
   });
 
   it.each([
-    ['post', '/integrations/email/send', { to: 'x@example.com', subject: 'x', body: 'x' }],
-    ['post', '/integrations/calendar/event', { summary: 'x', startDateTime: '2026-08-23T10:00:00.000Z', endDateTime: '2026-08-23T11:00:00.000Z' }],
-    ['post', '/integrations/calendar/shipment-reminder', { transactionId: 1 }],
+    ['post', '/api/integrations/email/send', { to: 'x@example.com', subject: 'x', body: 'x' }],
+    ['post', '/api/integrations/calendar/event', { summary: 'x', startDateTime: '2026-08-23T10:00:00.000Z', endDateTime: '2026-08-23T11:00:00.000Z' }],
+    ['post', '/api/integrations/calendar/shipment-reminder', { transactionId: 1 }],
   ] as const)(
     'restricts %s %s to ADMIN while preserving authentication',
     async (method, path, payload) => {

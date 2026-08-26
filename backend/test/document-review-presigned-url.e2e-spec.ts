@@ -25,6 +25,7 @@ describe('DocumentReview presigned-url regeneration (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    app.setGlobalPrefix('api');
 
     app.useGlobalPipes(
       new ValidationPipe({
@@ -74,13 +75,13 @@ describe('DocumentReview presigned-url regeneration (e2e)', () => {
 
   it('rejects the request with no JWT at all', async () => {
     await request(app.getHttpServer())
-      .get(`/document-review/${reviewId}/presigned-url`)
+      .get(`/api/document-review/${reviewId}/presigned-url`)
       .expect(401);
   });
 
   it('regenerates a fresh presigned URL for an existing document, scoped to its stored S3 key', async () => {
     const response = await request(app.getHttpServer())
-      .get(`/document-review/${reviewId}/presigned-url`)
+      .get(`/api/document-review/${reviewId}/presigned-url`)
       .set('Authorization', authHeader)
       .expect(200);
 
@@ -97,12 +98,12 @@ describe('DocumentReview presigned-url regeneration (e2e)', () => {
 
   it('is generated fresh on each call and never persisted on the review row', async () => {
     await request(app.getHttpServer())
-      .get(`/document-review/${reviewId}/presigned-url`)
+      .get(`/api/document-review/${reviewId}/presigned-url`)
       .set('Authorization', authHeader)
       .expect(200);
 
     await request(app.getHttpServer())
-      .get(`/document-review/${reviewId}/presigned-url`)
+      .get(`/api/document-review/${reviewId}/presigned-url`)
       .set('Authorization', authHeader)
       .expect(200);
 
@@ -122,14 +123,14 @@ describe('DocumentReview presigned-url regeneration (e2e)', () => {
 
   it('returns 404 for a nonexistent review id', async () => {
     await request(app.getHttpServer())
-      .get('/document-review/999999999/presigned-url')
+      .get('/api/document-review/999999999/presigned-url')
       .set('Authorization', authHeader)
       .expect(404);
   });
 
   it('returns 404 for a review with no stored S3 key', async () => {
     await request(app.getHttpServer())
-      .get(`/document-review/${reviewIdWithoutKey}/presigned-url`)
+      .get(`/api/document-review/${reviewIdWithoutKey}/presigned-url`)
       .set('Authorization', authHeader)
       .expect(404);
   });

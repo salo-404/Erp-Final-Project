@@ -27,6 +27,7 @@ describe('Inventory integrity (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    app.setGlobalPrefix('api');
 
     app.useGlobalPipes(
       new ValidationPipe({
@@ -72,7 +73,7 @@ describe('Inventory integrity (e2e)', () => {
     });
 
     const response = await request(app.getHttpServer())
-      .post('/stock-movements/adjust')
+      .post('/api/stock-movements/adjust')
       .set('Authorization', adminAuthHeader)
       .send({
         productId: mouseId,
@@ -160,7 +161,7 @@ describe('Inventory integrity (e2e)', () => {
 
   it('rejects inventory adjustment from an EMPLOYEE', async () => {
     await request(app.getHttpServer())
-      .post('/stock-movements/adjust')
+      .post('/api/stock-movements/adjust')
       .set('Authorization', employeeAuthHeader)
       .send({
         productId: mouseId,
@@ -173,7 +174,7 @@ describe('Inventory integrity (e2e)', () => {
 
   it('rejects inventory adjustment with no JWT at all', async () => {
     await request(app.getHttpServer())
-      .post('/stock-movements/adjust')
+      .post('/api/stock-movements/adjust')
       .send({
         productId: mouseId,
         warehouseId: beirutId,
@@ -189,7 +190,7 @@ describe('Inventory integrity (e2e)', () => {
     // DTO, so forbidNonWhitelisted rejects it outright as an unrecognized
     // property, before the request could ever use it as an identity.
     await request(app.getHttpServer())
-      .post('/stock-movements/adjust')
+      .post('/api/stock-movements/adjust')
       .set('Authorization', adminAuthHeader)
       .send({
         productId: mouseId,
@@ -203,7 +204,7 @@ describe('Inventory integrity (e2e)', () => {
 
   it('EMPLOYEE cannot impersonate ADMIN via a fake requestedBy/role in the body — still 403, from the authenticated EMPLOYEE identity', async () => {
     await request(app.getHttpServer())
-      .post('/stock-movements/adjust')
+      .post('/api/stock-movements/adjust')
       .set('Authorization', employeeAuthHeader)
       .send({
         productId: mouseId,
@@ -217,7 +218,7 @@ describe('Inventory integrity (e2e)', () => {
 
   it('reconciliation reports no mismatch when inventory matches the ledger', async () => {
     const response = await request(app.getHttpServer())
-      .get('/stock-movements/reconcile')
+      .get('/api/stock-movements/reconcile')
       .set('Authorization', adminAuthHeader)
       .expect(200);
 
@@ -247,7 +248,7 @@ describe('Inventory integrity (e2e)', () => {
     });
 
     const response = await request(app.getHttpServer())
-      .get('/stock-movements/reconcile')
+      .get('/api/stock-movements/reconcile')
       .set('Authorization', adminAuthHeader)
       .expect(200);
 

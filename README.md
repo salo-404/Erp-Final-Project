@@ -25,6 +25,14 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+## Backend API routing
+
+The NestJS backend exposes every controller under the global `/api` prefix.
+The local API base is `http://localhost:3000/api`, and the existing root
+controller is available at `GET /api` for repository-owned health checks.
+External deployments must route `/api/*` to the backend and use `/api` as the
+backend health-check path.
+
 ## Project setup
 
 ```bash

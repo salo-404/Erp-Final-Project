@@ -6,6 +6,7 @@ import {
   TextractClient,
 } from '@aws-sdk/client-textract';
 import { InventoryTransactionType } from '../../generated/prisma/client';
+import { createAwsCredentialProvider } from '../common/aws-credential-provider';
 import {
   DocumentExtractionProvider,
   ExtractedDocumentData,
@@ -48,7 +49,10 @@ export class TextractDocumentExtractionProvider implements DocumentExtractionPro
       Number.isFinite(configuredTimeout) && configuredTimeout > 0
         ? configuredTimeout
         : DEFAULT_TEXTRACT_TIMEOUT_MS;
-    this.client = new TextractClient({ region });
+    this.client = new TextractClient({
+      region,
+      credentials: createAwsCredentialProvider(),
+    });
   }
 
   async extract(input: {

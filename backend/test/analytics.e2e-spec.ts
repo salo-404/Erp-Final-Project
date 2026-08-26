@@ -24,6 +24,7 @@ describe('Analytics (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
+    app.setGlobalPrefix('api');
 
     app.useGlobalPipes(
       new ValidationPipe({
@@ -63,7 +64,7 @@ describe('Analytics (e2e)', () => {
 
   it('returns top-selling products', async () => {
     const response = await request(app.getHttpServer())
-      .get('/analytics/top-selling-products')
+      .get('/api/analytics/top-selling-products')
       .set('Authorization', authHeader)
       .expect(200);
 
@@ -86,7 +87,7 @@ describe('Analytics (e2e)', () => {
 
   it('returns lowest-selling products including zero-sale products', async () => {
     const response = await request(app.getHttpServer())
-      .get('/analytics/lowest-selling-products')
+      .get('/api/analytics/lowest-selling-products')
       .set('Authorization', authHeader)
       .expect(200);
 
@@ -107,7 +108,7 @@ describe('Analytics (e2e)', () => {
 
   it('returns fast-moving products', async () => {
     const response = await request(app.getHttpServer())
-      .get('/analytics/fast-moving-products')
+      .get('/api/analytics/fast-moving-products')
       .set('Authorization', authHeader)
       .query({
         days: 30,
@@ -131,7 +132,7 @@ describe('Analytics (e2e)', () => {
 
   it('returns slow-moving products', async () => {
     const response = await request(app.getHttpServer())
-      .get('/analytics/slow-moving-products')
+      .get('/api/analytics/slow-moving-products')
       .set('Authorization', authHeader)
       .query({
         days: 30,
@@ -150,7 +151,7 @@ describe('Analytics (e2e)', () => {
 
   it('returns sales trends', async () => {
     const response = await request(app.getHttpServer())
-      .get('/analytics/sales-trends')
+      .get('/api/analytics/sales-trends')
       .set('Authorization', authHeader)
       .expect(200);
 
@@ -166,7 +167,7 @@ describe('Analytics (e2e)', () => {
 
   it('returns purchase trends', async () => {
     const response = await request(app.getHttpServer())
-      .get('/analytics/purchase-trends')
+      .get('/api/analytics/purchase-trends')
       .set('Authorization', authHeader)
       .expect(200);
 
@@ -179,7 +180,7 @@ describe('Analytics (e2e)', () => {
 
   it('returns stock history for a product', async () => {
     const response = await request(app.getHttpServer())
-      .get(`/analytics/stock-history/${laptopId}`)
+      .get(`/api/analytics/stock-history/${laptopId}`)
       .set('Authorization', authHeader)
       .expect(200);
 
@@ -193,7 +194,7 @@ describe('Analytics (e2e)', () => {
 
   it('returns warehouse demand', async () => {
     const response = await request(app.getHttpServer())
-      .get('/analytics/warehouse-demand')
+      .get('/api/analytics/warehouse-demand')
       .set('Authorization', authHeader)
       .query({
         warehouseId: beirutWarehouseId,
@@ -205,7 +206,7 @@ describe('Analytics (e2e)', () => {
 
   it('returns demand for one product', async () => {
     const response = await request(app.getHttpServer())
-      .get(`/analytics/product-demand/${laptopId}`)
+      .get(`/api/analytics/product-demand/${laptopId}`)
       .set('Authorization', authHeader)
       .expect(200);
 
@@ -214,7 +215,7 @@ describe('Analytics (e2e)', () => {
 
   it('returns supplier comparison analytics', async () => {
     const response = await request(app.getHttpServer())
-      .get('/analytics/supplier-comparison')
+      .get('/api/analytics/supplier-comparison')
       .set('Authorization', authHeader)
       .expect(200);
 
