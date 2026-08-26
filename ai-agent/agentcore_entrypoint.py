@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -46,6 +48,7 @@ from typing import Any
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from agentcore_memory import build_agentcore_memory_session_manager
+from agents.document_agent.matching_agent import match_candidates_with_document_agent
 from agents.supervisor.agent import build_supervisor_agent
 from agents.supervisor.gate import is_in_scope
 from agentcore_session import parse_runtime_session_owner
@@ -54,6 +57,7 @@ from narration.control_tower_recommendation import build_recommendation
 from request_context import human_auth_scope
 
 app = BedrockAgentCoreApp()
+logger = logging.getLogger(__name__)
 
 # AgentCore normally gives one runtimeSessionId its own runtime/microVM. This
 # bounded registry additionally keeps local tests and any process that sees
@@ -235,8 +239,15 @@ _TOOL_STATUS_LABELS: dict[str, str] = {
 # The only "mode" values invoke() accepts besides the default (absent/None,
 # ordinary Supervisor-routed chat) - see build_control_tower_recommendation_agent()'s
 # module docstring for why this rides the same /invocations path instead of
-# a second HTTP route.
+# a second HTTP route. document_match follows the exact same reasoning -
+# see its own handling below and agents/document_agent/matching_agent.py's
+# module docstring: a real ERP backend (not a browser session) calls this
+# mode, on behalf of the human reviewer whose bearer token it forwards, to
+# get a structured Document agent verdict for one product/supplier match -
+# never through a bespoke HTTP route, and never through Supervisor chat.
 _MODE_CONTROL_TOWER_RECOMMENDATION = "control_tower_recommendation"
+_MODE_DOCUMENT_MATCH = "document_match"
+_VALID_MODES = frozenset({_MODE_CONTROL_TOWER_RECOMMENDATION, _MODE_DOCUMENT_MATCH})
 
 
 def _humanize_tool_name(name: str) -> str:
@@ -367,15 +378,23 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
         payload: The raw JSON request body. Must contain a "prompt" key as
             a string. May optionally contain a "mode" key - absent/None
             for ordinary Supervisor-routed chat, where "prompt" is the
-            user's natural-language query; or "control_tower_recommendation"
+            user's natural-language query; "control_tower_recommendation"
             to route to the deterministic Control Tower recommendation
             builder instead (see narration/control_tower_recommendation.py),
             where "prompt" is instead a JSON-encoded object shaped
             {"category": "DEAD_STOCK"|"STOCKOUT_RISK"|"OVERDUE_TRANSACTION",
             ...the category's real IDs - see build_recommendation()'s
-            docstring for the exact per-category shape}. Still the same
-            /invocations path and the same auth/session-ownership checks
-            either way. Any other "mode" value is rejected.
+            docstring for the exact per-category shape}; or
+            "document_match" to route to the Document agent's real
+            product/supplier matching call instead (see
+            agents/document_agent/matching_agent.py), where "prompt" is a
+            JSON-encoded object shaped {"entityType": "product"|"supplier",
+            "query": "<extracted text>", "candidates": [{"id": int, "name":
+            str, ...any other real field the caller has}, ...]} - the
+            candidates the real ERP backend already fetched from its own
+            database. Still the same /invocations path and the same
+            auth/session-ownership checks either way. Any other "mode"
+            value is rejected.
         context: AgentCore request context. Its Authorization bearer value,
             when present, is scoped to this invocation as the human identity.
 
@@ -399,7 +418,7 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
     prompt = prompt.strip()
 
     mode = payload.get("mode")
-    if mode is not None and mode != _MODE_CONTROL_TOWER_RECOMMENDATION:
+    if mode is not None and mode not in _VALID_MODES:
         raise ValueError(f'Unrecognized "mode": {mode!r}')
 
     session_id = _runtime_session_id(context)
@@ -436,6 +455,58 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
                 yield {"type": "error", "message": _STREAM_ERROR_MESSAGE}
 
         return stream_recommendation()
+
+    if mode == _MODE_DOCUMENT_MATCH:
+        # Same reasoning as control_tower_recommendation above: no session
+        # caching/locking (the real ERP backend mints a fresh session ID -
+        # see ai-semantic-match.provider.ts - per resolveProduct()/
+        # resolveSupplier() call, never reused), and the scope gate is
+        # skipped ("prompt" is a JSON-encoded matching request, not free
+        # user text). match_candidates_with_document_agent() is the real,
+        # narrow, tool-free Document agent call - never Supervisor chat,
+        # never the general document_agent_tool.
+        async def stream_document_match() -> AsyncIterator[dict[str, str]]:
+            try:
+                request_data = json.loads(prompt)
+                if not isinstance(request_data, dict):
+                    raise ValueError('"prompt" must be a JSON object for document_match mode')
+                entity_type = request_data.get("entityType")
+                query = request_data.get("query")
+                candidates = request_data.get("candidates")
+                if entity_type not in ("product", "supplier"):
+                    raise ValueError('"entityType" must be "product" or "supplier"')
+                if not isinstance(query, str) or not query.strip():
+                    raise ValueError('"query" must be a non-empty string')
+                if not isinstance(candidates, list) or not all(
+                    isinstance(c, dict) and isinstance(c.get("id"), int) and isinstance(c.get("name"), str)
+                    for c in candidates
+                ):
+                    raise ValueError('"candidates" must be a list of objects with an integer id and string name')
+
+                verdict = await match_candidates_with_document_agent(entity_type, query, candidates)
+                text = json.dumps(
+                    {
+                        "status": verdict.status,
+                        "candidates": [candidate.model_dump() for candidate in verdict.candidates],
+                        "recommendation": (
+                            verdict.recommendation.model_dump() if verdict.recommendation else None
+                        ),
+                    }
+                )
+                yield {"type": "text_delta", "text": text}
+                yield {"type": "done"}
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Swallowed from the public stream either way (never leaks
+                # internals to the caller) - logged here so a real failure
+                # (timeout, invalid model output, credentials, throttling)
+                # is actually visible server-side instead of silently
+                # collapsing into the generic error event.
+                logger.exception("document_match mode failed")
+                yield {"type": "error", "message": _STREAM_ERROR_MESSAGE}
+
+        return stream_document_match()
 
     async def stream_response() -> AsyncIterator[dict[str, str]]:
         state = _acquire_session_state(session_id, owner_erp_user_id)
@@ -504,4 +575,4 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
 
 
 if __name__ == "__main__":
-    app.run()
+    app.run(port=int(os.getenv("PORT", "8080")))

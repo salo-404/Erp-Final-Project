@@ -31,10 +31,8 @@ import {
 export { ALLOWED_DOCUMENT_MIME_TYPES, MAX_DOCUMENT_SIZE_BYTES };
 export type { AllowedDocumentMimeType };
 
-/** resolveProduct()/resolveSupplier() drop anything scoring below this — noise, not a real suggestion. */
+/** The fuzzy fallback (buildFuzzyMatchResult()) drops anything scoring below this — noise, not a real suggestion. */
 const MIN_SUGGESTION_SCORE = 0.2;
-/** Cap on how many ranked suggestions resolveProduct()/resolveSupplier() return. */
-const MAX_SUGGESTIONS = 10;
 /** matchScore()'s ceiling when the query and candidate each name a different number (e.g. "22-inch" vs "24-inch"). */
 const MAX_SCORE_WITH_CONFLICTING_NUMBERS = 0.4;
 
@@ -242,19 +240,103 @@ export const DOCUMENT_EXTRACTION_PROVIDER = Symbol(
 );
 export const DOCUMENT_REVIEW_NOTIFIER = Symbol('DOCUMENT_REVIEW_NOTIFIER');
 
-export interface ProductMatchSuggestion {
-  productId: number;
+/**
+ * A single real candidate the Document agent (or the fuzzy fallback,
+ * reshaped into this same contract) considered — never a fabricated id.
+ * confidence is 0-1 either way: the Document agent's own real confidence,
+ * or the fuzzy matcher's real matchScore() value when falling back.
+ * reason is always a real, specific sentence — the Document agent's own
+ * reasoning, or a fixed, honest fallback sentence naming the fuzzy
+ * matcher explicitly (never a fabricated reason pretending to be the AI's).
+ */
+export interface DocumentMatchCandidate {
+  id: number;
   name: string;
-  /** 0-1 heuristic confidence; 1 = exact case-insensitive name match. Never auto-applied — a suggestion only. */
-  score: number;
+  confidence: number;
+  reason: string;
 }
 
-export interface SupplierMatchSuggestion {
-  supplierId: number;
-  name: string;
-  /** 0-1 heuristic confidence; 1 = exact case-insensitive name match. Never auto-applied — a suggestion only. */
-  score: number;
+/** Only ever populated when status is NO_MATCH for a PRODUCT — see resolveProduct(). */
+export interface DocumentMatchRecommendation {
+  normalizedName: string;
+  category: string | null;
+  description: string | null;
 }
+
+/**
+ * The full, un-collapsed result of matching one extracted name against the
+ * real catalog — what resolveProduct()/resolveSupplier() now return
+ * end-to-end (never flattened back into a bare {id, name, score} array).
+ * candidates holds at most 3 entries. recommendation is non-null only for
+ * a product NO_MATCH result — never for a supplier, and never alongside a
+ * non-empty candidates list.
+ */
+export interface DocumentMatchResult {
+  status: 'RESOLVED' | 'UNRESOLVED' | 'NO_MATCH';
+  candidates: DocumentMatchCandidate[];
+  recommendation: DocumentMatchRecommendation | null;
+}
+
+/**
+ * Port for the real Document agent's own LLM-driven product/supplier
+ * matching call (ai-agent/agents/document_agent/matching_agent.py),
+ * reached through the SAME AgentCore /invocations endpoint the chat UI
+ * uses ("document_match" mode — see agentcore_entrypoint.py's invoke()
+ * docstring) — NOT a bespoke HTTP route, and NOT a generic pending-review
+ * chat agent. Implementations authenticate as the CURRENT authenticated
+ * reviewer (their own Cognito access token and ERP user id, forwarded
+ * from the request that called resolveProduct()/resolveSupplier() below —
+ * the same identity/session-ownership model AgentCore already enforces for
+ * chat), never a separate service credential.
+ *
+ * The AI service reasons over these exact real candidates — this
+ * interface's job is only to hand it enough real data to reason well:
+ * category/description for products (Product's own real fields), and any
+ * other real metadata for suppliers. Kept as an injected interface, same
+ * pattern as DocumentStorageProvider/DocumentExtractionProvider above, so
+ * this service never hard-codes a concrete HTTP client.
+ *
+ * Implementations MUST throw on any failure (network error, timeout,
+ * non-2xx, malformed response, or the AI service's own signal that the
+ * Document agent's output failed its own invented-id/consistency
+ * validation) rather than returning a degraded result — resolveProduct()/
+ * resolveSupplier() catch that throw and fall back to the existing
+ * Jaccard-token matcher (matchScore() below), so a semantic-match failure
+ * is never fatal to producing suggestions, only ever a fallback trigger.
+ * Never invents an id — every DocumentMatchCandidate.id must trace back to
+ * one of the real candidates the caller passed in. Enforced twice: once on
+ * the AI side (matching_agent.py's _validate_verdict()) and independently
+ * again by resolveProduct()/resolveSupplier() below against their own
+ * candidate set before a result ever reaches a human reviewer.
+ */
+export interface DocumentSemanticMatchProvider {
+  matchProduct(
+    humanBearerToken: string,
+    erpUserId: number,
+    query: string,
+    candidates: {
+      id: number;
+      name: string;
+      category: string | null;
+      description: string | null;
+    }[],
+  ): Promise<DocumentMatchResult>;
+  matchSupplier(
+    humanBearerToken: string,
+    erpUserId: number,
+    query: string,
+    candidates: {
+      id: number;
+      name: string;
+      email?: string | null;
+      leadTimeDays?: number | null;
+    }[],
+  ): Promise<DocumentMatchResult>;
+}
+
+export const DOCUMENT_SEMANTIC_MATCH_PROVIDER = Symbol(
+  'DOCUMENT_SEMANTIC_MATCH_PROVIDER',
+);
 
 export interface ApproveDocumentReviewItemInput {
   productId: number;
@@ -306,6 +388,8 @@ export class DocumentReviewService {
     private readonly extractionProvider: DocumentExtractionProvider,
     @Inject(DOCUMENT_REVIEW_NOTIFIER)
     private readonly notifier: DocumentReviewNotifier,
+    @Inject(DOCUMENT_SEMANTIC_MATCH_PROVIDER)
+    private readonly semanticMatchProvider: DocumentSemanticMatchProvider,
   ) {}
 
   /**
@@ -474,14 +558,23 @@ export class DocumentReviewService {
    * persists anything and is never invoked as part of approve(); the
    * reviewer is the one who turns a suggestion into a confirmed productId.
    *
+   * Tries the AI layer's real semantic (meaning + wording) matcher first
+   * (trySemanticProductMatch() — see DocumentSemanticMatchProvider's own
+   * docstring above), and falls back to the original Jaccard-token
+   * matchScore() below on ANY semantic-match failure (network error,
+   * timeout, misconfiguration) — this is the one and only fallback
+   * trigger; a successful-but-empty semantic result is NOT a failure and
+   * is returned as-is (an honest "nothing plausible found", the same
+   * answer the fuzzy matcher itself would give in that case).
+   *
    * Scores EVERY active product (never pre-filtered by a SQL substring
    * match — that would silently exclude a real candidate whose name
    * doesn't literally contain the typed query as a substring, e.g. an
-   * abbreviation or reordered words, before matchScore() ever got a
+   * abbreviation or reordered words, before either matcher ever got a
    * chance to judge it). The catalog is confirmed small (single digits to
-   * low tens), so scoring every active row in memory is cheap. Results
-   * below MIN_SUGGESTION_SCORE are dropped as noise, and only the best
-   * MAX_SUGGESTIONS are returned.
+   * low tens), so scoring every active row in memory/one semantic-match
+   * call is cheap. The fuzzy fallback path drops results below
+   * MIN_SUGGESTION_SCORE as noise and returns only the best 3.
    *
    * Only suggests ACTIVE products — resolving a review to an inactive
    * product would let approve() create a brand-new transaction for a
@@ -490,9 +583,11 @@ export class DocumentReviewService {
    * sees it as a choice in the first place).
    */
   async resolveProduct(
+    humanBearerToken: string,
+    erpUserId: number,
     query: string,
     tx?: Prisma.TransactionClient,
-  ): Promise<ProductMatchSuggestion[]> {
+  ): Promise<DocumentMatchResult> {
     if (!query || !query.trim()) {
       throw new BadRequestException('query must not be empty');
     }
@@ -501,25 +596,34 @@ export class DocumentReviewService {
       where: { isActive: true },
     });
 
-    return candidates
-      .map((product) => ({
-        productId: product.id,
-        name: product.name,
-        score: this.matchScore(query, product.name),
-      }))
-      .filter((match) => match.score >= MIN_SUGGESTION_SCORE)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_SUGGESTIONS);
+    const semanticResult = await this.trySemanticProductMatch(
+      humanBearerToken,
+      erpUserId,
+      query,
+      candidates,
+    );
+    if (semanticResult !== null) {
+      return semanticResult;
+    }
+
+    return this.buildFuzzyMatchResult(
+      query,
+      candidates.map((product) => ({ id: product.id, name: product.name })),
+      { isProduct: true },
+    );
   }
 
   /**
    * Same suggestion-only contract as resolveProduct(), against Supplier —
-   * only ACTIVE suppliers are suggested, for the same reason.
+   * only ACTIVE suppliers are suggested, for the same reason, and the same
+   * semantic-first/fuzzy-fallback shape (trySemanticSupplierMatch()).
    */
   async resolveSupplier(
+    humanBearerToken: string,
+    erpUserId: number,
     query: string,
     tx?: Prisma.TransactionClient,
-  ): Promise<SupplierMatchSuggestion[]> {
+  ): Promise<DocumentMatchResult> {
     if (!query || !query.trim()) {
       throw new BadRequestException('query must not be empty');
     }
@@ -528,15 +632,278 @@ export class DocumentReviewService {
       where: { isActive: true },
     });
 
-    return candidates
-      .map((supplier) => ({
-        supplierId: supplier.id,
-        name: supplier.name,
-        score: this.matchScore(query, supplier.name),
+    const semanticResult = await this.trySemanticSupplierMatch(
+      humanBearerToken,
+      erpUserId,
+      query,
+      candidates,
+    );
+    if (semanticResult !== null) {
+      return semanticResult;
+    }
+
+    return this.buildFuzzyMatchResult(
+      query,
+      candidates.map((supplier) => ({ id: supplier.id, name: supplier.name })),
+      { isProduct: false },
+    );
+  }
+
+  /**
+   * Calls DocumentSemanticMatchProvider.matchProduct(), independently
+   * re-validates the result against this service's OWN candidate set
+   * (validateDocumentMatchResult() — defense in depth; matching_agent.py
+   * already validated on the AI side, but a result is never trusted
+   * blindly twice in a row either), and returns it unchanged on success.
+   * Returns null — never throws — on ANY provider failure OR a failed
+   * re-validation, the caller's one and only fallback signal; logs a
+   * warning server-side so a persistently failing semantic matcher is
+   * visible in the logs even though it's never fatal.
+   */
+  private async trySemanticProductMatch(
+    humanBearerToken: string,
+    erpUserId: number,
+    query: string,
+    candidates: {
+      id: number;
+      name: string;
+      category: string | null;
+      description: string | null;
+    }[],
+  ): Promise<DocumentMatchResult | null> {
+    try {
+      const result = await this.semanticMatchProvider.matchProduct(
+        humanBearerToken,
+        erpUserId,
+        query,
+        candidates.map(({ id, name, category, description }) => ({
+          id,
+          name,
+          category,
+          description,
+        })),
+      );
+      this.validateDocumentMatchResult(result, candidates, {
+        isProduct: true,
+      });
+      return result;
+    } catch (error) {
+      this.logger.warn(
+        `Semantic product match failed for query "${query}" — falling back to the existing fuzzy matcher: ${(error as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /** Same contract as trySemanticProductMatch(), for suppliers. */
+  private async trySemanticSupplierMatch(
+    humanBearerToken: string,
+    erpUserId: number,
+    query: string,
+    candidates: {
+      id: number;
+      name: string;
+      email?: string | null;
+      leadTimeDays?: number | null;
+    }[],
+  ): Promise<DocumentMatchResult | null> {
+    try {
+      const result = await this.semanticMatchProvider.matchSupplier(
+        humanBearerToken,
+        erpUserId,
+        query,
+        candidates.map(({ id, name, email, leadTimeDays }) => ({
+          id,
+          name,
+          email,
+          leadTimeDays,
+        })),
+      );
+      this.validateDocumentMatchResult(result, candidates, {
+        isProduct: false,
+      });
+      return result;
+    } catch (error) {
+      this.logger.warn(
+        `Semantic supplier match failed for query "${query}" — falling back to the existing fuzzy matcher: ${(error as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Independent re-validation of the AI service's response against the
+   * EXACT candidate set this service itself supplied — never trusts the AI
+   * response just because matching_agent.py already validated it on its
+   * own side (see that module's _validate_verdict() for the equivalent
+   * AI-side checks; this is defense in depth, not a duplicate of the same
+   * trust boundary). Throws on the first violation found; the caller's
+   * catch block treats that identically to a network failure — fall back
+   * to the fuzzy matcher, never show unvalidated output to a reviewer.
+   */
+  private validateDocumentMatchResult(
+    result: DocumentMatchResult,
+    candidates: { id: number; name: string; category?: string | null }[],
+    { isProduct }: { isProduct: boolean },
+  ): void {
+    if (!result || !Array.isArray(result.candidates) || !result.status) {
+      throw new Error('Document match result was not in the expected shape');
+    }
+    if (!['RESOLVED', 'UNRESOLVED', 'NO_MATCH'].includes(result.status)) {
+      throw new Error(`Document match result had an invalid status: ${result.status}`);
+    }
+    if (result.candidates.length > 3) {
+      throw new Error(
+        `Document match result had ${result.candidates.length} candidates, maximum is 3`,
+      );
+    }
+
+    const candidatesById = new Map(candidates.map((c) => [c.id, c]));
+    const seenIds = new Set<number>();
+    for (const candidate of result.candidates) {
+      const real = candidatesById.get(candidate.id);
+      if (!real) {
+        throw new Error(
+          `Document match result referenced id ${candidate.id}, which was not in the supplied candidates`,
+        );
+      }
+      if (real.name !== candidate.name) {
+        throw new Error(
+          `Document match result's name for id ${candidate.id} ("${candidate.name}") did not match the real supplied name ("${real.name}")`,
+        );
+      }
+      if (seenIds.has(candidate.id)) {
+        throw new Error(`Document match result had duplicate candidate id ${candidate.id}`);
+      }
+      seenIds.add(candidate.id);
+      if (
+        typeof candidate.confidence !== 'number' ||
+        Number.isNaN(candidate.confidence) ||
+        candidate.confidence < 0 ||
+        candidate.confidence > 1
+      ) {
+        throw new Error(
+          `Document match result's confidence for id ${candidate.id} was out of the valid 0-1 range: ${candidate.confidence}`,
+        );
+      }
+      if (typeof candidate.reason !== 'string' || !candidate.reason.trim()) {
+        throw new Error(
+          `Document match result had an empty reason for candidate id ${candidate.id}`,
+        );
+      }
+    }
+
+    if (result.status === 'RESOLVED' && result.candidates.length !== 1) {
+      throw new Error(
+        `Document match result had status RESOLVED with ${result.candidates.length} candidates, expected exactly 1`,
+      );
+    }
+    if (result.status === 'UNRESOLVED' && result.candidates.length === 0) {
+      throw new Error('Document match result had status UNRESOLVED with no candidates');
+    }
+    if (result.status === 'NO_MATCH' && result.candidates.length > 0) {
+      throw new Error('Document match result had status NO_MATCH with non-empty candidates');
+    }
+
+    if (isProduct && result.status === 'NO_MATCH' && !result.recommendation) {
+      throw new Error(
+        'Document match result had product NO_MATCH without a new-product recommendation',
+      );
+    }
+    if (!isProduct && result.recommendation) {
+      throw new Error(
+        'Document match result had a recommendation for a supplier — suppliers never get one',
+      );
+    }
+    if (result.status !== 'NO_MATCH' && result.recommendation) {
+      throw new Error(
+        `Document match result had a recommendation with status ${result.status}, only NO_MATCH may carry one`,
+      );
+    }
+
+    if (result.recommendation) {
+      if (
+        typeof result.recommendation.normalizedName !== 'string' ||
+        !result.recommendation.normalizedName.trim()
+      ) {
+        throw new Error(
+          'Document match result had a product recommendation with an empty normalizedName',
+        );
+      }
+      const realCategories = new Set(
+        candidates.map((c) => c.category).filter((c): c is string => !!c),
+      );
+      if (
+        result.recommendation.category !== null &&
+        !realCategories.has(result.recommendation.category)
+      ) {
+        throw new Error(
+          `Document match result recommended category "${result.recommendation.category}", which was not one of the real categories supplied`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Fuzzy-matcher fallback, reshaped into the SAME DocumentMatchResult
+   * contract the AI path returns — so callers (the reviewer UI, the AI
+   * agent's own plain resolve_document_product()/resolve_document_supplier()
+   * tools) work identically regardless of which matcher actually answered.
+   * reason is always a fixed, honest sentence naming the fuzzy matcher —
+   * never fabricated as if it were the Document agent's own reasoning.
+   * status: RESOLVED only for a genuine unique case-insensitive exact name
+   * match (matchScore()'s own `=== 1` fast path); UNRESOLVED whenever at
+   * least one candidate clears the noise floor; NO_MATCH otherwise — with,
+   * for a product, a minimal, honest recommendation (a cleaned-up name
+   * only; category/description stay null, since the fuzzy matcher has no
+   * real basis to guess either).
+   */
+  private buildFuzzyMatchResult(
+    query: string,
+    candidates: { id: number; name: string; category?: string | null }[],
+    { isProduct }: { isProduct: boolean },
+  ): DocumentMatchResult {
+    const FUZZY_REASON = 'Wording-similarity match — AI-based matching was unavailable for this request.';
+    const normalizedQuery = query.trim().toLowerCase();
+
+    const scored = candidates
+      .map((candidate) => ({
+        id: candidate.id,
+        name: candidate.name,
+        confidence: this.matchScore(query, candidate.name),
       }))
-      .filter((match) => match.score >= MIN_SUGGESTION_SCORE)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_SUGGESTIONS);
+      .filter((match) => match.confidence >= MIN_SUGGESTION_SCORE)
+      .sort((a, b) => b.confidence - a.confidence);
+
+    const exactMatches = scored.filter(
+      (match) => match.name.trim().toLowerCase() === normalizedQuery,
+    );
+
+    if (exactMatches.length === 1) {
+      return {
+        status: 'RESOLVED',
+        candidates: [{ ...exactMatches[0], confidence: 1, reason: FUZZY_REASON }],
+        recommendation: null,
+      };
+    }
+
+    if (scored.length === 0) {
+      return {
+        status: 'NO_MATCH',
+        candidates: [],
+        recommendation: isProduct
+          ? { normalizedName: query.trim(), category: null, description: null }
+          : null,
+      };
+    }
+
+    return {
+      status: 'UNRESOLVED',
+      candidates: scored
+        .slice(0, 3)
+        .map((match) => ({ ...match, reason: FUZZY_REASON })),
+      recommendation: null,
+    };
   }
 
   private async approveWithClient(

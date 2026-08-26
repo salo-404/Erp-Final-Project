@@ -299,11 +299,36 @@ export interface PendingDocumentReviewWithDetails extends PendingDocumentReview 
   reviewedBy: { id: number; name: string; email: string } | null;
 }
 
-export interface MatchSuggestion {
-  productId?: number;
-  supplierId?: number;
+/**
+ * One real candidate the Document agent (or, when it's unavailable, the
+ * fuzzy fallback — see backend/src/document-review/document-review.service.ts)
+ * considered for an extracted product/supplier name. id/name always trace
+ * back to a real Product/Supplier row — never invented. confidence is 0-1.
+ * reason is always a real, specific sentence, never a placeholder.
+ */
+export interface DocumentMatchCandidate {
+  id: number;
   name: string;
-  score: number;
+  confidence: number;
+  reason: string;
+}
+
+/** Only ever present when status is NO_MATCH for a product — never for a supplier. */
+export interface DocumentMatchRecommendation {
+  normalizedName: string;
+  category: string | null;
+  description: string | null;
+}
+
+/**
+ * The full result of matching one extracted name against the real catalog
+ * — up to 3 real candidates, never collapsed into a bare name/score pair.
+ * Human review is still mandatory either way: nothing here is auto-applied.
+ */
+export interface DocumentMatchResult {
+  status: "RESOLVED" | "UNRESOLVED" | "NO_MATCH";
+  candidates: DocumentMatchCandidate[];
+  recommendation: DocumentMatchRecommendation | null;
 }
 
 export interface ApproveDocumentReviewInput {

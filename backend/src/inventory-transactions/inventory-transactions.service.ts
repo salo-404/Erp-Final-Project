@@ -12,7 +12,7 @@ import {
   StockMovementType,
 } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { ReservationsService } from '../reservations/reservations.service';
+import { ReservationsService, ReserveInput } from '../reservations/reservations.service';
 import { StockMovementsService } from '../stock-movements/stock-movements.service';
 import { S3DocumentStorageService } from '../document-review/s3-document-storage.service';
 import {
@@ -883,15 +883,12 @@ export class InventoryTransactionsService {
       }
 
       for (const plan of resyncPlans) {
-        await this.reservationsService.reserve(
-          {
-            transactionId: id,
-            productId: plan.newProductId,
-            warehouseId: newSourceWarehouseId!,
-            quantity: plan.newQuantity,
-          },
-          tx,
-        );
+        await this.reserveWithNamedError(tx, {
+          transactionId: id,
+          productId: plan.newProductId,
+          warehouseId: newSourceWarehouseId!,
+          quantity: plan.newQuantity,
+        });
 
         if (plan.change) {
           await tx.inventoryTransactionItem.update({
@@ -1089,15 +1086,12 @@ export class InventoryTransactionsService {
     });
 
     for (const item of this.sortedByProductId(input.items)) {
-      await this.reservationsService.reserve(
-        {
-          transactionId: transaction.id,
-          productId: item.productId,
-          warehouseId: input.sourceWarehouseId,
-          quantity: item.quantity,
-        },
-        tx,
-      );
+      await this.reserveWithNamedError(tx, {
+        transactionId: transaction.id,
+        productId: item.productId,
+        warehouseId: input.sourceWarehouseId,
+        quantity: item.quantity,
+      });
     }
 
     return transaction;
@@ -1134,15 +1128,12 @@ export class InventoryTransactionsService {
     // Source-only reservation — the destination warehouse is never reserved,
     // matching ReservationsService's own TRANSFER handling.
     for (const item of this.sortedByProductId(input.items)) {
-      await this.reservationsService.reserve(
-        {
-          transactionId: transaction.id,
-          productId: item.productId,
-          warehouseId: input.sourceWarehouseId,
-          quantity: item.quantity,
-        },
-        tx,
-      );
+      await this.reserveWithNamedError(tx, {
+        transactionId: transaction.id,
+        productId: item.productId,
+        warehouseId: input.sourceWarehouseId,
+        quantity: item.quantity,
+      });
     }
 
     return transaction;
@@ -1280,6 +1271,44 @@ export class InventoryTransactionsService {
           `Product ${productId} is inactive and cannot be used for a new transaction`,
         );
       }
+    }
+  }
+
+  /**
+   * Thin wrapper around ReservationsService.reserve() that rewrites its
+   * "Insufficient available stock for product X in warehouse Y" message to
+   * name the actual product/warehouse instead of their ids, for a reviewer
+   * reading the error. Deliberately NOT done inside ReservationsService
+   * itself — that service is confirmed to never touch Product/Warehouse
+   * (see reservations.service.spec.ts), so the lookup belongs here, the one
+   * layer that already does (assertProductsExist()/assertWarehouseExists()
+   * above). Any other failure (a genuine bug, a different Conflict) is
+   * rethrown completely unchanged.
+   */
+  private async reserveWithNamedError(
+    tx: Prisma.TransactionClient,
+    input: ReserveInput,
+  ): Promise<void> {
+    try {
+      await this.reservationsService.reserve(input, tx);
+    } catch (error) {
+      const match =
+        error instanceof ConflictException &&
+        /^Insufficient available stock for product (\d+) in warehouse (\d+) (\(.+\))$/.exec(
+          error.message,
+        );
+      if (!match) {
+        throw error;
+      }
+      const [, productId, warehouseId, suffix] = match;
+      const [product, warehouse] = await Promise.all([
+        tx.product.findUnique({ where: { id: Number(productId) } }),
+        tx.warehouse.findUnique({ where: { id: Number(warehouseId) } }),
+      ]);
+      throw new ConflictException(
+        `Insufficient available stock for ${product?.name ?? `product ${productId}`} in ` +
+          `${warehouse?.name ?? `warehouse ${warehouseId}`} ${suffix}`,
+      );
     }
   }
 }

@@ -496,9 +496,27 @@ def test_core_read_tools_use_authoritative_document_review_endpoints(
                 "extractedItems": [{"product": "27in Monitor", "quantity": 12, "price": 199.99}],
             })
         if request.url.path == "/document-review/resolve-product":
-            return httpx.Response(200, json=[{"productId": 103, "name": "27in Monitor", "score": 1}])
+            return httpx.Response(200, json={
+                "status": "RESOLVED",
+                "candidates": [{
+                    "id": 103,
+                    "name": "27in Monitor",
+                    "confidence": 1,
+                    "reason": "Exact catalog name.",
+                }],
+                "recommendation": None,
+            })
         if request.url.path == "/document-review/resolve-supplier":
-            return httpx.Response(200, json=[{"supplierId": 41, "name": "TechSource", "score": 1}])
+            return httpx.Response(200, json={
+                "status": "RESOLVED",
+                "candidates": [{
+                    "id": 41,
+                    "name": "TechSource",
+                    "confidence": 1,
+                    "reason": "Exact catalog name.",
+                }],
+                "recommendation": None,
+            })
         raise AssertionError(f"unexpected path {request.url.path}")
 
     _patch_backend_client(monkeypatch, handler)

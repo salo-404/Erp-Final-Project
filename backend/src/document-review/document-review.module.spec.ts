@@ -6,8 +6,12 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { DocumentReviewService } from './document-review.service';
 import { DocumentReviewController } from './document-review.controller';
 import { DocumentReviewModule } from './document-review.module';
-import { DOCUMENT_EXTRACTION_PROVIDER } from './document-review.service';
+import {
+  DOCUMENT_EXTRACTION_PROVIDER,
+  DOCUMENT_SEMANTIC_MATCH_PROVIDER,
+} from './document-review.service';
 import { TextractDocumentExtractionProvider } from './textract-document-extraction.provider';
+import { AiSemanticMatchProvider } from './ai-semantic-match.provider';
 
 describe('DocumentReviewModule wiring', () => {
   const ORIGINAL_ENV = { ...process.env };
@@ -21,7 +25,7 @@ describe('DocumentReviewModule wiring', () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it('bootstraps successfully now that all 3 provider tokens (storage, extraction, notifier) are bound — confirms this module is ready to be imported into AppModule', async () => {
+  it('bootstraps successfully now that all 4 provider tokens (storage, extraction, notifier, semantic match) are bound — confirms this module is ready to be imported into AppModule', async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [PrismaModule, DocumentReviewModule],
     })
@@ -37,6 +41,9 @@ describe('DocumentReviewModule wiring', () => {
     );
     expect(moduleRef.get(DOCUMENT_EXTRACTION_PROVIDER)).toBeInstanceOf(
       TextractDocumentExtractionProvider,
+    );
+    expect(moduleRef.get(DOCUMENT_SEMANTIC_MATCH_PROVIDER)).toBeInstanceOf(
+      AiSemanticMatchProvider,
     );
   });
 

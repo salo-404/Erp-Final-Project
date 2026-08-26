@@ -1,5 +1,6 @@
 /// <reference types="jest" />
 
+import { ConflictException } from '@nestjs/common';
 import { InventoryTransactionsService } from './inventory-transactions.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type { S3DocumentStorageService } from '../document-review/s3-document-storage.service';
@@ -545,6 +546,88 @@ describe('InventoryTransactionsService.createOutgoing', () => {
         items: [{ productId: 100, quantity: 5 }],
       }),
     ).rejects.toThrow('Insufficient available stock');
+  });
+
+  it("rewrites ReservationsService's insufficient-stock error to name the actual product/warehouse instead of their ids", async () => {
+    const tx = createMockTx();
+    setupExistenceChecks(tx); // tx.product/warehouse.findUnique already resolve PRODUCT ("Widget") / WAREHOUSE_A ("Warehouse A")
+    tx.inventoryTransaction.create.mockResolvedValue({
+      id: 5,
+      type: 'OUTGOING',
+      status: 'PENDING',
+      items: [{ productId: 100, quantity: 5 }],
+    });
+    const { service, reserve } = buildService(tx);
+    reserve.mockRejectedValue(
+      new ConflictException(
+        'Insufficient available stock for product 100 in warehouse 10 (available: 0, requested: 5)',
+      ),
+    );
+
+    await expect(
+      service.createOutgoing({
+        sourceWarehouseId: 10,
+        items: [{ productId: 100, quantity: 5 }],
+      }),
+    ).rejects.toThrow(
+      'Insufficient available stock for Widget in Warehouse A (available: 0, requested: 5)',
+    );
+  });
+
+  it('falls back to the raw id when the product/warehouse row behind an insufficient-stock error is unexpectedly gone', async () => {
+    const tx = createMockTx();
+    // First call is assertProductsExist()/assertWarehouseExists()'s own
+    // pre-check (must see a real, active row to get this far at all);
+    // second call is reserveWithNamedError()'s own re-lookup after the
+    // reservation itself failed - only that one needs to come back empty,
+    // modeling a row deleted/deactivated in between.
+    tx.product.findUnique
+      .mockResolvedValueOnce(PRODUCT)
+      .mockResolvedValueOnce(null);
+    tx.warehouse.findUnique
+      .mockResolvedValueOnce(WAREHOUSE_A)
+      .mockResolvedValueOnce(null);
+    tx.inventoryTransaction.create.mockResolvedValue({
+      id: 5,
+      type: 'OUTGOING',
+      status: 'PENDING',
+      items: [{ productId: 100, quantity: 5 }],
+    });
+    const { service, reserve } = buildService(tx);
+    reserve.mockRejectedValue(
+      new ConflictException(
+        'Insufficient available stock for product 100 in warehouse 10 (available: 0, requested: 5)',
+      ),
+    );
+
+    await expect(
+      service.createOutgoing({
+        sourceWarehouseId: 10,
+        items: [{ productId: 100, quantity: 5 }],
+      }),
+    ).rejects.toThrow(
+      'Insufficient available stock for product 100 in warehouse 10 (available: 0, requested: 5)',
+    );
+  });
+
+  it('leaves an unrelated ConflictException untouched', async () => {
+    const tx = createMockTx();
+    setupExistenceChecks(tx);
+    tx.inventoryTransaction.create.mockResolvedValue({
+      id: 5,
+      type: 'OUTGOING',
+      status: 'PENDING',
+      items: [{ productId: 100, quantity: 5 }],
+    });
+    const { service, reserve } = buildService(tx);
+    reserve.mockRejectedValue(new ConflictException('Some other reservation conflict'));
+
+    await expect(
+      service.createOutgoing({
+        sourceWarehouseId: 10,
+        items: [{ productId: 100, quantity: 5 }],
+      }),
+    ).rejects.toThrow('Some other reservation conflict');
   });
 });
 

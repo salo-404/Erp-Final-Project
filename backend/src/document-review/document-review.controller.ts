@@ -7,10 +7,13 @@ import {
   ParseIntPipe,
   Post,
   Query,
+  Req,
+  UnauthorizedException,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import {
   DocumentReviewService,
@@ -24,6 +27,22 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { UserRole } from '../../generated/prisma/enums';
+
+/**
+ * Re-extracts the raw bearer token JwtAuthGuard already validated for this
+ * request — never trusted as authentication here (that already happened),
+ * only forwarded onward so DocumentSemanticMatchProvider can act as this
+ * exact human against the AI service's AgentCore /invocations endpoint.
+ */
+function humanBearerToken(request: Request): string {
+  const [scheme, token] = request.headers.authorization?.split(' ') ?? [];
+  if (scheme?.toLowerCase() !== 'bearer' || !token) {
+    // Unreachable in practice — JwtAuthGuard (applied class-wide on this
+    // controller) already rejects the request before this ever runs.
+    throw new UnauthorizedException('A valid Cognito access token is required');
+  }
+  return token;
+}
 
 @Controller('document-review')
 @UseGuards(JwtAuthGuard)
@@ -61,14 +80,39 @@ export class DocumentReviewController {
     return this.documentReviewService.getPendingReviews();
   }
 
+  /**
+   * Forwards the CURRENT reviewer's own Cognito access token and ERP user
+   * id — never a service credential — so DocumentReviewService can
+   * authenticate to the AI service's AgentCore /invocations "document_match"
+   * mode as this exact human, the same identity/session-ownership model
+   * AgentCore already enforces for chat (see
+   * DocumentSemanticMatchProvider's docstring in document-review.service.ts).
+   */
   @Get('resolve-product')
-  resolveProduct(@Query('query') query: string) {
-    return this.documentReviewService.resolveProduct(query);
+  resolveProduct(
+    @Query('query') query: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Req() request: Request,
+  ) {
+    return this.documentReviewService.resolveProduct(
+      humanBearerToken(request),
+      user.id,
+      query,
+    );
   }
 
+  /** Same contract as resolveProduct() above. */
   @Get('resolve-supplier')
-  resolveSupplier(@Query('query') query: string) {
-    return this.documentReviewService.resolveSupplier(query);
+  resolveSupplier(
+    @Query('query') query: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Req() request: Request,
+  ) {
+    return this.documentReviewService.resolveSupplier(
+      humanBearerToken(request),
+      user.id,
+      query,
+    );
   }
 
   @Get(':id')

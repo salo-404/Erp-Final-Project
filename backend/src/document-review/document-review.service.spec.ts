@@ -6,6 +6,7 @@ import {
   DocumentExtractionProvider,
   DocumentReviewNotifier,
   DocumentReviewService,
+  DocumentSemanticMatchProvider,
   DocumentStorageProvider,
   ExtractedDocumentData,
   MAX_DOCUMENT_SIZE_BYTES,
@@ -128,6 +129,36 @@ function createMockNotifier() {
   return { provider, notifyNewInvoice };
 }
 
+/**
+ * Defaults to REJECTING both methods — matching an unconfigured/unreachable
+ * AI service — so every EXISTING resolveProduct/resolveSupplier test below
+ * (written before this provider existed) keeps exercising the fuzzy
+ * fallback path unchanged, with no per-test setup required. Tests that
+ * specifically want the semantic path override matchProduct/matchSupplier's
+ * mock return value.
+ */
+function createMockSemanticMatchProvider() {
+  const matchProduct = jest.fn<
+    ReturnType<DocumentSemanticMatchProvider['matchProduct']>,
+    Parameters<DocumentSemanticMatchProvider['matchProduct']>
+  >();
+  matchProduct.mockRejectedValue(
+    new Error('semantic match provider not configured in this test'),
+  );
+  const matchSupplier = jest.fn<
+    ReturnType<DocumentSemanticMatchProvider['matchSupplier']>,
+    Parameters<DocumentSemanticMatchProvider['matchSupplier']>
+  >();
+  matchSupplier.mockRejectedValue(
+    new Error('semantic match provider not configured in this test'),
+  );
+  const provider: DocumentSemanticMatchProvider = {
+    matchProduct,
+    matchSupplier,
+  };
+  return { provider, matchProduct, matchSupplier };
+}
+
 function buildService(tx: MockTx) {
   const prismaRoot = createMockPrismaRoot();
   const {
@@ -144,6 +175,11 @@ function buildService(tx: MockTx) {
   const { provider: extractionProvider, extract } =
     createMockExtractionProvider();
   const { provider: notifier, notifyNewInvoice } = createMockNotifier();
+  const {
+    provider: semanticMatchProvider,
+    matchProduct,
+    matchSupplier,
+  } = createMockSemanticMatchProvider();
 
   const service = new DocumentReviewService(
     createMockPrisma(tx, prismaRoot),
@@ -151,6 +187,7 @@ function buildService(tx: MockTx) {
     storageProvider,
     extractionProvider,
     notifier,
+    semanticMatchProvider,
   );
 
   return {
@@ -163,6 +200,8 @@ function buildService(tx: MockTx) {
     deleteObject,
     extract,
     notifyNewInvoice,
+    matchProduct,
+    matchSupplier,
   };
 }
 
@@ -732,7 +771,10 @@ describe('DocumentReviewService.getPendingReviews', () => {
   });
 });
 
-describe('DocumentReviewService.resolveProduct', () => {
+const HUMAN_BEARER_TOKEN = 'human-reviewer-token';
+const ERP_USER_ID = 7;
+
+describe('DocumentReviewService.resolveProduct (fuzzy fallback path — matchProduct rejects by default, see buildService())', () => {
   it('ranks an exact case-insensitive match above a partial match', async () => {
     const tx = createMockTx();
     const { service, prismaRoot } = buildService(tx);
@@ -741,14 +783,16 @@ describe('DocumentReviewService.resolveProduct', () => {
       { id: 2, name: 'widget' },
     ]);
 
-    const result = await service.resolveProduct('Widget');
+    const result = await service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Widget');
 
     expect(prismaRoot.product.findMany).toHaveBeenCalledWith({
       where: { isActive: true },
     });
-    expect(result[0]).toEqual({ productId: 2, name: 'widget', score: 1 });
-    expect(result[1].productId).toBe(1);
-    expect(result[1].score).toBeLessThan(1);
+    expect(result.status).toBe('RESOLVED');
+    expect(result.candidates).toEqual([
+      { id: 2, name: 'widget', confidence: 1, reason: expect.any(String) },
+    ]);
+    expect(result.recommendation).toBeNull();
   });
 
   it('scores a conflicting spec number well below a real match, even with heavy word overlap', async () => {
@@ -759,13 +803,16 @@ describe('DocumentReviewService.resolveProduct', () => {
       { id: 2, name: '24-inch Monitor' },
     ]);
 
-    const result = await service.resolveProduct('24-inch Monitor');
+    const result = await service.resolveProduct(
+      HUMAN_BEARER_TOKEN,
+      ERP_USER_ID,
+      '24-inch Monitor',
+    );
 
-    const exact = result.find((r) => r.productId === 2)!;
-    const conflicting = result.find((r) => r.productId === 1)!;
-    expect(exact.score).toBe(1);
-    expect(conflicting.score).toBeLessThanOrEqual(0.4);
-    expect(conflicting.score).toBeLessThan(exact.score);
+    expect(result.status).toBe('RESOLVED');
+    expect(result.candidates).toEqual([
+      { id: 2, name: '24-inch Monitor', confidence: 1, reason: expect.any(String) },
+    ]);
   });
 
   it('drops candidates below the minimum suggestion score as noise', async () => {
@@ -776,33 +823,53 @@ describe('DocumentReviewService.resolveProduct', () => {
       { id: 2, name: 'Office Chair' },
     ]);
 
-    const result = await service.resolveProduct('Laptop Pro 14');
+    const result = await service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Laptop Pro 14');
 
-    expect(result.map((r) => r.productId)).toEqual([1]);
+    expect(result.candidates.map((c) => c.id)).toEqual([1]);
+  });
+
+  it('caps fuzzy UNRESOLVED candidates at 3, same as the AI path', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([
+      { id: 1, name: 'Laptop Pro' },
+      { id: 2, name: 'Laptop Air' },
+      { id: 3, name: 'Laptop Max' },
+      { id: 4, name: 'Laptop Mini' },
+    ]);
+
+    const result = await service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Laptop');
+
+    expect(result.status).toBe('UNRESOLVED');
+    expect(result.candidates.length).toBeLessThanOrEqual(3);
   });
 
   it('rejects an empty query without touching the database', async () => {
     const tx = createMockTx();
     const { service, prismaRoot } = buildService(tx);
 
-    await expect(service.resolveProduct('   ')).rejects.toThrow(
-      'query must not be empty',
-    );
+    await expect(
+      service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, '   '),
+    ).rejects.toThrow('query must not be empty');
     expect(prismaRoot.product.findMany).not.toHaveBeenCalled();
   });
 
-  it('returns an empty array when nothing matches', async () => {
+  it('returns NO_MATCH with a minimal, honest recommendation when nothing matches', async () => {
     const tx = createMockTx();
     const { service, prismaRoot } = buildService(tx);
     prismaRoot.product.findMany.mockResolvedValue([]);
 
-    const result = await service.resolveProduct('Nonexistent');
+    const result = await service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Nonexistent');
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({
+      status: 'NO_MATCH',
+      candidates: [],
+      recommendation: { normalizedName: 'Nonexistent', category: null, description: null },
+    });
   });
 });
 
-describe('DocumentReviewService.resolveSupplier', () => {
+describe('DocumentReviewService.resolveSupplier (fuzzy fallback path)', () => {
   it('ranks an exact case-insensitive match above a partial match', async () => {
     const tx = createMockTx();
     const { service, prismaRoot } = buildService(tx);
@@ -811,35 +878,342 @@ describe('DocumentReviewService.resolveSupplier', () => {
       { id: 2, name: 'acme supplies' },
     ]);
 
-    const result = await service.resolveSupplier('Acme Supplies');
+    const result = await service.resolveSupplier(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Acme Supplies');
 
     expect(prismaRoot.supplier.findMany).toHaveBeenCalledWith({
       where: { isActive: true },
     });
-    expect(result[0]).toEqual({
-      supplierId: 2,
-      name: 'acme supplies',
-      score: 1,
-    });
+    expect(result.status).toBe('RESOLVED');
+    expect(result.candidates).toEqual([
+      { id: 2, name: 'acme supplies', confidence: 1, reason: expect.any(String) },
+    ]);
+    expect(result.recommendation).toBeNull();
   });
 
   it('rejects an empty query without touching the database', async () => {
     const tx = createMockTx();
     const { service, prismaRoot } = buildService(tx);
 
-    await expect(service.resolveSupplier('')).rejects.toThrow(
-      'query must not be empty',
-    );
+    await expect(
+      service.resolveSupplier(HUMAN_BEARER_TOKEN, ERP_USER_ID, ''),
+    ).rejects.toThrow('query must not be empty');
     expect(prismaRoot.supplier.findMany).not.toHaveBeenCalled();
   });
 
-  it('returns an empty array when nothing matches', async () => {
+  it('returns NO_MATCH with no recommendation (suppliers never get one) when nothing matches', async () => {
     const tx = createMockTx();
     const { service, prismaRoot } = buildService(tx);
     prismaRoot.supplier.findMany.mockResolvedValue([]);
 
-    const result = await service.resolveSupplier('Nonexistent');
+    const result = await service.resolveSupplier(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Nonexistent');
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ status: 'NO_MATCH', candidates: [], recommendation: null });
+  });
+});
+
+describe('DocumentReviewService semantic-match integration (Document agent path via DocumentSemanticMatchProvider)', () => {
+  const aiSuccess = (
+    status: 'RESOLVED' | 'UNRESOLVED' | 'NO_MATCH',
+    candidates: { id: number; name: string; confidence: number; reason: string }[],
+    recommendation: { normalizedName: string; category: string | null; description: string | null } | null = null,
+  ) => ({ status, candidates, recommendation });
+
+  it('resolveProduct uses the Document agent result when it succeeds, forwarding auth + real category AND description', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchProduct } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([
+      {
+        id: 1,
+        name: 'Laptop Pro 14',
+        category: 'Electronics',
+        description: '14-inch business laptop',
+      },
+      { id: 2, name: 'Wireless Mouse', category: 'Electronics', description: null },
+    ]);
+    matchProduct.mockResolvedValue(
+      aiSuccess('RESOLVED', [
+        { id: 2, name: 'Wireless Mouse', confidence: 0.91, reason: 'Same product, reworded.' },
+      ]),
+    );
+
+    const result = await service.resolveProduct(
+      HUMAN_BEARER_TOKEN,
+      ERP_USER_ID,
+      'Compact Rodent Pointer',
+    );
+
+    expect(matchProduct).toHaveBeenCalledWith(
+      HUMAN_BEARER_TOKEN,
+      ERP_USER_ID,
+      'Compact Rodent Pointer',
+      [
+        {
+          id: 1,
+          name: 'Laptop Pro 14',
+          category: 'Electronics',
+          description: '14-inch business laptop',
+        },
+        { id: 2, name: 'Wireless Mouse', category: 'Electronics', description: null },
+      ],
+    );
+    expect(result).toEqual({
+      status: 'RESOLVED',
+      candidates: [
+        { id: 2, name: 'Wireless Mouse', confidence: 0.91, reason: 'Same product, reworded.' },
+      ],
+      recommendation: null,
+    });
+  });
+
+  it('resolveProduct falls back to the fuzzy matcher when the Document agent call throws (network error, timeout, misconfiguration)', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchProduct } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([
+      { id: 1, name: 'Laptop Pro 14', category: null, description: null },
+    ]);
+    matchProduct.mockRejectedValue(new Error('AgentCore document_match request timed out'));
+
+    const result = await service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Laptop Pro 14');
+
+    expect(matchProduct).toHaveBeenCalled();
+    // Same result the pure-fuzzy test above ("ranks an exact case-insensitive
+    // match") produces - the fallback path is byte-for-byte the original code.
+    expect(result.status).toBe('RESOLVED');
+    expect(result.candidates[0].id).toBe(1);
+  });
+
+  it('resolveProduct returns a NO_MATCH result with the Document agent recommendation as-is', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchProduct } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([
+      { id: 1, name: 'Laptop Pro 14', category: 'Electronics', description: null },
+    ]);
+    matchProduct.mockResolvedValue(
+      aiSuccess('NO_MATCH', [], { normalizedName: 'Standing Desk Lamp', category: 'Electronics', description: null }),
+    );
+
+    const result = await service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Standing Desk Lamp');
+
+    expect(result).toEqual({
+      status: 'NO_MATCH',
+      candidates: [],
+      recommendation: { normalizedName: 'Standing Desk Lamp', category: 'Electronics', description: null },
+    });
+  });
+
+  it('resolveSupplier uses the Document agent result when it succeeds, forwarding real email/leadTimeDays metadata', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchSupplier } = buildService(tx);
+    prismaRoot.supplier.findMany.mockResolvedValue([
+      {
+        id: 41,
+        name: 'TechSource Lebanon',
+        email: 'sales@techsource.example',
+        leadTimeDays: 7,
+      },
+    ]);
+    matchSupplier.mockResolvedValue(
+      aiSuccess('RESOLVED', [
+        { id: 41, name: 'TechSource Lebanon', confidence: 0.91, reason: 'Matches despite extra wording.' },
+      ]),
+    );
+
+    const result = await service.resolveSupplier(
+      HUMAN_BEARER_TOKEN,
+      ERP_USER_ID,
+      'Tech Source Lebanon Ltd',
+    );
+
+    expect(matchSupplier).toHaveBeenCalledWith(
+      HUMAN_BEARER_TOKEN,
+      ERP_USER_ID,
+      'Tech Source Lebanon Ltd',
+      [{ id: 41, name: 'TechSource Lebanon', email: 'sales@techsource.example', leadTimeDays: 7 }],
+    );
+    expect(result.status).toBe('RESOLVED');
+    expect(result.candidates[0].id).toBe(41);
+  });
+
+  it('resolveSupplier falls back to the fuzzy matcher when the Document agent call throws', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchSupplier } = buildService(tx);
+    prismaRoot.supplier.findMany.mockResolvedValue([
+      { id: 1, name: 'Acme Supplies Co.' },
+      { id: 2, name: 'acme supplies' },
+    ]);
+    matchSupplier.mockRejectedValue(new Error('HTTP 503'));
+
+    const result = await service.resolveSupplier(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Acme Supplies');
+
+    expect(result.status).toBe('RESOLVED');
+    expect(result.candidates[0].id).toBe(2);
+  });
+
+  // --- Backend-side re-validation (point 4): every violation below must
+  // fall back to the fuzzy matcher, never reach the reviewer unvalidated. ---
+
+  it('rejects an invented id and falls back to the fuzzy matcher', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchProduct } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([
+      { id: 1, name: 'Laptop Pro 14', category: null, description: null },
+    ]);
+    matchProduct.mockResolvedValue(
+      aiSuccess('RESOLVED', [{ id: 99999, name: 'Made Up', confidence: 0.9, reason: 'r' }]),
+    );
+
+    const result = await service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Laptop Pro 14');
+
+    // Falls back to fuzzy - the invented id never reaches the reviewer.
+    expect(result.candidates.every((c) => c.id === 1)).toBe(true);
+  });
+
+  it('rejects a candidate whose name does not match the real name for its id', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchProduct } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([
+      { id: 1, name: 'Laptop Pro 14', category: null, description: null },
+      { id: 2, name: 'Wireless Mouse', category: null, description: null },
+    ]);
+    // Real id (1) but a name that belongs to a DIFFERENT real candidate (2).
+    matchProduct.mockResolvedValue(
+      aiSuccess('RESOLVED', [{ id: 1, name: 'Wireless Mouse', confidence: 0.9, reason: 'r' }]),
+    );
+
+    const result = await service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Laptop Pro 14');
+
+    // Falls back to fuzzy, not the mismatched AI result.
+    expect(result.candidates.every((c) => c.name !== 'Wireless Mouse' || c.id !== 1)).toBe(true);
+  });
+
+  it('rejects more than 3 candidates and falls back to the fuzzy matcher', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchProduct } = buildService(tx);
+    const products = [1, 2, 3, 4].map((id) => ({ id, name: `Product ${id}`, category: null, description: null }));
+    prismaRoot.product.findMany.mockResolvedValue(products);
+    matchProduct.mockResolvedValue(
+      aiSuccess(
+        'UNRESOLVED',
+        products.map((p) => ({ id: p.id, name: p.name, confidence: 0.5, reason: 'r' })),
+      ),
+    );
+
+    const result = await service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Product');
+
+    expect(result.candidates.length).toBeLessThanOrEqual(3);
+    // Confirms the fuzzy path answered, not the 4-candidate AI result.
+    expect(result.candidates.every((c) => c.reason.includes('AI-based matching was unavailable'))).toBe(true);
+  });
+
+  it('rejects duplicate candidate ids and falls back to the fuzzy matcher', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchProduct } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([
+      { id: 1, name: 'Laptop Pro 14', category: null, description: null },
+    ]);
+    matchProduct.mockResolvedValue(
+      aiSuccess('UNRESOLVED', [
+        { id: 1, name: 'Laptop Pro 14', confidence: 0.7, reason: 'r' },
+        { id: 1, name: 'Laptop Pro 14', confidence: 0.6, reason: 'r2' },
+      ]),
+    );
+
+    const result = await service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Laptop Pro 14');
+
+    expect(result.candidates.every((c) => c.reason.includes('AI-based matching was unavailable'))).toBe(true);
+  });
+
+  it('rejects an empty candidate reason and falls back to the fuzzy matcher', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchProduct } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([
+      { id: 1, name: 'Laptop Pro 14', category: 'Electronics', description: null },
+    ]);
+    matchProduct.mockResolvedValue(
+      aiSuccess('RESOLVED', [
+        { id: 1, name: 'Laptop Pro 14', confidence: 0.95, reason: '   ' },
+      ]),
+    );
+
+    const result = await service.resolveProduct(
+      HUMAN_BEARER_TOKEN,
+      ERP_USER_ID,
+      'Laptop Pro 14',
+    );
+
+    expect(result.status).toBe('RESOLVED');
+    expect(result.candidates[0].reason).toContain('AI-based matching was unavailable');
+  });
+
+  it('rejects product NO_MATCH without a recommendation and falls back to the fuzzy matcher', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchProduct } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([]);
+    matchProduct.mockResolvedValue(aiSuccess('NO_MATCH', [], null));
+
+    const result = await service.resolveProduct(
+      HUMAN_BEARER_TOKEN,
+      ERP_USER_ID,
+      'Standing Desk Lamp',
+    );
+
+    expect(result).toEqual({
+      status: 'NO_MATCH',
+      candidates: [],
+      recommendation: {
+        normalizedName: 'Standing Desk Lamp',
+        category: null,
+        description: null,
+      },
+    });
+  });
+
+  it('rejects a product NO_MATCH recommendation with an empty normalized name', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchProduct } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([]);
+    matchProduct.mockResolvedValue(
+      aiSuccess('NO_MATCH', [], { normalizedName: '   ', category: null, description: null }),
+    );
+
+    const result = await service.resolveProduct(
+      HUMAN_BEARER_TOKEN,
+      ERP_USER_ID,
+      'Standing Desk Lamp',
+    );
+
+    expect(result.recommendation?.normalizedName).toBe('Standing Desk Lamp');
+  });
+
+  it('rejects a category recommendation outside the real supplied categories', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchProduct } = buildService(tx);
+    prismaRoot.product.findMany.mockResolvedValue([
+      { id: 1, name: 'Laptop Pro 14', category: 'Electronics', description: null },
+    ]);
+    matchProduct.mockResolvedValue(
+      aiSuccess('NO_MATCH', [], { normalizedName: 'X', category: 'Made Up Category', description: null }),
+    );
+
+    const result = await service.resolveProduct(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'X');
+
+    // Falls back to fuzzy - the ungrounded category recommendation never reaches the reviewer.
+    expect(result.recommendation?.category).not.toBe('Made Up Category');
+  });
+
+  it('rejects a supplier result carrying a recommendation and falls back to the fuzzy matcher', async () => {
+    const tx = createMockTx();
+    const { service, prismaRoot, matchSupplier } = buildService(tx);
+    prismaRoot.supplier.findMany.mockResolvedValue([
+      { id: 41, name: 'TechSource Lebanon' },
+    ]);
+    matchSupplier.mockResolvedValue(
+      aiSuccess('NO_MATCH', [], { normalizedName: 'New Supplier', category: null, description: null }),
+    );
+
+    const result = await service.resolveSupplier(HUMAN_BEARER_TOKEN, ERP_USER_ID, 'Totally Unrelated');
+
+    // Suppliers never carry a recommendation - the fuzzy fallback confirms this.
+    expect(result.recommendation).toBeNull();
   });
 });

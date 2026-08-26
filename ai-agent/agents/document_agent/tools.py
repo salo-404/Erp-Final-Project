@@ -141,12 +141,20 @@ async def resolve_document_product(
     review = DocumentReviewRecord.model_validate(
         await client.get(f"/document-review/{review_id}")
     )
-    suggestions = await client.get(
+    match_result = await client.get(
         "/document-review/resolve-product",
         params={"query": product_name},
     )
-    exact = [suggestion for suggestion in suggestions if suggestion.get("score") == 1]
-    resolved = exact[0] if len(exact) == 1 else None
+    candidates = match_result.get("candidates", [])
+    resolved = candidates[0] if match_result.get("status") == "RESOLVED" and len(candidates) == 1 else None
+    suggestions = [
+        {
+            "productId": candidate["id"],
+            "name": candidate["name"],
+            "score": candidate["confidence"],
+        }
+        for candidate in candidates
+    ]
     matching_items = [
         item for item in review.extractedItems if item.product == product_name
     ]
@@ -158,8 +166,8 @@ async def resolve_document_product(
             "documentId": document_id,
             "productNameRaw": product_name,
             "requestedQuantity": requested_quantity,
-            "status": "RESOLVED" if resolved else ("AMBIGUOUS" if suggestions else "NOT_FOUND"),
-            "productId": resolved["productId"] if resolved else None,
+            "status": "RESOLVED" if resolved else ("AMBIGUOUS" if candidates else "NOT_FOUND"),
+            "productId": resolved["id"] if resolved else None,
             "suggestions": suggestions,
         }
     ).model_dump(mode="json")
@@ -173,18 +181,26 @@ async def resolve_document_supplier(document_id: str, supplier_name: str) -> dic
     DocumentReviewRecord.model_validate(
         await client.get(f"/document-review/{review_id}")
     )
-    suggestions = await client.get(
+    match_result = await client.get(
         "/document-review/resolve-supplier",
         params={"query": supplier_name},
     )
-    exact = [suggestion for suggestion in suggestions if suggestion.get("score") == 1]
-    resolved = exact[0] if len(exact) == 1 else None
+    candidates = match_result.get("candidates", [])
+    resolved = candidates[0] if match_result.get("status") == "RESOLVED" and len(candidates) == 1 else None
+    suggestions = [
+        {
+            "supplierId": candidate["id"],
+            "name": candidate["name"],
+            "score": candidate["confidence"],
+        }
+        for candidate in candidates
+    ]
     return ResolveDocumentSupplierResponse.model_validate(
         {
             "documentId": document_id,
             "supplierNameRaw": supplier_name,
-            "status": "RESOLVED" if resolved else ("AMBIGUOUS" if suggestions else "NOT_FOUND"),
-            "supplierId": resolved["supplierId"] if resolved else None,
+            "status": "RESOLVED" if resolved else ("AMBIGUOUS" if candidates else "NOT_FOUND"),
+            "supplierId": resolved["id"] if resolved else None,
             "suggestions": suggestions,
         }
     ).model_dump(mode="json")

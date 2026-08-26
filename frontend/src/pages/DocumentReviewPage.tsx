@@ -20,7 +20,7 @@ import { NewProductInput } from "../components/documentReview/NewProductInput";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import { ErrorMessage } from "../components/ui/ErrorMessage";
 import { Modal } from "../components/ui/Modal";
-import type { ApproveDocumentReviewInput, Product, Warehouse } from "../types/domain";
+import type { ApproveDocumentReviewInput, DocumentMatchResult, Product, Warehouse } from "../types/domain";
 
 interface ItemRow {
   extractedName: string;
@@ -29,6 +29,19 @@ interface ItemRow {
   quantity: string;
   price: string;
   isNewProduct: boolean;
+  /**
+   * A category to offer as a starting point if the reviewer marks this
+   * line a new product — the Document agent's own NO_MATCH recommendation
+   * when its last search gave one, otherwise the real category of the top
+   * candidate it returned (even an UNRESOLVED one, e.g. a 22" LED search
+   * surfacing a 24" screen isn't confident enough to auto-resolve but its
+   * category is still a reasonable starting point for a genuinely
+   * different, newly-added product). Never invented — always looked up
+   * from the actually-loaded product catalog. See categoryHintFromSearch().
+   */
+  categoryHint: string | null;
+  /** True while ensureCategoryHint()'s background search is in flight for this line. */
+  categoryHintLoading: boolean;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -104,6 +117,8 @@ export function DocumentReviewPage() {
         quantity: String(it.quantity),
         price: it.price != null ? String(it.price) : "",
         isNewProduct: false,
+        categoryHint: null,
+        categoryHintLoading: false,
       })),
     );
     setSupplierId(null);
@@ -122,6 +137,46 @@ export function DocumentReviewPage() {
 
   function updateItem(index: number, patch: Partial<ItemRow>) {
     setItems((rows) => rows.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+  }
+
+  // The AI's own NO_MATCH recommendation is the most direct signal, but a
+  // search that DID surface a candidate — just not confidently enough to
+  // auto-resolve (UNRESOLVED), or even a RESOLVED one the reviewer chose
+  // not to accept — still names a real product whose category is a
+  // reasonable starting point for a genuinely different item (a 22" LED
+  // search surfacing a 24" screen as an 80% UNRESOLVED candidate should
+  // still suggest "Monitors", not force the reviewer to pick it from
+  // scratch). Looked up from the already-loaded catalog, never invented.
+  function categoryHintFromSearch(result: DocumentMatchResult | null): string | null {
+    if (!result) return null;
+    if (result.recommendation?.category) return result.recommendation.category;
+    const topCandidate = result.candidates[0];
+    if (!topCandidate) return null;
+    return (productsFetch.data ?? []).find((p) => p.id === topCandidate.id)?.category ?? null;
+  }
+
+  // Runs the same real search resolveProduct/ResolveSearchInput already
+  // uses, but silently — for when the reviewer goes straight to "new
+  // product" without ever searching first, so there's still a category
+  // suggestion instead of nothing. Best-effort only: a failure here (or a
+  // status change that outraces it) must never surface an error or clobber
+  // whatever's actually on the row by the time it resolves.
+  function ensureCategoryHint(index: number, extractedName: string) {
+    updateItem(index, { categoryHintLoading: true });
+    resolveProduct(extractedName)
+      .then((result) => {
+        const hint = categoryHintFromSearch(result);
+        setItems((rows) =>
+          rows.map((r, i) =>
+            i === index && r.isNewProduct
+              ? { ...r, categoryHintLoading: false, ...(hint && !r.categoryHint ? { categoryHint: hint } : {}) }
+              : r,
+          ),
+        );
+      })
+      .catch(() => {
+        setItems((rows) => rows.map((r, i) => (i === index ? { ...r, categoryHintLoading: false } : r)));
+      });
   }
 
   // Catalog names plus anything already resolved/created for another line
@@ -344,9 +399,13 @@ export function DocumentReviewPage() {
                       search={resolveSupplier}
                       resolvedLabel={supplierResolvedName}
                       placeholder="Search suppliers..."
-                      onResolve={(s) => {
-                        setSupplierId(s.supplierId!);
-                        setSupplierResolvedName(s.name);
+                      onResolve={(candidate) => {
+                        setSupplierId(candidate.id);
+                        setSupplierResolvedName(candidate.name);
+                      }}
+                      onResolutionCleared={() => {
+                        setSupplierId(null);
+                        setSupplierResolvedName(null);
                       }}
                     />
                   </div>
@@ -385,7 +444,11 @@ export function DocumentReviewPage() {
                             <input
                               type="checkbox"
                               checked={row.isNewProduct}
-                              onChange={(e) => updateItem(i, { isNewProduct: e.target.checked, productId: null, resolvedName: null })}
+                              onChange={(e) => {
+                                const isNewProduct = e.target.checked;
+                                updateItem(i, { isNewProduct, productId: null, resolvedName: null });
+                                if (isNewProduct && !row.categoryHint) ensureCategoryHint(i, row.extractedName);
+                              }}
                             />
                             This is a new product — not yet in the system
                           </label>
@@ -394,6 +457,8 @@ export function DocumentReviewPage() {
                         {row.isNewProduct ? (
                           <NewProductInput
                             initialName={row.extractedName}
+                            initialCategory={row.categoryHint}
+                            categoryLoading={row.categoryHintLoading}
                             categories={existingCategories}
                             existingNames={existingProductNames}
                             onCreated={({ productId, name }) => updateItem(i, { productId, resolvedName: name })}
@@ -404,7 +469,14 @@ export function DocumentReviewPage() {
                             search={resolveProduct}
                             resolvedLabel={row.resolvedName}
                             placeholder="Search products..."
-                            onResolve={(s) => updateItem(i, { productId: s.productId!, resolvedName: s.name })}
+                            onResolve={(candidate) => updateItem(i, { productId: candidate.id, resolvedName: candidate.name })}
+                            onSearchResult={(result) => updateItem(i, { categoryHint: categoryHintFromSearch(result) })}
+                            onResolutionCleared={() => updateItem(i, { productId: null, resolvedName: null })}
+                            noMatchAlert={
+                              review.transactionType === "OUTGOING"
+                                ? "No matching product in the catalog — this can't be fulfilled from current inventory. Contact the customer to confirm what they actually ordered."
+                                : undefined
+                            }
                           />
                         )}
 

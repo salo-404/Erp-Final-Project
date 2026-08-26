@@ -2,7 +2,7 @@ import { apiRequest, ApiError, getStoredToken } from "./api-client";
 import { API_URL } from "./env";
 import type {
   ApproveDocumentReviewInput,
-  MatchSuggestion,
+  DocumentMatchResult,
   PendingDocumentReview,
   PendingDocumentReviewWithDetails,
 } from "../types/domain";
@@ -42,12 +42,18 @@ export function getReviewPresignedUrl(id: number): Promise<{ url: string }> {
   return apiRequest<{ url: string }>(`/document-review/${id}/presigned-url`);
 }
 
-export function resolveProduct(query: string): Promise<MatchSuggestion[]> {
-  return apiRequest<MatchSuggestion[]>(`/document-review/resolve-product?query=${encodeURIComponent(query)}`);
+// Backed by the real Document agent LLM (a genuine reasoning call, not an
+// instant lookup) with an automatic fuzzy-matcher fallback on the backend
+// if that call fails or times out — see DocumentReviewService.resolveProduct()/
+// resolveSupplier(). Always returns the full result (status, up to 3 real
+// candidates with confidence/reason, and — for a NO_MATCH product — a
+// recommendation) rather than a bare name/score list.
+export function resolveProduct(query: string): Promise<DocumentMatchResult> {
+  return apiRequest<DocumentMatchResult>(`/document-review/resolve-product?query=${encodeURIComponent(query)}`);
 }
 
-export function resolveSupplier(query: string): Promise<MatchSuggestion[]> {
-  return apiRequest<MatchSuggestion[]>(`/document-review/resolve-supplier?query=${encodeURIComponent(query)}`);
+export function resolveSupplier(query: string): Promise<DocumentMatchResult> {
+  return apiRequest<DocumentMatchResult>(`/document-review/resolve-supplier?query=${encodeURIComponent(query)}`);
 }
 
 export function approveReview(id: number, input: ApproveDocumentReviewInput): Promise<PendingDocumentReview> {

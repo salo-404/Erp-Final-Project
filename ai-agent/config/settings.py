@@ -244,6 +244,20 @@ class Settings:
         "",
     )
 
+    # Timeout for the Document agent's dedicated structured-output matching
+    # call (agents/document_agent/matching_agent.py) - an LLM completion,
+    # not just an embedding call. Real ERP backend callers reach this
+    # through the SAME AgentCore /invocations endpoint the chat UI uses
+    # ("document_match" mode - see agentcore_entrypoint.py), authenticated
+    # with the reviewer's own human bearer token, not a service secret. A
+    # REASONED DEFAULT, not empirically calibrated. On timeout, this module
+    # raises DocumentAgentMatchTimeout, the document_match mode turns that
+    # into an in-stream "error" event, and the real backend falls back to
+    # its own fuzzy matcher.
+    document_matching_timeout_seconds: float = float(
+        os.getenv("DOCUMENT_MATCHING_TIMEOUT_SECONDS", "12")
+    )
+
     # General
     environment: str = os.getenv("APP_ENV", "development")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

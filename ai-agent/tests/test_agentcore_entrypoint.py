@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import threading
 import time
@@ -615,6 +616,135 @@ def test_control_tower_recommendation_mode_rejects_malformed_json_prompt(
     # _sync_invoke only joins text_delta events - an in-stream "error"
     # event (see invoke()'s except Exception clause) leaves this empty,
     # same convention as test_human_bearer_resets_after_streaming_exception.
+    assert result == {"result": ""}
+
+
+def test_document_match_mode_invokes_the_real_document_agent_and_skips_gate_and_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mode="document_match" must parse "prompt" as JSON, call
+    match_candidates_with_document_agent() (never build_supervisor_agent(),
+    never Supervisor chat), and stream back its verdict as one JSON
+    text_delta - see agents/document_agent/matching_agent.py. Must also
+    skip the scope gate entirely (is_in_scope must never be called) and
+    still enforce the same human membership/session-ownership checks as
+    ordinary chat."""
+    _patch_membership(monkeypatch, {"human-token": 7})
+    monkeypatch.setattr(
+        entrypoint,
+        "is_in_scope",
+        lambda *args, **kwargs: pytest.fail("Scope gate must not run in document_match mode"),
+    )
+    monkeypatch.setattr(entrypoint, "build_supervisor_agent", lambda: pytest.fail("Supervisor must not be built"))
+
+    calls: list[tuple[str, str, list]] = []
+
+    class _Candidate:
+        def __init__(self, id, name, confidence, reason):
+            self.id, self.name, self.confidence, self.reason = id, name, confidence, reason
+
+        def model_dump(self):
+            return {"id": self.id, "name": self.name, "confidence": self.confidence, "reason": self.reason}
+
+    class _Verdict:
+        status = "RESOLVED"
+        candidates = [_Candidate(73, "Laptop Pro 14", 0.97, "Same product, different wording.")]
+        recommendation = None
+
+    async def fake_match(entity_type, query, candidates):
+        calls.append((entity_type, query, candidates))
+        return _Verdict()
+
+    monkeypatch.setattr(entrypoint, "match_candidates_with_document_agent", fake_match)
+
+    result = entrypoint.invoke(
+        {
+            "prompt": json.dumps(
+                {
+                    "entityType": "product",
+                    "query": "14-inch Laptop",
+                    "candidates": [{"id": 73, "name": "Laptop Pro 14", "category": "Electronics"}],
+                }
+            ),
+            "mode": "document_match",
+        },
+        _context(_session(7), "human-token"),
+    )
+
+    assert calls == [
+        ("product", "14-inch Laptop", [{"id": 73, "name": "Laptop Pro 14", "category": "Electronics"}])
+    ]
+    body = json.loads(result["result"])
+    assert body == {
+        "status": "RESOLVED",
+        "candidates": [
+            {"id": 73, "name": "Laptop Pro 14", "confidence": 0.97, "reason": "Same product, different wording."}
+        ],
+        "recommendation": None,
+    }
+    # document_match requests are never cached under the session registry -
+    # each is a fresh, single-use call, same as control_tower_recommendation.
+    assert set(entrypoint._session_states) == set()
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "not valid json",
+        json.dumps({"query": "X", "candidates": []}),  # missing entityType
+        json.dumps({"entityType": "product", "candidates": []}),  # missing query
+        json.dumps({"entityType": "product", "query": "X"}),  # missing candidates
+        json.dumps({"entityType": "invalid", "query": "X", "candidates": []}),
+        json.dumps({"entityType": "product", "query": "X", "candidates": [{"id": "not-an-int", "name": "Y"}]}),
+    ],
+)
+def test_document_match_mode_rejects_malformed_request_without_calling_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+    prompt: str,
+) -> None:
+    """Malformed input must surface as the normal in-stream error, never
+    reach match_candidates_with_document_agent() - same "fail closed"
+    contract as every other failure path in this entrypoint."""
+    _patch_membership(monkeypatch, {"human-token": 7})
+
+    async def forbidden_match(entity_type, query, candidates):
+        pytest.fail("Document agent matching must not run for malformed input")
+
+    monkeypatch.setattr(entrypoint, "match_candidates_with_document_agent", forbidden_match)
+
+    result = entrypoint.invoke(
+        {"prompt": prompt, "mode": "document_match"},
+        _context(_session(7), "human-token"),
+    )
+
+    # _sync_invoke only joins text_delta events - an in-stream "error" event
+    # leaves this empty, same convention as the control_tower_recommendation
+    # malformed-JSON test.
+    assert result == {"result": ""}
+
+
+def test_document_match_mode_failure_streams_generic_error_and_never_leaks_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raw exception, a timeout, or an InvalidDocumentAgentMatchOutput
+    from match_candidates_with_document_agent() must all surface as the
+    same generic in-stream error - the real ERP backend then falls back to
+    its own fuzzy matcher (see document-review.service.ts)."""
+    _patch_membership(monkeypatch, {"human-token": 7})
+
+    async def failing_match(entity_type, query, candidates):
+        raise RuntimeError("simulated Bedrock outage - must never reach the caller")
+
+    monkeypatch.setattr(entrypoint, "match_candidates_with_document_agent", failing_match)
+
+    result = entrypoint.invoke(
+        {
+            "prompt": json.dumps({"entityType": "product", "query": "X", "candidates": []}),
+            "mode": "document_match",
+        },
+        _context(_session(7), "human-token"),
+    )
+
     assert result == {"result": ""}
 
 

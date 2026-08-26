@@ -8,6 +8,7 @@ import {
   DocumentExtractionProvider,
   DocumentReviewNotifier,
   DocumentReviewService,
+  DocumentSemanticMatchProvider,
   DocumentStorageProvider,
   ExtractedDocumentData,
   MAX_DOCUMENT_SIZE_BYTES,
@@ -57,12 +58,21 @@ function buildApp() {
 
   const inventoryTransactionsService = {} as InventoryTransactionsService;
 
+  // Never exercised by these upload()/getReview()-focused tests
+  // (resolveProduct()/resolveSupplier() aren't) - a rejecting stub is
+  // enough to satisfy the constructor.
+  const semanticMatchProvider: DocumentSemanticMatchProvider = {
+    matchProduct: jest.fn().mockRejectedValue(new Error('not used in this test')),
+    matchSupplier: jest.fn().mockRejectedValue(new Error('not used in this test')),
+  };
+
   const service = new DocumentReviewService(
     prisma,
     inventoryTransactionsService,
     storageProvider,
     extractionProvider,
     notifier,
+    semanticMatchProvider,
   );
 
   return {
