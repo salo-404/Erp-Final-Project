@@ -381,7 +381,7 @@ export function InventoryPage() {
                     </td>
                   </tr>
                 ))}
-                <ShowMoreRow colSpan={6} shown={productsShowMore.shown} total={productsShowMore.total} onShowMore={productsShowMore.showMore} />
+                <ShowMoreRow colSpan={6} shown={productsShowMore.shown} total={productsShowMore.total} canShowLess={productsShowMore.canShowLess} onShowMore={productsShowMore.showMore} onShowLess={productsShowMore.showLess} />
               </tbody>
             </table>
           </div>

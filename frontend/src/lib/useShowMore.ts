@@ -6,10 +6,16 @@ export function useShowMore<T>(items: T[], initialCount = 10, step = 10) {
 
   const visible = useMemo(() => items.slice(0, count), [items, count]);
   const hasMore = count < items.length;
+  /** True once expanded past the initial page — lets the caller offer "Show less" back to the original count. */
+  const canShowLess = count > initialCount;
 
   function showMore() {
     setCount((c) => c + step);
   }
 
-  return { visible, hasMore, shown: visible.length, total: items.length, showMore };
+  function showLess() {
+    setCount(initialCount);
+  }
+
+  return { visible, hasMore, canShowLess, shown: visible.length, total: items.length, showMore, showLess };
 }

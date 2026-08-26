@@ -294,7 +294,7 @@ export function OrdersPage() {
                     </tr>
                   );
                 })}
-                <ShowMoreRow colSpan={7} shown={ordersShowMore.shown} total={ordersShowMore.total} onShowMore={ordersShowMore.showMore} />
+                <ShowMoreRow colSpan={7} shown={ordersShowMore.shown} total={ordersShowMore.total} canShowLess={ordersShowMore.canShowLess} onShowMore={ordersShowMore.showMore} onShowLess={ordersShowMore.showLess} />
               </tbody>
             </table>
           </div>

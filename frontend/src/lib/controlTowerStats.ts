@@ -3,7 +3,6 @@ import type {
   ControlTowerAlertCategory,
   ControlTowerAlertSeverity,
   OverdueTransactionAlertData,
-  RestockRecommendation,
   TransferRecommendationAlertData,
 } from "../types/domain";
 
@@ -110,27 +109,6 @@ export function groupAlerts(alerts: ControlTowerAlert[]): GroupedAlerts {
     insights: alerts.filter((a) => INSIGHT_CATEGORIES.has(a.category)),
     documents: alerts.filter((a) => a.category === "PENDING_DOCUMENT_REVIEW"),
   };
-}
-
-/**
- * A RESTOCK_RECOMMENDATION with reason "transfer_available" was classified
- * that way BECAUSE getTransferRecommendations() found a donor for it (see
- * StockInsightsService's decision tree) — this looks up that real
- * corresponding TRANSFER_RECOMMENDATION alert by (productId, warehouseId),
- * rather than fabricating transfer details. Returns null only if no
- * matching alert is present in the currently-loaded set (e.g. it was
- * filtered out), never a guessed value.
- */
-export function findMatchingTransferRecommendation(
-  restock: RestockRecommendation,
-  allAlerts: ControlTowerAlert[],
-): TransferRecommendationAlertData | null {
-  for (const alert of allAlerts) {
-    if (alert.category !== "TRANSFER_RECOMMENDATION") continue;
-    const d = alert.data as unknown as TransferRecommendationAlertData;
-    if (d.productId === restock.productId && d.toWarehouseId === restock.warehouseId) return d;
-  }
-  return null;
 }
 
 export interface SeverityCounts {

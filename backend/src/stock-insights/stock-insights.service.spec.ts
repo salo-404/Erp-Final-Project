@@ -2000,9 +2000,9 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
     expect(result.map((a) => [a.category, a.severity])).toEqual([
       ['STOCKOUT_RISK', 'CRITICAL'],
       ['STOCKOUT_RISK', 'CRITICAL'],
-      ['CONSUMPTION_ANOMALY', 'WARNING'],
+      ['DEAD_STOCK', 'WARNING'],
       ['OVERDUE_TRANSACTION', 'WARNING'],
-      ['DEAD_STOCK', 'INFO'],
+      ['CONSUMPTION_ANOMALY', 'INFO'],
       ['PENDING_DOCUMENT_REVIEW', 'INFO'],
     ]);
     // The OK stockout-risk entry (productId 4) must never surface as an alert.

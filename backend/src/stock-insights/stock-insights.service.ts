@@ -1007,8 +1007,12 @@ export class StockInsightsService {
    * verbatim, for the future NotificationService/dashboard to act on
    * without re-deriving anything. Confirmed severity mapping: stockout risk
    * (OUT_OF_STOCK and AT_RISK alike) -> CRITICAL; overdue transactions and
-   * consumption anomalies -> WARNING; dead stock and pending document
-   * review -> INFO. Restock/transfer recommendations -> WARNING (new in
+   * dead stock -> WARNING (dead stock is idle capital sitting in a
+   * warehouse — a real cost, not merely informational); consumption
+   * anomalies and pending document review -> INFO (a shift worth knowing
+   * about, but not on its own something to act on — an anomaly that also
+   * threatens a stockout is already separately flagged CRITICAL by
+   * stockout risk). Restock/transfer recommendations -> WARNING (new in
    * this phase, not previously confirmed — see report). Sorted by severity
    * (CRITICAL, WARNING, INFO); order within a severity follows the
    * already-deterministic order of the underlying source list (stable
@@ -1063,7 +1067,7 @@ export class StockInsightsService {
     for (const entry of deadStock) {
       alerts.push({
         category: 'DEAD_STOCK',
-        severity: 'INFO',
+        severity: 'WARNING',
         message:
           entry.lastOutgoingMovementAt === null
             ? `Product ${entry.productId} in warehouse ${entry.warehouseId} has ${entry.onHand} units on hand and has never had a customer OUTGOING movement`
@@ -1076,7 +1080,7 @@ export class StockInsightsService {
     for (const entry of anomalies) {
       alerts.push({
         category: 'CONSUMPTION_ANOMALY',
-        severity: 'WARNING',
+        severity: 'INFO',
         message:
           entry.percentChange === null
             ? `Product ${entry.productId} in warehouse ${entry.warehouseId} consumption appeared from zero: ${entry.recentQuantity} units in the recent window`

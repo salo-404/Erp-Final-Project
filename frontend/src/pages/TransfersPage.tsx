@@ -11,7 +11,8 @@ import { ErrorMessage } from "../components/ui/ErrorMessage";
 import { CheckIcon, XCircleIcon } from "../components/ui/icons";
 import { ShowMoreRow } from "../components/ui/ShowMoreRow";
 import { useShowMore } from "../lib/useShowMore";
-import type { Product, Warehouse } from "../types/domain";
+import { TransferDetailModal } from "../components/inventoryTransactions/TransferDetailModal";
+import type { InventoryTransactionWithItems, Product, Warehouse } from "../types/domain";
 
 const cardStyle: React.CSSProperties = { background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 12, padding: 22 };
 
@@ -21,6 +22,7 @@ export function TransfersPage() {
   const productsFetch = useFetch<Product[]>(() => listProducts(), []);
 
   const [confirmingTxAction, setConfirmingTxAction] = useState<{ id: number; action: "complete" | "cancel" } | null>(null);
+  const [viewingTransfer, setViewingTransfer] = useState<InventoryTransactionWithItems | null>(null);
 
   const transfers = useMemo(() => transfersFetch.data ?? [], [transfersFetch.data]);
   const transfersShowMore = useShowMore(transfers, 10, 10);
@@ -28,6 +30,9 @@ export function TransfersPage() {
   const products = useMemo(() => productsFetch.data ?? [], [productsFetch.data]);
   const warehouseNames = useMemo(() => new Map(warehouses.map((w) => [w.id, w.name])), [warehouses]);
   const productNames = useMemo(() => new Map(products.map((p) => [p.id, p.name])), [products]);
+  function productName(productId: number): string {
+    return productNames.get(productId) ?? `Product #${productId}`;
+  }
 
   const statusSegments = useMemo(
     () => [
@@ -198,7 +203,15 @@ export function TransfersPage() {
                   const badge = transactionStatusBadge(t.status, t.expectedDate);
                   return (
                     <tr key={t.id}>
-                      <td style={{ padding: "10px 16px", fontSize: 12.5, fontFamily: "var(--font-mono)", fontWeight: 600, borderTop: "1px solid var(--color-border)" }}>TXN-{t.id}</td>
+                      <td style={{ padding: "10px 16px", borderTop: "1px solid var(--color-border)" }}>
+                        <button
+                          type="button"
+                          onClick={() => setViewingTransfer(t)}
+                          style={{ padding: 0, border: "none", background: "none", font: "inherit", fontSize: 12.5, fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--color-accent)", textDecoration: "underline", cursor: "pointer" }}
+                        >
+                          TXN-{t.id}
+                        </button>
+                      </td>
                       <td style={{ padding: "10px 16px", fontSize: 13, color: "var(--color-text-secondary)", borderTop: "1px solid var(--color-border)" }}>
                         {t.sourceWarehouseId ? warehouseNames.get(t.sourceWarehouseId) ?? `#${t.sourceWarehouseId}` : "—"}
                       </td>
@@ -236,7 +249,7 @@ export function TransfersPage() {
                     </tr>
                   );
                 })}
-                <ShowMoreRow colSpan={7} shown={transfersShowMore.shown} total={transfersShowMore.total} onShowMore={transfersShowMore.showMore} />
+                <ShowMoreRow colSpan={7} shown={transfersShowMore.shown} total={transfersShowMore.total} canShowLess={transfersShowMore.canShowLess} onShowMore={transfersShowMore.showMore} onShowLess={transfersShowMore.showLess} />
               </tbody>
             </table>
           </div>
@@ -255,6 +268,16 @@ export function TransfersPage() {
           danger={confirmingTxAction.action === "cancel"}
           onCancel={() => setConfirmingTxAction(null)}
           onConfirm={handleConfirmTxAction}
+        />
+      )}
+
+      {viewingTransfer && (
+        <TransferDetailModal
+          transfer={viewingTransfer}
+          sourceWarehouseName={viewingTransfer.sourceWarehouseId ? warehouseNames.get(viewingTransfer.sourceWarehouseId) ?? `#${viewingTransfer.sourceWarehouseId}` : "—"}
+          destinationWarehouseName={viewingTransfer.destinationWarehouseId ? warehouseNames.get(viewingTransfer.destinationWarehouseId) ?? `#${viewingTransfer.destinationWarehouseId}` : "—"}
+          productName={productName}
+          onClose={() => setViewingTransfer(null)}
         />
       )}
     </div>

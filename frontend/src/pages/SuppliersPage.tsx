@@ -428,7 +428,7 @@ export function SuppliersPage() {
                     </tr>
                   );
                 })}
-                <ShowMoreRow colSpan={7} shown={purchasesShowMore.shown} total={purchasesShowMore.total} onShowMore={purchasesShowMore.showMore} />
+                <ShowMoreRow colSpan={7} shown={purchasesShowMore.shown} total={purchasesShowMore.total} canShowLess={purchasesShowMore.canShowLess} onShowMore={purchasesShowMore.showMore} onShowLess={purchasesShowMore.showLess} />
               </tbody>
             </table>
           </div>

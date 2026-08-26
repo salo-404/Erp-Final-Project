@@ -182,7 +182,7 @@ export function MovementLedger({
                   </tr>
                 );
               })}
-              <ShowMoreRow colSpan={6} shown={showMore.shown} total={showMore.total} onShowMore={showMore.showMore} />
+              <ShowMoreRow colSpan={6} shown={showMore.shown} total={showMore.total} canShowLess={showMore.canShowLess} onShowMore={showMore.showMore} onShowLess={showMore.showLess} />
             </tbody>
           </table>
         </div>
