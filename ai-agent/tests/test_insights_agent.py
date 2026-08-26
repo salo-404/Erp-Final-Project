@@ -46,6 +46,8 @@ from agents.insights_agent.tools import (
     get_transfer_recommendations,
     recommend_fulfillment_warehouse,
     recommend_dead_stock_transfer,
+    recommend_alternative_supplier,
+    recommend_stockout_fix,
     resolve_product_name,
 )
 from backend_client import BackendClient, ServiceUnavailable
@@ -645,6 +647,174 @@ def test_recommend_dead_stock_transfer_live_against_real_backend() -> None:
         assert {"productId", "sourceWarehouseId", "onHand", "recommendedTransfers", "reason"} <= rec.keys()
         total_recommended = sum(t["quantity"] for t in rec["recommendedTransfers"])
         assert total_recommended <= rec["onHand"]
+
+
+def _supplier_rank_entry(supplier_id: int, name: str, product_id: int, rank: int, score: float, *, insufficient: bool = False) -> dict:
+    """Minimal real-shaped /supplier-intelligence/rank entry for the
+    recommend_alternative_supplier/recommend_stockout_fix tests below -
+    same field names as the fuller fixture in the compare_suppliers test
+    above, trimmed to what those two tools actually read.
+    """
+    return {
+        "supplierId": supplier_id,
+        "supplierName": name,
+        "productId": product_id,
+        "totalTransactions": 5,
+        "completedTransactions": 5,
+        "cancelledTransactions": 0,
+        "cancellationRate": 0.0,
+        "averagePrice": 10.0,
+        "pricedItemCount": 5,
+        "onTimeDeliveryRate": 0.9,
+        "evaluatedForOnTimeCount": 5,
+        "purchaseFrequency": 2.0,
+        "firstPurchaseDate": "2026-01-01T00:00:00.000Z",
+        "lastPurchaseDate": "2026-06-01T00:00:00.000Z",
+        "rank": None if insufficient else rank,
+        "score": None if insufficient else score,
+        "insufficientData": insufficient,
+        "insufficientDataReasons": ["No completed transactions"] if insufficient else [],
+        "componentScores": {"price": 50.0, "onTimeDelivery": 90.0, "cancellationPerformance": 100.0, "productSupplyHistory": 60.0},
+    }
+
+
+def test_recommend_stockout_fix_transfers_in_from_dead_stock_warehouse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A qualifying 60+-day dead-stock donor at another warehouse must win
+    over the supplier fallback - action is "transfer_in", half the
+    donor's onHand (floor), and supplierRecommendation is never called for
+    (no /suppliers or /supplier-intelligence/rank request at all)."""
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path == "/stock-insights/dead-stock":
+            return httpx.Response(
+                200,
+                json=[
+                    {"productId": 75, "warehouseId": 2, "onHand": 40, "lastMovementAt": None, "daysSinceLastMovement": None, "lastOutgoingMovementAt": None, "daysSinceLastOutgoingMovement": 90},
+                    {"productId": 75, "warehouseId": 3, "onHand": 4, "lastMovementAt": None, "daysSinceLastMovement": None, "lastOutgoingMovementAt": None, "daysSinceLastOutgoingMovement": 61},
+                    {"productId": 999, "warehouseId": 2, "onHand": 10, "lastMovementAt": None, "daysSinceLastMovement": None, "lastOutgoingMovementAt": None, "daysSinceLastOutgoingMovement": 70},
+                ],
+            )
+        if request.url.path == "/warehouses":
+            return httpx.Response(200, json=[
+                {"id": 2, "name": "Beirut Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+                {"id": 3, "name": "Saida Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+            ])
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+
+    result = asyncio.run(recommend_stockout_fix(product_id=75, warehouse_id=1))
+
+    assert "/suppliers" not in requested_paths
+    assert "/supplier-intelligence/rank" not in requested_paths
+    assert result["action"] == "transfer_in"
+    assert result["supplierRecommendation"] is None
+    # Warehouse 2 has the most onHand (40 > 4) among qualifying donors for
+    # product 75 - product 999's dead-stock entry must never be considered.
+    assert result["transfer"] == {
+        "sourceWarehouseId": 2,
+        "sourceWarehouseName": "Beirut Warehouse",
+        "quantity": 20,
+        "sourceDaysSinceLastOutgoingMovement": 90,
+    }
+
+
+def test_recommend_stockout_fix_falls_back_to_supplier_when_no_donor_qualifies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No dead-stock entry for this product at any OTHER warehouse ->
+    action is "order_from_supplier", using compare_suppliers()'s own real
+    rank===1 entry - never a fabricated supplier."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/stock-insights/dead-stock":
+            return httpx.Response(200, json=[])
+        if request.url.path == "/warehouses":
+            return httpx.Response(200, json=[{"id": 1, "name": "Main Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"}])
+        if request.url.path == "/suppliers":
+            return httpx.Response(200, json=[{"id": 7, "name": "Acme Supply Co", "email": None, "leadTimeDays": 5, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"}])
+        if request.url.path == "/supplier-intelligence/rank":
+            return httpx.Response(200, json=[_supplier_rank_entry(7, "Acme Supply Co", 75, rank=1, score=88.5)])
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+
+    result = asyncio.run(recommend_stockout_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "order_from_supplier"
+    assert result["transfer"] is None
+    assert result["supplierRecommendation"]["supplierId"] == 7
+    assert result["supplierRecommendation"]["supplierName"] == "Acme Supply Co"
+
+
+def test_recommend_stockout_fix_reports_no_solution_honestly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No qualifying donor AND no supplier recommendation (every supplier
+    insufficientData) -> "no_solution", never a fabricated fix."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/stock-insights/dead-stock":
+            return httpx.Response(200, json=[])
+        if request.url.path == "/warehouses":
+            return httpx.Response(200, json=[{"id": 1, "name": "Main Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"}])
+        if request.url.path == "/suppliers":
+            return httpx.Response(200, json=[{"id": 7, "name": "Acme Supply Co", "email": None, "leadTimeDays": 5, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"}])
+        if request.url.path == "/supplier-intelligence/rank":
+            return httpx.Response(200, json=[_supplier_rank_entry(7, "Acme Supply Co", 75, rank=1, score=0.0, insufficient=True)])
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+
+    result = asyncio.run(recommend_stockout_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "no_solution"
+    assert result["transfer"] is None
+    assert result["supplierRecommendation"] is None
+
+
+def test_recommend_alternative_supplier_excludes_the_original_supplier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The overdue order's own supplier (rank 1) must never come back as
+    its own alternative, even though it's the top-ranked supplier overall -
+    the next best real rank (2) wins instead."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/suppliers":
+            return httpx.Response(200, json=[
+                {"id": 7, "name": "Acme Supply Co", "email": None, "leadTimeDays": 5, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+                {"id": 9, "name": "Budget Parts Ltd", "email": None, "leadTimeDays": 14, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+            ])
+        if request.url.path == "/supplier-intelligence/rank":
+            return httpx.Response(200, json=[
+                _supplier_rank_entry(7, "Acme Supply Co", 102, rank=1, score=88.5),
+                _supplier_rank_entry(9, "Budget Parts Ltd", 102, rank=2, score=62.0),
+            ])
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+
+    result = asyncio.run(recommend_alternative_supplier(product_id=102, exclude_supplier_id=7))
+
+    assert result["status"] == "alternative_recommended"
+    assert result["recommendedSupplier"]["supplierId"] == 9
+    assert result["excludedSupplierId"] == 7
+
+
+def test_recommend_alternative_supplier_reports_no_alternative_honestly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The excluded supplier is the ONLY real one for this product ->
+    "no_alternative", never a fabricated second supplier."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/suppliers":
+            return httpx.Response(200, json=[{"id": 7, "name": "Acme Supply Co", "email": None, "leadTimeDays": 5, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"}])
+        if request.url.path == "/supplier-intelligence/rank":
+            return httpx.Response(200, json=[_supplier_rank_entry(7, "Acme Supply Co", 102, rank=1, score=88.5)])
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_backend_client(monkeypatch, handler)
+
+    result = asyncio.run(recommend_alternative_supplier(product_id=102, exclude_supplier_id=7))
+
+    assert result["status"] == "no_alternative"
+    assert result["recommendedSupplier"] is None
 
 
 def test_get_stockout_risk_wired_end_to_end_against_mocked_backend(monkeypatch: pytest.MonkeyPatch) -> None:

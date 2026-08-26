@@ -56,9 +56,17 @@ async function* parseSseStream(body: ReadableStream<Uint8Array>): AsyncGenerator
   }
 }
 
-async function* agentCoreSendMessage(params: AgentSendMessageParams): AsyncGenerator<AgentStreamEvent, void, unknown> {
-  const { conversation, userMessage, pageContext, userId } = params;
-
+// Shared POST /invocations + SSE-parse plumbing for both the normal chat
+// path (agentCoreSendMessage) and any one-shot, non-conversational caller
+// (sendControlTowerRecommendation) — same endpoint, same auth header, same
+// event stream shape either way; only the request body and session ID
+// differ (see agentcore_entrypoint.py's invoke() docstring for the "mode"
+// field this optionally sends).
+async function* streamInvocation(params: {
+  sessionId: string;
+  prompt: string;
+  mode?: "control_tower_recommendation";
+}): AsyncGenerator<AgentCoreEvent, void, unknown> {
   const token = getStoredToken();
   if (!token) {
     throw new Error("You're not signed in — please sign in again.");
@@ -72,9 +80,9 @@ async function* agentCoreSendMessage(params: AgentSendMessageParams): AsyncGener
         "Content-Type": "application/json",
         Accept: "text/event-stream",
         Authorization: `Bearer ${token}`,
-        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": runtimeSessionId(userId, conversation.id),
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": params.sessionId,
       },
-      body: JSON.stringify({ prompt: userMessage }),
+      body: JSON.stringify(params.mode ? { prompt: params.prompt, mode: params.mode } : { prompt: params.prompt }),
     });
   } catch {
     throw new Error("Can't reach the AI assistant right now. Please try again shortly.");
@@ -84,10 +92,19 @@ async function* agentCoreSendMessage(params: AgentSendMessageParams): AsyncGener
     throw new Error("The AI assistant couldn't process that request. Please try again.");
   }
 
+  yield* parseSseStream(response.body);
+}
+
+async function* agentCoreSendMessage(params: AgentSendMessageParams): AsyncGenerator<AgentStreamEvent, void, unknown> {
+  const { conversation, userMessage, pageContext, userId } = params;
+
   yield { type: "status", status: "Thinking..." };
 
   let streamed = "";
-  for await (const event of parseSseStream(response.body)) {
+  for await (const event of streamInvocation({
+    sessionId: runtimeSessionId(userId, conversation.id),
+    prompt: userMessage,
+  })) {
     if (event.type === "text_delta" && event.text) {
       streamed += event.text;
       yield { type: "token", token: event.text };
@@ -129,3 +146,50 @@ async function* agentCoreSendMessage(params: AgentSendMessageParams): AsyncGener
 export const agentCoreService: AgentService = {
   sendMessage: agentCoreSendMessage,
 };
+
+// One-shot, non-conversational AI call for Control Tower's "Recommend
+// Solution" button (see components/control-tower/RecommendSolutionAction.tsx).
+// Mints its own fresh session ID per call (never reused, never persisted),
+// so it never touches the user's real chat history in AgentContext/
+// localStorage, and sends "mode": "control_tower_recommendation" so
+// agentcore_entrypoint.py routes it to the scripted, 3-scenario
+// recommendation agent instead of the general Supervisor - see that
+// module's invoke() docstring and narration/control_tower_recommendation.py.
+export async function* sendControlTowerRecommendation(
+  prompt: string,
+  userId: number,
+): AsyncGenerator<AgentStreamEvent, void, unknown> {
+  yield { type: "status", status: "Analyzing..." };
+
+  let streamed = "";
+  for await (const event of streamInvocation({
+    sessionId: runtimeSessionId(userId, crypto.randomUUID()),
+    prompt,
+    mode: "control_tower_recommendation",
+  })) {
+    if (event.type === "text_delta" && event.text) {
+      streamed += event.text;
+      yield { type: "token", token: event.text };
+    } else if (event.type === "tool_status" && event.label) {
+      yield { type: "status", status: event.label };
+    } else if (event.type === "error") {
+      yield { type: "error", error: event.message ?? "The assistant hit an unexpected error." };
+      return;
+    } else if (event.type === "done") {
+      yield {
+        type: "done",
+        message: { id: crypto.randomUUID(), role: "agent", createdAt: new Date().toISOString(), text: streamed },
+      };
+      return;
+    }
+  }
+
+  if (streamed) {
+    yield {
+      type: "done",
+      message: { id: crypto.randomUUID(), role: "agent", createdAt: new Date().toISOString(), text: streamed },
+    };
+  } else {
+    yield { type: "error", error: "The connection to the AI service closed unexpectedly." };
+  }
+}

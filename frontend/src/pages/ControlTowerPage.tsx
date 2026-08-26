@@ -9,6 +9,7 @@ import {
   CATEGORY_LABELS,
   filterAlerts,
   groupAlerts,
+  isRecommendableAlert,
   severityBadge,
   severityCounts,
   type AlertFilters,
@@ -186,9 +187,11 @@ export function ControlTowerPage() {
                         </div>
                       </div>
                       <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 14, lineHeight: 1.5, maxWidth: 640 }}>{alert.message}</div>
-                      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                        <RecommendSolutionAction alert={alert} title={attentionTitle(alert)} />
-                      </div>
+                      {(alert.severity === "CRITICAL" || alert.severity === "WARNING") && isRecommendableAlert(alert) && (
+                        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                          <RecommendSolutionAction alert={alert} />
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -217,12 +220,12 @@ export function ControlTowerPage() {
                       </div>
                       <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>{alert.message}</div>
                       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-                        {alert.severity === "INFO" ? (
+                        {(alert.severity === "CRITICAL" || alert.severity === "WARNING") && isRecommendableAlert(alert) ? (
+                          <RecommendSolutionAction alert={alert} />
+                        ) : (
                           <div onClick={() => navigate(`/products/${productId}`)} style={{ fontSize: 12, color: "var(--color-accent)", fontWeight: 600, cursor: "pointer" }}>
                             View Product
                           </div>
-                        ) : (
-                          <RecommendSolutionAction alert={alert} title={productName(productId)} />
                         )}
                       </div>
                     </div>

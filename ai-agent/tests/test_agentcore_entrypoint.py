@@ -529,6 +529,95 @@ def test_malformed_prompt_is_rejected_before_auth_or_model(
     assert auth_calls["count"] == 0
 
 
+def test_unrecognized_mode_is_rejected_before_auth_or_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth_calls = {"count": 0}
+
+    async def validate(token: str | None) -> dict:
+        auth_calls["count"] += 1
+        return {"id": 7}
+
+    monkeypatch.setattr(entrypoint, "_validate_human_erp_membership", validate)
+    monkeypatch.setattr(entrypoint, "build_supervisor_agent", lambda: pytest.fail("Supervisor must not be built"))
+
+    async def forbidden_build_recommendation(category: str, alert: dict) -> str:
+        pytest.fail("Recommendation builder must not run")
+
+    monkeypatch.setattr(entrypoint, "build_recommendation", forbidden_build_recommendation)
+
+    with pytest.raises(ValueError, match="Unrecognized"):
+        entrypoint.invoke({"prompt": "Show inventory", "mode": "not_a_real_mode"}, _context(_session(7)))
+
+    assert auth_calls["count"] == 0
+
+
+def test_control_tower_recommendation_mode_parses_json_and_skips_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mode="control_tower_recommendation" must parse "prompt" as JSON, pop
+    "category" out, and pass the rest as the alert dict to
+    build_recommendation() (never build_supervisor_agent()) - see that
+    module's docstring for why this is a deterministic Python call now,
+    not a model deciding to call a tool. Must also skip the scope gate
+    entirely (is_in_scope must never be called) and still enforce the same
+    human membership/session-ownership checks as ordinary chat."""
+    _patch_membership(monkeypatch, {"human-token": 7})
+    monkeypatch.setattr(
+        entrypoint,
+        "is_in_scope",
+        lambda *args, **kwargs: pytest.fail("Scope gate must not run in recommendation mode"),
+    )
+    monkeypatch.setattr(entrypoint, "build_supervisor_agent", lambda: pytest.fail("Supervisor must not be built"))
+
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_build_recommendation(category: str, alert: dict) -> str:
+        calls.append((category, alert))
+        return "Real recommendation text."
+
+    monkeypatch.setattr(entrypoint, "build_recommendation", fake_build_recommendation)
+
+    result = entrypoint.invoke(
+        {
+            "prompt": '{"category": "DEAD_STOCK", "productId": 75, "warehouseId": 2}',
+            "mode": "control_tower_recommendation",
+        },
+        _context(_session(7), "human-token"),
+    )
+
+    assert calls == [("DEAD_STOCK", {"productId": 75, "warehouseId": 2})]
+    assert result["result"] == "Real recommendation text."
+    # Recommendation-mode requests are never cached under the session
+    # registry - each is a fresh, single-use call (see invoke()'s docstring).
+    assert set(entrypoint._session_states) == set()
+
+
+def test_control_tower_recommendation_mode_rejects_malformed_json_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed JSON (or JSON missing "category") must surface as the
+    normal in-stream error, not crash the request or reach
+    build_recommendation() - same "fail closed, never fabricate" contract
+    as every other failure path in this entrypoint."""
+    _patch_membership(monkeypatch, {"human-token": 7})
+
+    async def forbidden_build_recommendation(category: str, alert: dict) -> str:
+        pytest.fail("Recommendation builder must not run for malformed input")
+
+    monkeypatch.setattr(entrypoint, "build_recommendation", forbidden_build_recommendation)
+
+    result = entrypoint.invoke(
+        {"prompt": "not valid json", "mode": "control_tower_recommendation"},
+        _context(_session(7), "human-token"),
+    )
+
+    # _sync_invoke only joins text_delta events - an in-stream "error"
+    # event (see invoke()'s except Exception clause) leaves this empty,
+    # same convention as test_human_bearer_resets_after_streaming_exception.
+    assert result == {"result": ""}
+
+
 @pytest.mark.parametrize("session_id", [None, "", "   ", 123])
 def test_missing_or_invalid_context_session_id_is_rejected_before_auth_and_model(
     monkeypatch: pytest.MonkeyPatch,

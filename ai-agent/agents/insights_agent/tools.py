@@ -28,7 +28,9 @@ from tools.schemas.insights_schema import (
     FulfillmentWarehouseResponse,
     LowStockResponse,
     OpenPurchaseOrdersResponse,
+    RecommendAlternativeSupplierResponse,
     RecommendDeadStockTransferResponse,
+    RecommendStockoutFixResponse,
     ReorderQuantityResult,
     ResolveProductNameResponse,
     RestockRecommendationsResponse,
@@ -156,6 +158,7 @@ async def resolve_product_name(product_name: str) -> dict:
                 {"productId": entry["id"], "productName": entry["name"], "score": entry["score"]}
                 for entry in classification["candidates"]
             ],
+            "asOf": datetime.now().isoformat(),
         }
     ).model_dump(mode="json")
 
@@ -1194,4 +1197,175 @@ async def recommend_dead_stock_transfer() -> dict:
 
     return RecommendDeadStockTransferResponse.model_validate(
         {"recommendations": recommendations, "asOf": datetime.now().isoformat()}
+    ).model_dump(mode="json")
+
+
+@tool
+async def recommend_stockout_fix(product_id: int, warehouse_id: int) -> dict:
+    """Control Tower Scenario 2 (stockout risk): fix ONE product/warehouse
+    shortage via exactly one of two deterministic outcomes.
+
+    READ-ONLY / recommendation-only - never executes a transfer or places
+    an order. Checks every OTHER warehouse for real dead-stock status on
+    this exact product (GET /stock-insights/dead-stock filtered to
+    product_id, excluding warehouse_id) - the same >= 60-day-no-OUTGOING-
+    movement criterion recommend_dead_stock_transfer() uses. If one or more
+    qualify, picks the single qualifying warehouse with the most on-hand
+    (the most useful donor) and proposes transferring floor(its onHand / 2)
+    into warehouse_id. If none qualify, falls back to compare_suppliers()
+    for this product and reports its real recommendedSupplier instead.
+
+    Args:
+        product_id: The stocked-out product's database ID.
+        warehouse_id: The warehouse experiencing the shortage.
+
+    Returns:
+        A dict shaped like RecommendStockoutFixResponse - `action` is
+        "transfer_in" (transfer populated), "order_from_supplier"
+        (supplierRecommendation populated), or "no_solution" (neither
+        qualifies - a real, honest outcome, not missing data).
+
+    Raises:
+        Unauthorized, Forbidden, NotFound, ValidationError, Conflict, or
+        ServiceUnavailable (see backend_client.py) if a backend call
+        fails. Deliberately NOT caught/swallowed here - same pattern as
+        every other wired tool in this file.
+    """
+    client = get_backend_client()
+    dead_stock_entries = await client.get("/stock-insights/dead-stock")
+    warehouses = await client.get("/warehouses")
+    warehouse_names = {w["id"]: w["name"] for w in warehouses}
+
+    donor_candidates = [
+        entry
+        for entry in dead_stock_entries
+        if entry["productId"] == product_id and entry["warehouseId"] != warehouse_id
+    ]
+
+    if donor_candidates:
+        donor = max(donor_candidates, key=lambda entry: entry["onHand"])
+        quantity = donor["onHand"] // 2
+
+        if quantity > 0:
+            donor_name = warehouse_names.get(donor["warehouseId"], f"warehouse {donor['warehouseId']}")
+            staleness = (
+                "has never had a recorded sale of this product"
+                if donor["daysSinceLastOutgoingMovement"] is None
+                else f"has had no sales of this product in {donor['daysSinceLastOutgoingMovement']} days"
+            )
+            return RecommendStockoutFixResponse.model_validate(
+                {
+                    "productId": product_id,
+                    "warehouseId": warehouse_id,
+                    "warehouseName": warehouse_names.get(warehouse_id),
+                    "action": "transfer_in",
+                    "transfer": {
+                        "sourceWarehouseId": donor["warehouseId"],
+                        "sourceWarehouseName": warehouse_names.get(donor["warehouseId"]),
+                        "quantity": quantity,
+                        "sourceDaysSinceLastOutgoingMovement": donor["daysSinceLastOutgoingMovement"],
+                    },
+                    "supplierRecommendation": None,
+                    "reason": (
+                        f"{donor_name} {staleness} and holds {donor['onHand']} units - "
+                        f"transferring half ({quantity}) covers the shortage without a new purchase."
+                    ),
+                }
+            ).model_dump(mode="json")
+
+    supplier_comparison = await compare_suppliers(product_id)
+    recommended_supplier = supplier_comparison["recommendedSupplier"]
+
+    if recommended_supplier is not None:
+        return RecommendStockoutFixResponse.model_validate(
+            {
+                "productId": product_id,
+                "warehouseId": warehouse_id,
+                "warehouseName": warehouse_names.get(warehouse_id),
+                "action": "order_from_supplier",
+                "transfer": None,
+                "supplierRecommendation": recommended_supplier,
+                "reason": (
+                    "No other warehouse has gone 60+ days without selling this product, so there is no "
+                    f"surplus to transfer in - {recommended_supplier['supplierName']} is the best-ranked "
+                    "supplier to order from instead."
+                ),
+            }
+        ).model_dump(mode="json")
+
+    return RecommendStockoutFixResponse.model_validate(
+        {
+            "productId": product_id,
+            "warehouseId": warehouse_id,
+            "warehouseName": warehouse_names.get(warehouse_id),
+            "action": "no_solution",
+            "transfer": None,
+            "supplierRecommendation": None,
+            "reason": (
+                "No other warehouse qualifies as a transfer source, and no supplier has enough evaluated "
+                "history for this product to recommend one."
+            ),
+        }
+    ).model_dump(mode="json")
+
+
+@tool
+async def recommend_alternative_supplier(product_id: int, exclude_supplier_id: int) -> dict:
+    """Control Tower Scenario 3 (overdue order): the best-ranked supplier
+    for this product OTHER than the one the overdue order was placed with.
+
+    Reuses compare_suppliers()'s own real ranking (GET /supplier-intelligence/rank)
+    and deterministically filters out exclude_supplier_id in code - the
+    model is never asked to remember to exclude it itself. Returns the
+    remaining supplier with the best (lowest) real rank.
+
+    Args:
+        product_id: The product's database ID.
+        exclude_supplier_id: The supplier the overdue order was actually
+            placed with - never returned as the recommendation, even if it
+            would otherwise rank first.
+
+    Returns:
+        A dict shaped like RecommendAlternativeSupplierResponse. status is
+        "alternative_recommended" (recommendedSupplier populated) or
+        "no_alternative" (no other supplier has enough evaluated history
+        for this product - a real, honest outcome).
+
+    Raises:
+        Unauthorized, Forbidden, NotFound, ValidationError, Conflict, or
+        ServiceUnavailable (see backend_client.py) if a backend call
+        fails. Deliberately NOT caught/swallowed here - same pattern as
+        every other wired tool in this file.
+    """
+    supplier_comparison = await compare_suppliers(product_id)
+    remaining_ranked = [
+        score
+        for score in supplier_comparison["scores"]
+        if score["supplierId"] != exclude_supplier_id and not score["insufficientData"] and score["rank"] is not None
+    ]
+
+    if not remaining_ranked:
+        return RecommendAlternativeSupplierResponse.model_validate(
+            {
+                "productId": product_id,
+                "excludedSupplierId": exclude_supplier_id,
+                "status": "no_alternative",
+                "recommendedSupplier": None,
+                "reason": "No other supplier has enough evaluated history for this product to recommend one.",
+            }
+        ).model_dump(mode="json")
+
+    best_alternative = min(remaining_ranked, key=lambda score: score["rank"])
+
+    return RecommendAlternativeSupplierResponse.model_validate(
+        {
+            "productId": product_id,
+            "excludedSupplierId": exclude_supplier_id,
+            "status": "alternative_recommended",
+            "recommendedSupplier": best_alternative,
+            "reason": (
+                f"{best_alternative['supplierName']} is the best-ranked supplier for this product "
+                "besides the one the overdue order was placed with."
+            ),
+        }
     ).model_dump(mode="json")

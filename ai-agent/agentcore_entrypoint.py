@@ -36,6 +36,7 @@ README.md "Deploying to AgentCore Runtime" for the full walkthrough):
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -49,6 +50,7 @@ from agents.supervisor.agent import build_supervisor_agent
 from agents.supervisor.gate import is_in_scope
 from agentcore_session import parse_runtime_session_owner
 from backend_client import Forbidden, HumanAuthenticatedBackendClient, Unauthorized
+from narration.control_tower_recommendation import build_recommendation
 from request_context import human_auth_scope
 
 app = BedrockAgentCoreApp()
@@ -225,7 +227,16 @@ _TOOL_STATUS_LABELS: dict[str, str] = {
     "approve_document_review": "Approving the document...",
     "reject_document_review": "Rejecting the document...",
     "detect_duplicate_document": "Checking for duplicate documents...",
+    "recommend_dead_stock_transfer": "Checking dead stock transfer options...",
+    "recommend_stockout_fix": "Checking transfer and supplier options...",
+    "recommend_alternative_supplier": "Comparing alternative suppliers...",
 }
+
+# The only "mode" values invoke() accepts besides the default (absent/None,
+# ordinary Supervisor-routed chat) - see build_control_tower_recommendation_agent()'s
+# module docstring for why this rides the same /invocations path instead of
+# a second HTTP route.
+_MODE_CONTROL_TOWER_RECOMMENDATION = "control_tower_recommendation"
 
 
 def _humanize_tool_name(name: str) -> str:
@@ -318,6 +329,31 @@ def _public_text_delta(event: object) -> dict[str, str] | None:
     return {"type": "text_delta", "text": text}
 
 
+async def _stream_agent_events(agent: Any, prompt: str, bearer_token: str | None) -> AsyncIterator[dict[str, str]]:
+    """Stream one agent's response as the safe public tool_status/text_delta
+    event shape - no "done"/"error" (callers add those, since the normal
+    chat path and the Control Tower recommendation mode below wrap this
+    differently around it). Shared so both paths get the exact same event
+    translation and the exact same stream-close-on-exit behavior, rather
+    than two copies that could quietly drift apart.
+    """
+    with human_auth_scope(bearer_token):
+        agent_stream = agent.stream_async(prompt)
+        try:
+            async for event in agent_stream:
+                tool_status = _public_tool_status(event)
+                if tool_status is not None:
+                    yield tool_status
+                    continue
+                public_event = _public_text_delta(event)
+                if public_event is not None:
+                    yield public_event
+        finally:
+            close_stream = getattr(agent_stream, "aclose", None)
+            if callable(close_stream):
+                await close_stream()
+
+
 @app.entrypoint
 async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, str]]:
     """Validate one invocation and return its normalized public SSE event stream.
@@ -328,8 +364,18 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
     Strands conversation state without serializing unrelated sessions.
 
     Args:
-        payload: The raw JSON request body. Must contain a "prompt" key
-            with the user's query as a string.
+        payload: The raw JSON request body. Must contain a "prompt" key as
+            a string. May optionally contain a "mode" key - absent/None
+            for ordinary Supervisor-routed chat, where "prompt" is the
+            user's natural-language query; or "control_tower_recommendation"
+            to route to the deterministic Control Tower recommendation
+            builder instead (see narration/control_tower_recommendation.py),
+            where "prompt" is instead a JSON-encoded object shaped
+            {"category": "DEAD_STOCK"|"STOCKOUT_RISK"|"OVERDUE_TRANSACTION",
+            ...the category's real IDs - see build_recommendation()'s
+            docstring for the exact per-category shape}. Still the same
+            /invocations path and the same auth/session-ownership checks
+            either way. Any other "mode" value is rejected.
         context: AgentCore request context. Its Authorization bearer value,
             when present, is scoped to this invocation as the human identity.
 
@@ -339,10 +385,10 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
         as SSE.
 
     Raises:
-        ValueError: If payload has no usable "prompt" string. The
-            AgentCore framework catches this and returns it as a 500 with
-            the error message - see bedrock_agentcore.runtime.app for that
-            handling.
+        ValueError: If payload has no usable "prompt" string, or "mode" is
+            present but not a recognized value. The AgentCore framework
+            catches this and returns it as a 500 with the error message -
+            see bedrock_agentcore.runtime.app for that handling.
     """
     if not isinstance(payload, dict):
         raise ValueError("payload must be a JSON object")
@@ -352,12 +398,44 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
         raise ValueError('payload must contain a non-empty "prompt" string')
     prompt = prompt.strip()
 
+    mode = payload.get("mode")
+    if mode is not None and mode != _MODE_CONTROL_TOWER_RECOMMENDATION:
+        raise ValueError(f'Unrecognized "mode": {mode!r}')
+
     session_id = _runtime_session_id(context)
 
     bearer_token = _human_bearer_token(context)
     profile = await _validate_human_erp_membership(bearer_token)
     owner_erp_user_id = _erp_user_identity(profile)
     _validate_session_owner(session_id, owner_erp_user_id)
+
+    if mode == _MODE_CONTROL_TOWER_RECOMMENDATION:
+        # No session caching/locking here (unlike the normal chat path
+        # below) - deliberately, not an oversight. Each Control Tower
+        # click already mints its own fresh, single-use session ID (see
+        # frontend/src/components/control-tower/RecommendSolutionAction.tsx),
+        # so nothing would ever be reused across requests anyway, and
+        # there is no multi-turn conversation here to protect with a lock.
+        # The scope gate is also deliberately skipped: "prompt" here is a
+        # JSON-encoded alert description, not free user text, and
+        # build_recommendation()'s only backend access is the same narrow,
+        # read-only tool calls Insights already exposes to this same
+        # authenticated user - see narration/control_tower_recommendation.py.
+        async def stream_recommendation() -> AsyncIterator[dict[str, str]]:
+            try:
+                alert = json.loads(prompt)
+                if not isinstance(alert, dict) or not isinstance(alert.get("category"), str):
+                    raise ValueError('"prompt" must be a JSON object with a "category" string')
+                category = alert.pop("category")
+                text = await build_recommendation(category, alert)
+                yield {"type": "text_delta", "text": text}
+                yield {"type": "done"}
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                yield {"type": "error", "message": _STREAM_ERROR_MESSAGE}
+
+        return stream_recommendation()
 
     async def stream_response() -> AsyncIterator[dict[str, str]]:
         state = _acquire_session_state(session_id, owner_erp_user_id)
@@ -409,21 +487,8 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
                         session_manager=memory_session_manager
                     )
 
-            with human_auth_scope(bearer_token):
-                agent_stream = state.supervisor_agent.stream_async(prompt)
-                try:
-                    async for event in agent_stream:
-                        tool_status = _public_tool_status(event)
-                        if tool_status is not None:
-                            yield tool_status
-                            continue
-                        public_event = _public_text_delta(event)
-                        if public_event is not None:
-                            yield public_event
-                finally:
-                    close_stream = getattr(agent_stream, "aclose", None)
-                    if callable(close_stream):
-                        await close_stream()
+            async for event in _stream_agent_events(state.supervisor_agent, prompt, bearer_token):
+                yield event
 
             yield {"type": "done"}
         except asyncio.CancelledError:

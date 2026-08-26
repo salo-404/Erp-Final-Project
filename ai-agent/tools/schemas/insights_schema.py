@@ -665,6 +665,80 @@ class RecommendDeadStockTransferResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# recommend_stockout_fix / recommend_alternative_supplier
+#
+# Control Tower "Recommend Solution" scenario tools - see
+# narration/control_tower_recommendation.py for the scripted agent that
+# calls these. Each implements one of the 3 fixed scenarios the product
+# team specified; the model is never free to invent a fourth kind of fix.
+# ---------------------------------------------------------------------------
+
+
+class StockoutFixAction(str, Enum):
+    TRANSFER_IN = "transfer_in"
+    ORDER_FROM_SUPPLIER = "order_from_supplier"
+    NO_SOLUTION = "no_solution"
+
+
+class StockoutFixTransfer(BaseModel):
+    sourceWarehouseId: int
+    sourceWarehouseName: Optional[str] = None
+    quantity: int = Field(..., description="floor(source onHand / 2) - half its stock, rounded down.")
+    sourceDaysSinceLastOutgoingMovement: Optional[int] = Field(
+        None, description="None only when the source warehouse has never had an OUTGOING movement for this product."
+    )
+
+
+class RecommendStockoutFixResponse(BaseModel):
+    """action selects which of the two Scenario-2 outcomes applies:
+
+    TRANSFER_IN: another warehouse has gone >= 60 days with no OUTGOING
+    movement of this product (real dead-stock criterion, same threshold as
+    recommend_dead_stock_transfer) - transfer is populated, half of ITS
+    on-hand, from the single such warehouse with the most on-hand to
+    donate. supplierRecommendation is None.
+
+    ORDER_FROM_SUPPLIER: no other warehouse qualifies - supplierRecommendation
+    is the real compare_suppliers() top-ranked supplier for this product
+    (None only when compare_suppliers itself has no recommendation - see
+    NO_SOLUTION). transfer is None.
+
+    NO_SOLUTION: no qualifying donor warehouse AND no supplier
+    recommendation available either (e.g. no suppliers have ever supplied
+    this product) - a genuine "nothing to recommend" answer, not missing
+    data.
+    """
+
+    productId: int
+    warehouseId: int
+    warehouseName: Optional[str] = None
+    action: StockoutFixAction
+    transfer: Optional[StockoutFixTransfer] = None
+    supplierRecommendation: Optional[SupplierScore] = None
+    reason: str = Field(..., description="Plain-language basis for this action, built from real fields.")
+
+
+class AlternativeSupplierStatus(str, Enum):
+    ALTERNATIVE_RECOMMENDED = "alternative_recommended"
+    NO_ALTERNATIVE = "no_alternative"
+
+
+class RecommendAlternativeSupplierResponse(BaseModel):
+    """Scenario 3 (overdue order): the best-ranked supplier for this product
+    OTHER than excludedSupplierId (the supplier the overdue order was
+    actually placed with). Exclusion is applied deterministically in code,
+    never left to the model to remember - see
+    recommend_alternative_supplier() in tools.py.
+    """
+
+    productId: int
+    excludedSupplierId: int
+    status: AlternativeSupplierStatus
+    recommendedSupplier: Optional[SupplierScore] = None
+    reason: str = Field(..., description="Plain-language basis for this recommendation, built from real fields.")
+
+
+# ---------------------------------------------------------------------------
 # resolve_product_name
 # ---------------------------------------------------------------------------
 #

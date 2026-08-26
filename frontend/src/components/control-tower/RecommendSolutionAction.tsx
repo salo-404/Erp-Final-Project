@@ -1,37 +1,19 @@
 import { useRef, useState } from "react";
-import { agentCoreService } from "../../agent/agentCoreService";
+import { sendControlTowerRecommendation } from "../../agent/agentCoreService";
 import { useAuth } from "../../auth/AuthContext";
+import { buildScenarioPayload } from "../../lib/controlTowerStats";
 import { AgentMark } from "../agent/AgentMark";
 import { AgentMarkdown } from "../agent/AgentMarkdown";
 import { StreamingCursor, StreamingStatus } from "../agent/StreamingStatus";
 import { useTypewriter } from "../agent/useTypewriter";
-import { CATEGORY_LABELS } from "../../lib/controlTowerStats";
-import type { AgentConversation, AgentStreamStatus } from "../../types/agent";
+import type { AgentStreamStatus } from "../../types/agent";
 import type { ControlTowerAlert } from "../../types/domain";
 
 interface RecommendSolutionActionProps {
   alert: ControlTowerAlert;
-  /** Already-resolved product/warehouse label, e.g. "Wireless Mouse — Beirut Warehouse". */
-  title: string;
 }
 
-// Reuses the exact same AI transport (agentCoreService) and streaming/
-// typewriter UI (StreamingStatus, AgentMarkdown, useTypewriter) already
-// built for chat - not a new agent, not a new backend endpoint. Each click
-// mints its own throwaway AgentConversation id, so agentCoreService's
-// existing session-per-conversation isolation (see agentcore_entrypoint.py)
-// keeps this fully separate from the user's real chat history - nothing
-// here is persisted to localStorage or the AgentContext conversation list.
-function buildAlertPrompt(alert: ControlTowerAlert, title: string): string {
-  return (
-    `Control Tower flagged this ${alert.severity} ${CATEGORY_LABELS[alert.category]} alert: ` +
-    `"${alert.message}" (concerning ${title}). Using real, current inventory and supplier data, ` +
-    `what is the single best, specific solution to fix this? Give one clear, concrete ` +
-    `recommendation with real numbers - not general advice.`
-  );
-}
-
-export function RecommendSolutionAction({ alert, title }: RecommendSolutionActionProps) {
+export function RecommendSolutionAction({ alert }: RecommendSolutionActionProps) {
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<AgentStreamStatus | null>(null);
@@ -43,27 +25,14 @@ export function RecommendSolutionAction({ alert, title }: RecommendSolutionActio
   const revealed = useTypewriter(text, isStreaming);
 
   async function runRecommendation() {
-    if (!user || isStreaming) return;
+    const payload = buildScenarioPayload(alert);
+    if (!user || !payload || isStreaming) return;
     setStatus("Analyzing...");
     setError(null);
     setText("");
 
-    const now = new Date().toISOString();
-    const conversation: AgentConversation = {
-      id: crypto.randomUUID(),
-      title: "Control Tower recommendation",
-      createdAt: now,
-      updatedAt: now,
-      messages: [],
-    };
-
     try {
-      for await (const event of agentCoreService.sendMessage({
-        conversation,
-        userMessage: buildAlertPrompt(alert, title),
-        pageContext: { path: "/control-tower", label: "Control Tower", quickActions: [] },
-        userId: user.id,
-      })) {
+      for await (const event of sendControlTowerRecommendation(payload, user.id)) {
         if (event.type === "status") {
           setStatus(event.status);
         } else if (event.type === "token") {

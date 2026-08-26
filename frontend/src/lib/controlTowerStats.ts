@@ -2,9 +2,52 @@ import type {
   ControlTowerAlert,
   ControlTowerAlertCategory,
   ControlTowerAlertSeverity,
+  DeadStockAlertData,
   OverdueTransactionAlertData,
+  StockoutRiskAlertData,
   TransferRecommendationAlertData,
 } from "../types/domain";
+
+// The Control Tower "Recommend Solution" feature (see
+// components/control-tower/RecommendSolutionAction.tsx) supports exactly 3
+// fixed scenarios, one per alert category - routed server-side by
+// ai-agent/narration/control_tower_recommendation.py, which now calls the
+// matching tool deterministically in Python rather than asking a model to
+// decide to call it (that used to be model-driven and proved unreliable -
+// see that module's docstring). Which category even HAS a scenario is
+// decided here so it can gate whether the button renders at all, not just
+// what payload it sends when clicked.
+//
+// Returns a JSON-encoded object (sent as the "prompt" string alongside
+// "mode": "control_tower_recommendation" - see agentCoreService.ts and
+// agentcore_entrypoint.py's invoke() docstring), NOT natural language -
+// build_recommendation() on the ai-agent side parses this directly rather
+// than needing a model to extract IDs from a sentence.
+export function buildScenarioPayload(alert: ControlTowerAlert): string | null {
+  if (alert.category === "DEAD_STOCK") {
+    const d = alert.data as unknown as DeadStockAlertData;
+    return JSON.stringify({ category: "DEAD_STOCK", productId: d.productId, warehouseId: d.warehouseId });
+  }
+  if (alert.category === "STOCKOUT_RISK") {
+    const d = alert.data as unknown as StockoutRiskAlertData;
+    return JSON.stringify({ category: "STOCKOUT_RISK", productId: d.productId, warehouseId: d.warehouseId });
+  }
+  if (alert.category === "OVERDUE_TRANSACTION") {
+    const d = alert.data as unknown as OverdueTransactionAlertData;
+    // Only an incoming supplier order has a supplier to recommend an
+    // alternative to - an overdue outgoing customer order or internal
+    // transfer has no Scenario-3 equivalent.
+    if (d.type !== "INCOMING" || d.supplierId == null || d.items.length === 0) return null;
+    const productIds = [...new Set(d.items.map((item) => item.productId))];
+    return JSON.stringify({ category: "OVERDUE_TRANSACTION", supplierId: d.supplierId, productIds });
+  }
+  return null;
+}
+
+/** Whether this alert has one of the 3 defined recommendation scenarios at all. */
+export function isRecommendableAlert(alert: ControlTowerAlert): boolean {
+  return buildScenarioPayload(alert) !== null;
+}
 
 export interface SeverityBadge {
   label: string;
