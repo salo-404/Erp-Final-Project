@@ -324,30 +324,19 @@ class WarehouseCandidate(BaseModel):
     (every line item, at the requested quantity) - that's the real
     correctness filter from GET/POST /warehouse-routing/eligible-warehouses,
     so there is no "canFullyFulfill" field here the way the old mocked
-    schema had one - it would always be true by construction. distanceKm
-    is real, from POST /path-optimizer/nearest-warehouse's geocoding - not
-    a fabricated 0-1 "distanceScore" the way the old mocked schema had.
+    schema had one - it would always be true by construction. No
+    geography/distance is considered - this project does not integrate
+    any mapping/geocoding provider, so selection is stock-based only.
     """
 
     warehouseId: int
     warehouseName: str
-    distanceKm: Optional[float] = Field(
-        None, description="Real great-circle distance from the delivery destination, in km. None only when distanceUnconfirmed is true."
-    )
-    distanceUnconfirmed: bool = Field(
-        False,
-        description=(
-            "True when this warehouse's real distance could not be determined (geocoding failed, or the "
-            "distance-lookup call itself failed) - it may still be recommended if no better-confirmed "
-            "alternative exists, but the choice is not distance-verified."
-        ),
-    )
     minRemainingMargin: int = Field(
         ...,
         description=(
             "The smallest (available - requestedQuantity) across every order line item at this warehouse - "
             "how much stock headroom this warehouse has on its TIGHTEST item, not an average. This is the "
-            "tiebreak criterion when two or more eligible warehouses are within 50km of each other."
+            "real selection criterion: the largest minRemainingMargin wins."
         ),
     )
 

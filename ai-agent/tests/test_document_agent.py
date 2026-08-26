@@ -71,7 +71,6 @@ from agents.document_agent.agent import DOCUMENT_TOOLS, _extract_matched_data, b
 from agents.document_agent.prompts import DOCUMENT_SYSTEM_PROMPT
 from agents.document_agent.tools import (
     DocumentReviewAuthorizationRequired,
-    _NEAREST_WAREHOUSE_PATH,
     _WAREHOUSE_ELIGIBLE_PATH,
     _classify_fuzzy_match,
     _dates_within_window,
@@ -902,8 +901,9 @@ def test_order_branch_downstream_chain(monkeypatch: pytest.MonkeyPatch) -> None:
     exists anywhere in the real backend; there was never a real capability
     behind it).
 
-    Deliberately constructed with a CLEAR (non-tied) distance winner - the
-    50km-tie tiebreak has its own dedicated test further below.
+    No geography/distance is considered - this project does not integrate
+    any mapping/geocoding provider, so the winner is decided purely by
+    stock margin (see _select_fulfillment_warehouse).
     """
     eligible_response = [
         {
@@ -925,13 +925,6 @@ def test_order_branch_downstream_chain(monkeypatch: pytest.MonkeyPatch) -> None:
             ],
         },
     ]
-    nearest_response = {
-        "consideredCandidates": [
-            {"warehouseId": 1, "warehouseName": "London Central", "location": "London, United Kingdom", "available": 90, "distanceKm": 300.0},
-            {"warehouseId": 2, "warehouseName": "Manchester North", "location": "Manchester, United Kingdom", "available": 55, "distanceKm": 50.0},
-        ]
-    }
-
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/products":
             return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
@@ -951,11 +944,6 @@ def test_order_branch_downstream_chain(monkeypatch: pytest.MonkeyPatch) -> None:
             body = json.loads(request.content)
             assert {item["productId"] for item in body["items"]} == {76, 75}
             return httpx.Response(200, json=eligible_response)
-        if request.url.path == _NEAREST_WAREHOUSE_PATH:
-            body = json.loads(request.content)
-            assert body["productId"] == 76
-            assert body["requiredQuantity"] == 5
-            return httpx.Response(200, json=nearest_response)
         raise AssertionError(f"unexpected path {request.url.path}")
 
     _patch_backend_client(monkeypatch, handler)
@@ -965,14 +953,14 @@ def test_order_branch_downstream_chain(monkeypatch: pytest.MonkeyPatch) -> None:
 
     warehouse = asyncio.run(choose_fulfillment_warehouse(document_id="801"))
     assert warehouse["status"] == "RECOMMENDED"
-    assert warehouse["recommendedWarehouseId"] == 2
-    assert warehouse["recommendedWarehouseName"] == "Manchester North"
+    # Warehouse 1's tightest margin is min(90-5, 45-3) = 42; warehouse 2's
+    # is min(55-5, 35-3) = 32 - warehouse 1 wins on stock margin alone.
+    assert warehouse["recommendedWarehouseId"] == 1
+    assert warehouse["recommendedWarehouseName"] == "London Central"
     assert warehouse["unresolvedItems"] == []
     assert len(warehouse["candidates"]) == 2
-    winner_candidate = next(c for c in warehouse["candidates"] if c["warehouseId"] == 2)
-    assert winner_candidate["distanceKm"] == 50.0
-    assert winner_candidate["distanceUnconfirmed"] is False
-    assert winner_candidate["minRemainingMargin"] == 32
+    winner_candidate = next(c for c in warehouse["candidates"] if c["warehouseId"] == 1)
+    assert winner_candidate["minRemainingMargin"] == 42
 
 
 # ---------------------------------------------------------------------------
@@ -1505,10 +1493,10 @@ def test_detect_discrepancy_propagates_typed_backend_error(monkeypatch: pytest.M
 # ---------------------------------------------------------------------------
 # _merge_order_items/_min_remaining_margin/_select_fulfillment_warehouse:
 # pure-logic tests for choose_fulfillment_warehouse()'s resolution and
-# tiebreak math - no backend/network involved. _select_fulfillment_warehouse
-# is a pure function specifically so its selection algorithm (distance
-# first, 50km tie -> stock margin, null-distance fallback) is fully
-# unit-testable without any I/O.
+# ranking math - no backend/network involved. _select_fulfillment_warehouse
+# is a pure function specifically so its selection algorithm (largest
+# minRemainingMargin, warehouseId tiebreak - no geography/distance is
+# considered) is fully unit-testable without any I/O.
 # ---------------------------------------------------------------------------
 
 
@@ -1560,72 +1548,14 @@ def test_min_remaining_margin_returns_the_tightest_item() -> None:
     assert _min_remaining_margin(items) == 42
 
 
-def test_select_fulfillment_warehouse_clear_distance_winner() -> None:
-    eligible = [
-        {"warehouseId": 1, "warehouseName": "A", "items": [{"available": 50, "requestedQuantity": 10}]},
-        {"warehouseId": 2, "warehouseName": "B", "items": [{"available": 20, "requestedQuantity": 10}]},
-    ]
-    result = _select_fulfillment_warehouse(eligible, {1: 300.0, 2: 50.0})
-    assert result["winner_id"] == 2
-    assert "nearest" in result["reason"].lower()
-
-
-def test_select_fulfillment_warehouse_distance_outside_tie_band_ignores_margin() -> None:
-    """A 150km gap is well outside the 50km tie band - the closer warehouse
-    wins outright even though the farther one has vastly more stock margin.
-    """
-    eligible = [
-        {"warehouseId": 1, "warehouseName": "A", "items": [{"available": 15, "requestedQuantity": 10}]},  # margin 5
-        {"warehouseId": 2, "warehouseName": "B", "items": [{"available": 1000, "requestedQuantity": 10}]},  # margin 990
-    ]
-    result = _select_fulfillment_warehouse(eligible, {1: 50.0, 2: 200.0})
-    assert result["winner_id"] == 1
-
-
-def test_select_fulfillment_warehouse_50km_tie_breaks_on_stock_margin() -> None:
-    """The real 50km-adjacent tiebreak scenario, mock/pure-logic-verified -
-    real live geocoding never succeeds in this dev environment (see
-    choose_fulfillment_warehouse()'s own docstring), so this is the only
-    honest way to test it: warehouse 2 is FARTHER (130km vs 100km, a 30km
-    gap - within the 50km tie band) but has the much larger stock margin,
-    and must win specifically BECAUSE of the tiebreak, not despite it -
-    proving the tiebreak actually changes the outcome from pure-distance
-    ordering, not just coincidentally agreeing with it.
-    """
-    eligible = [
-        {"warehouseId": 1, "warehouseName": "Closer", "items": [{"available": 30, "requestedQuantity": 10}]},  # margin 20
-        {"warehouseId": 2, "warehouseName": "Farther", "items": [{"available": 100, "requestedQuantity": 10}]},  # margin 90
-    ]
-    result = _select_fulfillment_warehouse(eligible, {1: 100.0, 2: 130.0})
-    assert result["winner_id"] == 2
-    assert "tied" in result["reason"].lower()
-    assert "50" in result["reason"]
-
-
-def test_select_fulfillment_warehouse_falls_back_to_margin_when_no_distance_confirmed() -> None:
+def test_select_fulfillment_warehouse_largest_margin_wins() -> None:
     eligible = [
         {"warehouseId": 1, "warehouseName": "A", "items": [{"available": 15, "requestedQuantity": 10}]},  # margin 5
         {"warehouseId": 2, "warehouseName": "B", "items": [{"available": 50, "requestedQuantity": 10}]},  # margin 40
     ]
-    result = _select_fulfillment_warehouse(eligible, {})
+    result = _select_fulfillment_warehouse(eligible)
     assert result["winner_id"] == 2
-    candidates_by_id = {c["warehouseId"]: c for c in result["candidates"]}
-    assert candidates_by_id[1]["distanceUnconfirmed"] is True
-    assert candidates_by_id[2]["distanceUnconfirmed"] is True
-    assert "could not be confirmed" in result["reason"].lower()
-
-
-def test_select_fulfillment_warehouse_prefers_confirmed_distance_over_unconfirmed() -> None:
-    """A warehouse with unconfirmed distance is never silently dropped, but
-    is also never preferred over a distance-confirmed alternative - even
-    one with a much smaller stock margin.
-    """
-    eligible = [
-        {"warehouseId": 1, "warehouseName": "Unconfirmed", "items": [{"available": 1000, "requestedQuantity": 10}]},
-        {"warehouseId": 2, "warehouseName": "Confirmed", "items": [{"available": 15, "requestedQuantity": 10}]},
-    ]
-    result = _select_fulfillment_warehouse(eligible, {2: 500.0})
-    assert result["winner_id"] == 2
+    assert "stock margin" in result["reason"].lower()
 
 
 def test_select_fulfillment_warehouse_final_tiebreak_is_warehouse_id() -> None:
@@ -1633,23 +1563,20 @@ def test_select_fulfillment_warehouse_final_tiebreak_is_warehouse_id() -> None:
         {"warehouseId": 5, "warehouseName": "A", "items": [{"available": 20, "requestedQuantity": 10}]},
         {"warehouseId": 3, "warehouseName": "B", "items": [{"available": 20, "requestedQuantity": 10}]},
     ]
-    result = _select_fulfillment_warehouse(eligible, {5: 100.0, 3: 100.0})
+    result = _select_fulfillment_warehouse(eligible)
     assert result["winner_id"] == 3
 
 
 def test_select_fulfillment_warehouse_empty_input_returns_no_winner() -> None:
-    result = _select_fulfillment_warehouse([], {})
+    result = _select_fulfillment_warehouse([])
     assert result["winner_id"] is None
     assert result["candidates"] == []
 
 
 # ---------------------------------------------------------------------------
 # choose_fulfillment_warehouse(): wired-path tests against a mocked backend.
-# The RECOMMENDED-with-clear-distance-winner path is covered by
-# test_order_branch_downstream_chain above. The real 50km-tie scenario
-# itself is mock/pure-logic-verified only (see the pure-logic section
-# above) - real live geocoding never succeeds in this dev environment
-# (GEOAPIFY_API_KEY is an unset placeholder in backend/.env).
+# The RECOMMENDED path (margin-based winner) is covered by
+# test_order_branch_downstream_chain above.
 # ---------------------------------------------------------------------------
 
 
@@ -1667,10 +1594,7 @@ def test_choose_fulfillment_warehouse_no_eligible_warehouse(monkeypatch: pytest.
                 },
             )
         if request.url.path == _WAREHOUSE_ELIGIBLE_PATH:
-            # A real, empty response - no warehouse has 500 units. The
-            # nearest-warehouse endpoint is deliberately NOT stubbed here -
-            # it must never be called once eligible-warehouses comes back
-            # empty, so an unexpected call there fails this test loudly.
+            # A real, empty response - no warehouse has 500 units.
             return httpx.Response(200, json=[])
         raise AssertionError(f"unexpected path {request.url.path}")
 
@@ -1684,9 +1608,8 @@ def test_choose_fulfillment_warehouse_no_eligible_warehouse(monkeypatch: pytest.
 
 def test_choose_fulfillment_warehouse_insufficient_data_when_nothing_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     """No line item resolves to a real product - INSUFFICIENT_DATA is
-    returned immediately, WITHOUT ever calling eligible-warehouses or
-    nearest-warehouse (neither is stubbed below, so either call failing
-    silently is impossible - it would raise AssertionError instead).
+    returned immediately, WITHOUT ever calling eligible-warehouses (it is
+    not stubbed below, so a call there fails this test loudly).
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1745,8 +1668,6 @@ def test_choose_fulfillment_warehouse_reports_unresolved_items_but_still_recomme
             )
         if request.url.path == _WAREHOUSE_ELIGIBLE_PATH:
             return httpx.Response(200, json=eligible_response)
-        if request.url.path == _NEAREST_WAREHOUSE_PATH:
-            return httpx.Response(503, json={"message": "geocoding unavailable"})
         raise AssertionError(f"unexpected path {request.url.path}")
 
     _patch_backend_client(monkeypatch, handler)
@@ -1755,62 +1676,6 @@ def test_choose_fulfillment_warehouse_reports_unresolved_items_but_still_recomme
     assert result["status"] == "RECOMMENDED"
     assert result["recommendedWarehouseId"] == 1
     assert result["unresolvedItems"] == ["Bluetooth Speaker"]
-    assert result["candidates"][0]["distanceUnconfirmed"] is True
-
-
-def test_choose_fulfillment_warehouse_falls_back_when_nearest_warehouse_call_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The nearest-warehouse call's failure is caught specifically (a real,
-    confirmed current limitation - GEOAPIFY_API_KEY is an unset placeholder
-    in this dev environment, see the tool's own docstring) and degrades to
-    margin-only selection, rather than losing step 1's real eligibility
-    answer entirely.
-    """
-    eligible_response = [
-        {
-            "warehouseId": 1,
-            "warehouseName": "London Central",
-            "location": "London, United Kingdom",
-            "items": [{"productId": 73, "onHand": 20, "reserved": 0, "available": 20, "requestedQuantity": 2}],
-        },
-        {
-            "warehouseId": 2,
-            "warehouseName": "Manchester North",
-            "location": "Manchester, United Kingdom",
-            "items": [{"productId": 73, "onHand": 50, "reserved": 0, "available": 50, "requestedQuantity": 2}],
-        },
-    ]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/products":
-            return httpx.Response(200, json=_REAL_PRODUCT_ROWS)
-        if request.url.path == "/document-review/805":
-            return httpx.Response(
-                200,
-                json={
-                    "extractedItems": [{"product": "Laptop Pro 14", "quantity": 2, "price": 850}],
-                    "extractedDeliveryCountry": "United Kingdom",
-                    "extractedDeliveryRegion": "London",
-                },
-            )
-        if request.url.path == _WAREHOUSE_ELIGIBLE_PATH:
-            return httpx.Response(200, json=eligible_response)
-        if request.url.path == _NEAREST_WAREHOUSE_PATH:
-            return httpx.Response(500, json={"message": "Geoapify returned HTTP 401"})
-        raise AssertionError(f"unexpected path {request.url.path}")
-
-    _patch_backend_client(monkeypatch, handler)
-
-    result = asyncio.run(choose_fulfillment_warehouse(document_id="805"))
-    assert result["status"] == "RECOMMENDED"
-    # Margin: warehouse 1 = 20-2=18, warehouse 2 = 50-2=48 - warehouse 2
-    # wins on stock margin since no distance data survived.
-    assert result["recommendedWarehouseId"] == 2
-    for candidate in result["candidates"]:
-        assert candidate["distanceKm"] is None
-        assert candidate["distanceUnconfirmed"] is True
-    assert "could not be confirmed" in result["reason"].lower()
 
 
 def test_choose_fulfillment_warehouse_rejects_non_numeric_document_id() -> None:
@@ -1833,9 +1698,9 @@ def test_choose_fulfillment_warehouse_propagates_not_found_for_unknown_document(
 def test_choose_fulfillment_warehouse_propagates_typed_backend_error_from_eligible_warehouses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Unlike the nearest-warehouse call, a typed error from
-    eligible-warehouses (the real correctness filter) is NOT caught - it
-    propagates normally, same as every other wired tool in this file.
+    """A typed error from eligible-warehouses (the real correctness filter)
+    is not caught - it propagates normally, same as every other wired tool
+    in this file.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2268,14 +2133,9 @@ def test_detect_discrepancy_live_against_real_backend() -> None:
 # a fresh seed) and independently VERIFIED via a real docType=="order"
 # check before being trusted - never blindly assumed.
 #
-# This real seeded document has no extractedDeliveryCountry/Region/Address
-# at all, and GEOAPIFY_API_KEY is a confirmed placeholder in this dev
-# environment (backend/.env), so real geocoding never succeeds here either
-# way - meaning this live test can only exercise the "eligible warehouse
-# found, distance unavailable, margin-only fallback" path, NOT the real
-# distance-based tiebreak (that stays mock/pure-logic-verified only, see
-# the pure-logic section above - same category of limitation as
-# match_invoice_to_po's MULTIPLE_CANDIDATES). Still genuinely real,
+# No geography/distance is considered - this project does not integrate
+# any mapping/geocoding provider, so the real backend's eligible-warehouses
+# answer is ranked purely by stock margin. Still genuinely real,
 # unmodified-seed-data coverage of a real code path, not a synthetic one.
 # ---------------------------------------------------------------------------
 
@@ -2309,10 +2169,7 @@ def test_choose_fulfillment_warehouse_live_against_real_backend() -> None:
     assert result["recommendedWarehouseId"] is not None
     assert result["unresolvedItems"] == [], "Expected 'Wireless Mouse' to resolve cleanly to a real product"
     assert result["candidates"], "Expected at least one real stock-eligible warehouse"
-    for candidate in result["candidates"]:
-        assert candidate["distanceKm"] is None
-        assert candidate["distanceUnconfirmed"] is True
-    assert "could not be confirmed" in result["reason"].lower()
+    assert "stock margin" in result["reason"].lower()
 
 
 # ---------------------------------------------------------------------------

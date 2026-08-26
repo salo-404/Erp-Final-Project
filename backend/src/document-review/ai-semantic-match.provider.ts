@@ -43,9 +43,8 @@ interface AgentCoreSseEvent {
  * reused across requests or tied to a reviewer's real chat history.
  *
  * SEMANTIC_MATCH_SERVICE_URL / SEMANTIC_MATCH_TIMEOUT_MS are read from
- * process.env directly (loaded via dotenv/config in main.ts) — same
- * convention as GeoapifyGeocodingProvider. When SEMANTIC_MATCH_SERVICE_URL
- * is unset, every call throws immediately without attempting a network
+ * process.env directly (loaded via dotenv/config in main.ts). When
+ * SEMANTIC_MATCH_SERVICE_URL is unset, every call throws immediately without attempting a network
  * request — the caller (DocumentReviewService.resolveProduct()/
  * resolveSupplier()) always catches this and falls back to its own
  * Jaccard-token matcher, so an unconfigured deployment behaves exactly as

@@ -7,7 +7,6 @@ import { DocumentReviewModule } from './document-review/document-review.module';
 import { EmailModule } from './integrations/email/email.module';
 import { CalendarModule } from './integrations/calendar/calendar.module';
 import { InventoryTransactionsModule } from './inventory-transactions/inventory-transactions.module';
-import { PathOptimizerModule } from './path-optimizer/path-optimizer.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
 import { ReservationsModule } from './reservations/reservations.module';
@@ -34,7 +33,6 @@ import { WarehousesModule } from './warehouses/warehouses.module';
     AnalyticsModule,
     StockMovementsModule,
     ReservationsModule,
-    PathOptimizerModule,
     InventoryTransactionsModule,
     DocumentReviewModule,
     StockInsightsModule,

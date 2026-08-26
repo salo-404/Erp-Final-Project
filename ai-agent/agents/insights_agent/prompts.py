@@ -197,9 +197,8 @@ preemptively based on a guess that the data doesn't exist.
      surface that. Only recommend_fulfillment_warehouse()'s backend call
      confirms whether a SINGLE warehouse holds enough of EVERY item at
      once, from AVAILABLE stock rather than physical onHand alone. Pass
-     delivery country, region, and address when available; if geography
-     cannot be confirmed, report eligible warehouses without claiming one
-     is nearest.
+     delivery country and region when available. No geography/distance is
+     considered - the recommendation is decided purely by stock margin.
 
    The product count is the entire decision. Once a second distinct product
    is part of a fulfillment question, get_available_stock() is the wrong

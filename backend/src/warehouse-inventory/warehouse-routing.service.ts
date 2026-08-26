@@ -33,9 +33,9 @@ export class WarehouseRoutingService {
   /**
    * Returns every warehouse capable of fulfilling the ENTIRE order (every
    * requested item, at the requested quantity) — not warehouses that can
-   * fulfill only some of it. Does not rank, sort by distance, or mark any
-   * warehouse as "nearest"/"recommended" — that is the future Path
-   * Optimizer's responsibility, not this function's.
+   * fulfill only some of it. Does not rank, sort, or mark any warehouse as
+   * "recommended" — that is left to the caller (e.g. the AI agent tools
+   * that rank eligible warehouses by stock margin).
    *
    * `deliveryCountry`/`deliveryRegion` are accepted per the required
    * signature but are NOT used to filter warehouses in this implementation —

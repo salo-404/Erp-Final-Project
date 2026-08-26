@@ -162,7 +162,7 @@ def test_supplier_ranking_prompt_separates_score_from_lead_time_context() -> Non
     assert "does NOT contribute to `overallScore` or rank" in normalized_prompt
 
 
-def test_fulfillment_prompt_uses_available_stock_and_optional_geography() -> None:
+def test_fulfillment_prompt_uses_available_stock_no_geography() -> None:
     normalized_prompt = " ".join(INSIGHTS_SYSTEM_PROMPT.split())
     assert "recommend_fulfillment_warehouse()" in normalized_prompt
     # Full-order eligibility is checked via AVAILABLE stock (onHand minus
@@ -172,7 +172,7 @@ def test_fulfillment_prompt_uses_available_stock_and_optional_geography() -> Non
     # from AVAILABLE stock rather than onHand.
     assert "SINGLE warehouse holds enough of EVERY item at once" in normalized_prompt
     assert "AVAILABLE stock rather than physical onHand alone" in normalized_prompt
-    assert "delivery country, region, and address" in normalized_prompt
+    assert "No geography/distance is considered" in normalized_prompt
 
 
 def test_get_available_stock_docstring_disclaims_whole_order_fulfillment() -> None:
@@ -465,9 +465,14 @@ def _patch_backend_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
     monkeypatch.setattr(insights_tools_module, "get_backend_client", lambda: test_client)
 
 
-def test_recommend_fulfillment_warehouse_uses_backend_available_stock_and_geography(
+def test_recommend_fulfillment_warehouse_uses_backend_available_stock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """No geography/distance is considered - this project does not
+    integrate any mapping/geocoding provider. Warehouse 2's tightest
+    margin is min(12-12, 30-25)=0; warehouse 3's is min(28-12, 29-25)=4 -
+    warehouse 3 wins purely on stock margin.
+    """
     requested_paths: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -488,11 +493,6 @@ def test_recommend_fulfillment_warehouse_uses_backend_available_stock_and_geogra
                     {"productId": 108, "onHand": 30, "reserved": 1, "available": 29, "requestedQuantity": 25},
                 ]},
             ])
-        if request.url.path == "/path-optimizer/nearest-warehouse":
-            return httpx.Response(200, json={"consideredCandidates": [
-                {"warehouseId": 2, "distanceKm": 80.0},
-                {"warehouseId": 3, "distanceKm": 12.0},
-            ]})
         raise AssertionError(f"unexpected path {request.url.path}")
 
     _patch_backend_client(monkeypatch, handler)
@@ -500,14 +500,11 @@ def test_recommend_fulfillment_warehouse_uses_backend_available_stock_and_geogra
         items=[{"productId": 103, "quantity": 12}, {"productId": 108, "quantity": 25}],
         delivery_country="Lebanon",
         delivery_region="Beirut",
-        delivery_address="Hamra",
     ))
 
     assert result["status"] == "RECOMMENDED"
     assert result["recommendedWarehouseId"] == 3
-    assert result["geographyConsidered"] is True
     assert "/warehouse-routing/eligible-warehouses" in requested_paths
-    assert "/path-optimizer/nearest-warehouse" in requested_paths
 
 
 def test_recommend_dead_stock_transfer_wired_end_to_end_against_mocked_backend(

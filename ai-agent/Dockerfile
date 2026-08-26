@@ -39,7 +39,7 @@ EXPOSE 8080
 
 # No .env, API keys, or credentials are baked into this image. Every
 # setting config/settings.py reads (MODEL_PROVIDER, OPENAI_API_KEY,
-# OLLAMA_HOST, AWS_REGION, BEDROCK_MODEL_ID, etc.) comes from environment
+# AWS_REGION, BEDROCK_MODEL_ID, etc.) comes from environment
 # variables supplied at deploy/run time - e.g. `docker run -e
 # MODEL_PROVIDER=bedrock ...` locally, or the AgentCore Runtime
 # deployment's own environment configuration in AWS - exactly like local

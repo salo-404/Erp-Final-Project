@@ -20,7 +20,7 @@ from typing import Optional
 from rapidfuzz import fuzz, utils
 from strands import tool
 
-from backend_client import BackendError, NotFound, get_backend_client
+from backend_client import NotFound, get_backend_client
 from tools.schemas.insights_schema import (
     AvailableStockResponse,
     ConsumptionAnomaliesResponse,
@@ -309,19 +309,28 @@ async def get_available_stock(product_ids: list[int], warehouse_id: Optional[int
     ).model_dump(mode="json")
 
 
+def _min_remaining_margin(items: list[dict]) -> int:
+    """The smallest (available - requestedQuantity) across a warehouse's
+    real order-line-item availability rows - how much stock headroom this
+    warehouse has on its TIGHTEST item, not an average.
+    """
+    return min(item["available"] - item["requestedQuantity"] for item in items)
+
+
 @tool
 async def recommend_fulfillment_warehouse(
     items: list[dict],
     delivery_country: Optional[str] = None,
     delivery_region: Optional[str] = None,
-    delivery_address: Optional[str] = None,
 ) -> dict:
-    """Recommend a warehouse for an order using backend available stock and geography.
+    """Recommend a warehouse for an order using real backend available stock.
 
     items must be exact resolved productId/quantity pairs. The backend checks
     whether one warehouse can fulfill the entire order using onHand minus
-    ACTIVE reservations. Geography is best-effort; without confirmed distance,
-    eligible warehouses are returned without inventing a nearest choice.
+    ACTIVE reservations. No geography/distance is considered - this project
+    does not integrate any mapping/geocoding provider - among stock-eligible
+    warehouses, the one with the largest stock margin on its tightest line
+    item wins (ties broken by warehouseId).
 
     This is the tool for "can we fulfill this order" whenever 2 or more
     products must be checked TOGETHER as one order - prefer it over
@@ -348,52 +357,18 @@ async def recommend_fulfillment_warehouse(
                 "recommendedWarehouseId": None,
                 "recommendedWarehouseName": None,
                 "eligibleWarehouses": [],
-                "geographyConsidered": False,
             }
         ).model_dump(mode="json")
 
-    distance_by_warehouse_id: dict[int, float] = {}
-    if any((delivery_country, delivery_region, delivery_address)):
-        first_item = items[0]
-        try:
-            distance_result = await client.post(
-                "/path-optimizer/nearest-warehouse",
-                json={
-                    "productId": first_item["productId"],
-                    "requiredQuantity": first_item["quantity"],
-                    "deliveryCountry": delivery_country,
-                    "deliveryRegion": delivery_region,
-                    "deliveryAddress": delivery_address,
-                },
-            )
-            eligible_ids = {warehouse["warehouseId"] for warehouse in eligible}
-            distance_by_warehouse_id = {
-                candidate["warehouseId"]: candidate["distanceKm"]
-                for candidate in distance_result.get("consideredCandidates", [])
-                if candidate["warehouseId"] in eligible_ids and candidate.get("distanceKm") is not None
-            }
-        except BackendError:
-            distance_by_warehouse_id = {}
-
-    ranked = sorted(
-        (warehouse for warehouse in eligible if warehouse["warehouseId"] in distance_by_warehouse_id),
-        key=lambda warehouse: (
-            distance_by_warehouse_id[warehouse["warehouseId"]],
-            warehouse["warehouseId"],
-        ),
-    )
-    recommended = ranked[0] if ranked else None
+    ranked = sorted(eligible, key=lambda warehouse: (-_min_remaining_margin(warehouse["items"]), warehouse["warehouseId"]))
+    recommended = ranked[0]
 
     return FulfillmentWarehouseResponse.model_validate(
         {
-            "status": "RECOMMENDED" if recommended else "ELIGIBLE_WAREHOUSES_FOUND",
-            "recommendedWarehouseId": recommended["warehouseId"] if recommended else None,
-            "recommendedWarehouseName": recommended["warehouseName"] if recommended else None,
-            "eligibleWarehouses": [
-                {**warehouse, "distanceKm": distance_by_warehouse_id.get(warehouse["warehouseId"])}
-                for warehouse in eligible
-            ],
-            "geographyConsidered": recommended is not None,
+            "status": "RECOMMENDED",
+            "recommendedWarehouseId": recommended["warehouseId"],
+            "recommendedWarehouseName": recommended["warehouseName"],
+            "eligibleWarehouses": eligible,
         }
     ).model_dump(mode="json")
 

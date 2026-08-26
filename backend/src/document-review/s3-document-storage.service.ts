@@ -21,9 +21,8 @@ import {
 const PRESIGNED_URL_EXPIRY_SECONDS = 300;
 
 /**
- * Real AWS S3 implementation of DocumentStorageProvider — like
- * GeoapifyGeocodingProvider in path-optimizer/, this is the only place in
- * the codebase that touches the concrete AWS SDK client;
+ * Real AWS S3 implementation of DocumentStorageProvider — this is the
+ * only place in the codebase that touches the concrete AWS SDK client;
  * DocumentReviewService only ever sees the DocumentStorageProvider
  * interface (see DOCUMENT_STORAGE_PROVIDER binding in
  * document-review.module.ts).

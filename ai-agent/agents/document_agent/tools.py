@@ -22,7 +22,6 @@ from strands import tool
 
 from backend_client import (
     BackendClient,
-    BackendError,
     HumanAuthenticatedBackendClient,
     get_backend_client,
 )
@@ -742,14 +741,6 @@ async def match_invoice_to_po(document_id: str, supplier_id: int) -> dict:
 
 
 _WAREHOUSE_ELIGIBLE_PATH = "/warehouse-routing/eligible-warehouses"
-_NEAREST_WAREHOUSE_PATH = "/path-optimizer/nearest-warehouse"
-
-# How close two eligible warehouses' real distances have to be (km) before
-# they're treated as tied and broken by stock margin instead. Not
-# empirically calibrated (same caveat as _PO_TOLERANCE_PERCENT above) - a
-# reasoned default per the design decision, not derived from real distance
-# variance data.
-_WAREHOUSE_TIE_DISTANCE_KM = 50.0
 
 
 def _merge_order_items(extracted_items: list[dict], classifications: list[dict]) -> tuple[list[dict], list[str]]:
@@ -796,34 +787,20 @@ def _min_remaining_margin(items: list[dict]) -> int:
     return min(item["available"] - item["requestedQuantity"] for item in items)
 
 
-def _select_fulfillment_warehouse(eligible_warehouses: list[dict], distance_by_warehouse_id: dict[int, float]) -> dict:
+def _select_fulfillment_warehouse(eligible_warehouses: list[dict]) -> dict:
     """Pure selection logic - no I/O. Given every stock-eligible warehouse
-    for the FULL order (from POST /warehouse-routing/eligible-warehouses)
-    and a map of real distanceKm per warehouseId (from POST
-    /path-optimizer/nearest-warehouse's consideredCandidates, or {} if
-    that call's distance data was unavailable), picks the real
-    recommendation.
+    for the FULL order (from POST /warehouse-routing/eligible-warehouses),
+    picks the real recommendation.
 
-    Algorithm:
+    No geography/distance is considered here - this project does not
+    integrate any mapping/geocoding provider, so ranking is purely stock-
+    based:
       1. Every eligible warehouse becomes a candidate, enriched with its
-         real minRemainingMargin and (if present) real distanceKm.
-      2. Warehouses WITH a confirmed distance are preferred over ones
-         without - an unconfirmed-distance warehouse is only ever chosen
-         when NO eligible warehouse has a confirmed distance at all
-         (still eligible for selection, never silently dropped, but never
-         preferred over a distance-confirmed alternative).
-      3. Among confirmed-distance candidates: the single closest wins,
-         UNLESS one or more others are within _WAREHOUSE_TIE_DISTANCE_KM
-         of it - then they're treated as tied on distance, and the
-         tiebreak is the largest minRemainingMargin (safest on its
-         tightest item, not just highest on average).
-      4. Among unconfirmed-distance candidates (only reached when NO
-         candidate has a confirmed distance): the largest
-         minRemainingMargin wins directly - there's no distance to tie on.
-      5. Any remaining tie (equal margin) is broken by warehouseId
-         ascending, for determinism - same convention the real backend
-         itself uses everywhere (e.g. PathOptimizerService's own
-         `a.distanceKm - b.distanceKm || a.warehouseId - b.warehouseId`).
+         real minRemainingMargin.
+      2. The largest minRemainingMargin wins - the warehouse safest on its
+         tightest line item, not just highest on average.
+      3. Any tie (equal margin) is broken by warehouseId ascending, for
+         determinism.
 
     eligible_warehouses: [{"warehouseId": int, "warehouseName": str,
     "items": [{"available": int, "requestedQuantity": int}, ...]}, ...] -
@@ -837,47 +814,21 @@ def _select_fulfillment_warehouse(eligible_warehouses: list[dict], distance_by_w
     if not eligible_warehouses:
         return {"winner_id": None, "reason": "No stock-eligible warehouse.", "candidates": []}
 
-    candidates = []
-    for warehouse in eligible_warehouses:
-        distance_km = distance_by_warehouse_id.get(warehouse["warehouseId"])
-        candidates.append(
-            {
-                "warehouseId": warehouse["warehouseId"],
-                "warehouseName": warehouse["warehouseName"],
-                "distanceKm": distance_km,
-                "distanceUnconfirmed": distance_km is None,
-                "minRemainingMargin": _min_remaining_margin(warehouse["items"]),
-            }
-        )
+    candidates = [
+        {
+            "warehouseId": warehouse["warehouseId"],
+            "warehouseName": warehouse["warehouseName"],
+            "minRemainingMargin": _min_remaining_margin(warehouse["items"]),
+        }
+        for warehouse in eligible_warehouses
+    ]
 
-    confirmed = [c for c in candidates if c["distanceKm"] is not None]
-
-    if confirmed:
-        closest_distance = min(c["distanceKm"] for c in confirmed)
-        tied = [c for c in confirmed if c["distanceKm"] - closest_distance <= _WAREHOUSE_TIE_DISTANCE_KM]
-
-        if len(tied) == 1:
-            winner = tied[0]
-            reason = (
-                f"{winner['warehouseName']} is the nearest stock-eligible warehouse "
-                f"({winner['distanceKm']:.1f} km from the delivery destination)."
-            )
-        else:
-            tied.sort(key=lambda c: (-c["minRemainingMargin"], c["warehouseId"]))
-            winner = tied[0]
-            reason = (
-                f"{winner['warehouseName']} is tied within {_WAREHOUSE_TIE_DISTANCE_KM:.0f} km of the nearest "
-                f"stock-eligible warehouse ({winner['distanceKm']:.1f} km) - selected for the largest stock "
-                f"margin on its tightest line item ({winner['minRemainingMargin']} units)."
-            )
-    else:
-        unconfirmed = sorted(candidates, key=lambda c: (-c["minRemainingMargin"], c["warehouseId"]))
-        winner = unconfirmed[0]
-        reason = (
-            f"{winner['warehouseName']} is stock-eligible, but distance could not be confirmed for any "
-            f"eligible warehouse - selected for the largest stock margin on its tightest line item "
-            f"({winner['minRemainingMargin']} units)."
-        )
+    ranked = sorted(candidates, key=lambda c: (-c["minRemainingMargin"], c["warehouseId"]))
+    winner = ranked[0]
+    reason = (
+        f"{winner['warehouseName']} is stock-eligible with the largest stock margin on its "
+        f"tightest line item ({winner['minRemainingMargin']} units)."
+    )
 
     return {"winner_id": winner["warehouseId"], "reason": reason, "candidates": candidates}
 
@@ -905,30 +856,13 @@ async def choose_fulfillment_warehouse(document_id: str) -> dict:
     is NO_ELIGIBLE_WAREHOUSE - a real, honest answer, not a silent
     fallback to whichever warehouse happens to have the most stock.
 
-    STEP 2 (distance, best-effort): POST /path-optimizer/nearest-warehouse
-    ONCE, using the FIRST resolved line item as its required productId/
-    requiredQuantity (distance is location-based, not product-based, so
-    which item is used doesn't change the result) and the document's real
-    delivery country/region. This call's ONLY purpose is real geocoded
-    distanceKm data (via its consideredCandidates) - its own
-    selectedWarehouseId is IGNORED here, since it only ever evaluated one
-    product, not the whole order. If this call fails entirely (a real,
-    confirmed current limitation in this dev environment: the geocoding
-    provider's API key is an unset placeholder, so every real geocode
-    call fails) that failure is caught specifically here and treated as
-    "no confirmed distance data for anyone" rather than failing the whole
-    tool call - step 1's real eligibility answer is not lost just because
-    step 2's distance enhancement couldn't run.
-
-    STEP 3 (selection - see _select_fulfillment_warehouse for the pure
-    logic): among warehouses that are BOTH step-1-eligible AND have a
-    real confirmed distance, the closest wins, UNLESS two or more are
-    within 50km of each other - then the tiebreak is the largest MINIMUM
-    remaining margin (available - requested) across every order line
-    item, i.e. the warehouse safest on its tightest item, not just
-    highest on average. A warehouse with unconfirmed distance is never
-    silently dropped - it's only chosen when NO eligible warehouse has a
-    confirmed distance at all.
+    STEP 2 (selection - see _select_fulfillment_warehouse for the pure
+    logic): no geography/distance is considered - this project does not
+    integrate any mapping/geocoding provider. Among the step-1-eligible
+    warehouses, the one with the largest MINIMUM remaining margin
+    (available - requested) across every order line item wins, i.e. the
+    warehouse safest on its tightest item, not just highest on average.
+    Ties are broken by warehouseId for determinism.
 
     Args:
         document_id: The order document being fulfilled - the real
@@ -943,7 +877,7 @@ async def choose_fulfillment_warehouse(document_id: str) -> dict:
         names that couldn't be matched to a real product - any
         recommendation is INCOMPLETE if this is non-empty), and
         `candidates` (every stock-eligible warehouse considered, with
-        real distanceKm/minRemainingMargin).
+        real minRemainingMargin).
 
     Raises:
         ValueError: If document_id isn't a valid integer id.
@@ -951,8 +885,7 @@ async def choose_fulfillment_warehouse(document_id: str) -> dict:
         ServiceUnavailable (see backend_client.py) if the document fetch
         or the eligible-warehouses call fails. Deliberately NOT caught/
         swallowed here - same pattern as every other wired tool in this
-        file. (The nearest-warehouse call is the one deliberate exception
-        - see STEP 2 above for why its failure is caught, not propagated.)
+        file.
     """
     try:
         numeric_id = int(document_id)
@@ -1002,29 +935,7 @@ async def choose_fulfillment_warehouse(document_id: str) -> dict:
             }
         ).model_dump(mode="json")
 
-    distance_by_warehouse_id: dict[int, float] = {}
-    first_item = resolved_items[0]
-    try:
-        nearest = await client.post(
-            _NEAREST_WAREHOUSE_PATH,
-            json={
-                "productId": first_item["productId"],
-                "requiredQuantity": first_item["quantity"],
-                "deliveryCountry": review.get("extractedDeliveryCountry"),
-                "deliveryRegion": review.get("extractedDeliveryRegion"),
-            },
-        )
-        for candidate in nearest["consideredCandidates"]:
-            if candidate["distanceKm"] is not None:
-                distance_by_warehouse_id[candidate["warehouseId"]] = candidate["distanceKm"]
-    except BackendError:
-        # A real, confirmed current limitation, not a guess (see this
-        # function's own docstring) - distance data is a best-effort
-        # enhancement on top of step 1's real eligibility answer, never
-        # worth losing that real answer over.
-        pass
-
-    selection = _select_fulfillment_warehouse(eligible, distance_by_warehouse_id)
+    selection = _select_fulfillment_warehouse(eligible)
     winner = next(c for c in selection["candidates"] if c["warehouseId"] == selection["winner_id"])
 
     return ChooseFulfillmentWarehouseResponse.model_validate(

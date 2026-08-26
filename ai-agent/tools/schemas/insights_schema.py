@@ -57,7 +57,6 @@ class StockoutRiskLevel(str, Enum):
 
 class FulfillmentWarehouseStatus(str, Enum):
     NO_ELIGIBLE_WAREHOUSE = "NO_ELIGIBLE_WAREHOUSE"
-    ELIGIBLE_WAREHOUSES_FOUND = "ELIGIBLE_WAREHOUSES_FOUND"
     RECOMMENDED = "RECOMMENDED"
 
 
@@ -138,15 +137,20 @@ class FulfillmentWarehouseCandidate(BaseModel):
     warehouseName: str
     location: Optional[str] = None
     items: list[FulfillmentWarehouseItem]
-    distanceKm: Optional[float] = None
 
 
 class FulfillmentWarehouseResponse(BaseModel):
+    """No geography/distance is considered - this project does not
+    integrate any mapping/geocoding provider. status is RECOMMENDED
+    whenever at least one stock-eligible warehouse is found (the largest
+    stock margin on its tightest line item wins); NO_ELIGIBLE_WAREHOUSE
+    means no warehouse can fully stock the order.
+    """
+
     status: FulfillmentWarehouseStatus
     recommendedWarehouseId: Optional[int] = None
     recommendedWarehouseName: Optional[str] = None
     eligibleWarehouses: list[FulfillmentWarehouseCandidate]
-    geographyConsidered: bool
 
 
 # ---------------------------------------------------------------------------
