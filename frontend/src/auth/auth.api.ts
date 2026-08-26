@@ -1,5 +1,10 @@
 import { apiRequest } from "../lib/api-client";
-import { cognitoSignIn, type CognitoSignInResult } from "./cognito";
+import {
+  cognitoConfirmPasswordReset,
+  cognitoRequestPasswordReset,
+  cognitoSignIn,
+  type CognitoSignInResult,
+} from "./cognito";
 import type { AuthenticatedIdentity } from "../types/api";
 
 // Sign-in now goes directly to Cognito (backend/src/auth/auth.controller.ts
@@ -8,6 +13,18 @@ import type { AuthenticatedIdentity } from "../types/api";
 // newPasswordRequired challenge (temp passwords from CognitoAdminService.createUser()).
 export function login(email: string, password: string): Promise<CognitoSignInResult> {
   return cognitoSignIn(email, password);
+}
+
+export function requestPasswordReset(email: string): Promise<void> {
+  return cognitoRequestPasswordReset(email);
+}
+
+export function confirmPasswordReset(
+  email: string,
+  verificationCode: string,
+  newPassword: string,
+): Promise<void> {
+  return cognitoConfirmPasswordReset(email, verificationCode, newPassword);
 }
 
 export function fetchCurrentIdentity(): Promise<AuthenticatedIdentity> {

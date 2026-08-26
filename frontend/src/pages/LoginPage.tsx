@@ -4,6 +4,8 @@ import { useAuth } from "../auth/AuthContext";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import loginHero from "../assets/login-hero.png";
 import { getNewPasswordValidationError } from "../auth/passwordPolicy";
+import { confirmPasswordReset, requestPasswordReset } from "../auth/auth.api";
+import { PASSWORD_RESET_CODE_SENT_MESSAGE } from "../auth/passwordResetFlow";
 
 // Layout, copy, and styling below are ported 1:1 from the Nexora Claude
 // Design export (frontend/claude_plan handoff) — see the "isLoginPage"
@@ -40,6 +42,12 @@ export function LoginPage() {
   } | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
+  const [resetStep, setResetStep] = useState<"email" | "code" | null>(null);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetCode, setResetCode] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetPasswordConfirm, setResetPasswordConfirm] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
 
   if (status === "loading") {
     return (
@@ -93,6 +101,63 @@ export function LoginPage() {
       navigate(redirectTo, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to set a new password. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function openPasswordReset() {
+    setResetEmail(email);
+    setResetStep("email");
+    setError(null);
+    setNotice(null);
+  }
+
+  function returnToSignIn() {
+    setResetStep(null);
+    setResetCode("");
+    setResetPassword("");
+    setResetPasswordConfirm("");
+    setError(null);
+    setNotice(null);
+  }
+
+  async function handleRequestResetCode(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      await requestPasswordReset(resetEmail.trim());
+      setNotice(PASSWORD_RESET_CODE_SENT_MESSAGE);
+      setResetStep("code");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to request a verification code. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleConfirmReset(event: FormEvent) {
+    event.preventDefault();
+    const validationError = getNewPasswordValidationError(resetPassword);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    if (resetPassword !== resetPasswordConfirm) {
+      setError("Passwords don't match.");
+      return;
+    }
+
+    setError(null);
+    setSubmitting(true);
+    try {
+      await confirmPasswordReset(resetEmail.trim(), resetCode.trim(), resetPassword);
+      setEmail(resetEmail.trim());
+      returnToSignIn();
+      setNotice("Password updated. Sign in with your new password.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to reset the password. Check the code and try again.");
     } finally {
       setSubmitting(false);
     }
@@ -209,6 +274,122 @@ export function LoginPage() {
                 )}
               </form>
             </>
+          ) : resetStep ? (
+            <>
+              <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 30, marginBottom: 8 }}>
+                Update your password
+              </div>
+              <div style={{ fontSize: 13.5, color: "var(--color-text-secondary)", marginBottom: 32 }}>
+                {resetStep === "email"
+                  ? "Enter your work email to request a verification code."
+                  : "Enter the verification code and choose a new password."}
+              </div>
+
+              <form
+                onSubmit={resetStep === "email" ? handleRequestResetCode : handleConfirmReset}
+                style={{ display: "flex", flexDirection: "column", gap: 16 }}
+              >
+                <div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
+                    Work email
+                  </div>
+                  <input
+                    type="email"
+                    required
+                    autoComplete="email"
+                    value={resetEmail}
+                    onChange={(event) => setResetEmail(event.target.value)}
+                    disabled={resetStep === "code"}
+                    style={inputStyle}
+                  />
+                </div>
+
+                {resetStep === "code" && (
+                  <>
+                    <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+                      {PASSWORD_RESET_CODE_SENT_MESSAGE}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
+                        Verification code
+                      </div>
+                      <input
+                        required
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        value={resetCode}
+                        onChange={(event) => setResetCode(event.target.value)}
+                        style={inputStyle}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
+                        New password
+                      </div>
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        autoComplete="new-password"
+                        value={resetPassword}
+                        onChange={(event) => setResetPassword(event.target.value)}
+                        style={inputStyle}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
+                        Confirm new password
+                      </div>
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        autoComplete="new-password"
+                        value={resetPasswordConfirm}
+                        onChange={(event) => setResetPasswordConfirm(event.target.value)}
+                        style={inputStyle}
+                      />
+                    </div>
+                  </>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  style={{
+                    marginTop: 6,
+                    background: "var(--color-accent)",
+                    color: "var(--color-on-accent)",
+                    textAlign: "center",
+                    padding: 12,
+                    borderRadius: 7,
+                    fontFamily: "var(--font-heading)",
+                    fontWeight: 600,
+                    fontSize: 14,
+                    cursor: submitting ? "default" : "pointer",
+                    border: "none",
+                    opacity: submitting ? 0.7 : 1,
+                  }}
+                >
+                  {submitting
+                    ? resetStep === "email" ? "Requesting..." : "Updating..."
+                    : resetStep === "email" ? "Request verification code" : "Confirm password reset"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={returnToSignIn}
+                  disabled={submitting}
+                  style={{ border: "none", background: "transparent", color: "var(--color-accent)", cursor: "pointer", fontSize: 12.5 }}
+                >
+                  Return to sign in
+                </button>
+
+                {error && (
+                  <div style={{ fontSize: 12.5, color: "var(--color-danger)", textAlign: "center" }}>{error}</div>
+                )}
+              </form>
+            </>
           ) : (
             <>
               <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 30, marginBottom: 8 }}>
@@ -219,6 +400,9 @@ export function LoginPage() {
               </div>
 
               <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {notice && (
+                  <div style={{ fontSize: 12.5, color: "var(--color-success)", textAlign: "center" }}>{notice}</div>
+                )}
                 <div>
                   <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
                     Work email
@@ -267,6 +451,14 @@ export function LoginPage() {
                   }}
                 >
                   {submitting ? "Signing in..." : "Sign in"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={openPasswordReset}
+                  style={{ border: "none", background: "transparent", color: "var(--color-accent)", cursor: "pointer", fontSize: 12.5 }}
+                >
+                  Update / Forgot Password
                 </button>
 
                 {error && (
