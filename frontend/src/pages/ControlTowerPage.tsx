@@ -85,6 +85,90 @@ export function ControlTowerPage() {
     }
   }
 
+  function niceDate(iso: string | null): string {
+    if (!iso) return "an unknown date";
+    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function joinNames(names: string[]): string {
+    if (names.length <= 1) return names[0] ?? "";
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+  }
+
+  // The backend's own alert.message is deliberately id-only, plain text
+  // (see getControlTowerAlerts()'s docstring in stock-insights.service.ts —
+  // `data` is kept verbatim there for a future NotificationService/dashboard
+  // that has no product/warehouse names of its own to resolve against).
+  // This page already has both loaded, so it re-renders each alert's body
+  // from `data` with real names and a readable date instead of showing
+  // alert.message directly — never a bare id, never a raw ISO timestamp,
+  // and never an internal enum literal like "transfer_available" leaking
+  // into what a reviewer reads. Titles (attentionTitle() above, or the
+  // product name alone for insight cards) already name the product/
+  // warehouse, so this never repeats them — only the extra detail the
+  // title doesn't already carry.
+  function alertDescription(alert: ControlTowerAlert): string {
+    switch (alert.category) {
+      case "DEAD_STOCK": {
+        const d = alert.data as unknown as DeadStockAlertData;
+        const staleness =
+          d.daysSinceLastOutgoingMovement === null
+            ? "has never had a customer sale"
+            : `has had no customer sale in ${d.daysSinceLastOutgoingMovement} days`;
+        return `${d.onHand} units on hand at ${warehouseName(d.warehouseId)}, and ${staleness}.`;
+      }
+      case "CONSUMPTION_ANOMALY": {
+        const d = alert.data as unknown as ConsumptionAnomalyAlertData;
+        const where = `at ${warehouseName(d.warehouseId)}`;
+        if (d.percentChange === null) {
+          return `Consumption increased from ${d.baselineQuantity} to ${d.recentQuantity} units ${where} in the recent window.`;
+        }
+        const direction = d.direction === "INCREASE" ? "increased" : "decreased";
+        return `Consumption ${direction} ${Math.abs(d.percentChange).toFixed(1)}% ${where} (baseline ${d.baselineQuantity} → recent ${d.recentQuantity}).`;
+      }
+      case "STOCKOUT_RISK":
+        // Only ever OUT_OF_STOCK now (available <= 0) — AT_RISK is
+        // RESTOCK_RECOMMENDATION's alert instead, so the two categories
+        // never overlap for the same product/warehouse (see
+        // getControlTowerAlerts() in stock-insights.service.ts). Available
+        // is always 0 here, so it's not worth repeating, and a "predicted
+        // stockout" date makes no sense for something already at zero —
+        // that's only meaningful for RESTOCK_RECOMMENDATION, where stock
+        // remains but is trending toward running out.
+        return "Out of stock.";
+      case "RESTOCK_RECOMMENDATION": {
+        const d = alert.data as unknown as {
+          available: number;
+          recommendedQuantity: number;
+          explanation: string;
+          transferSourceWarehouseIds: number[];
+          predictedStockoutDate: string | null;
+        };
+        // Never invented — only shown when the backend actually computed
+        // one (it's null whenever there's no usable recent consumption
+        // rate to project from).
+        const stockoutSuffix = d.predictedStockoutDate ? ` Predicted stockout: ${niceDate(d.predictedStockoutDate)}.` : "";
+        const availablePrefix = `${d.available} available — `;
+        if (d.transferSourceWarehouseIds.length > 0) {
+          const sources = joinNames(d.transferSourceWarehouseIds.map(warehouseName));
+          return `${availablePrefix}needs ${d.recommendedQuantity} more units, available as a transfer from ${sources}.${stockoutSuffix}`;
+        }
+        return `${availablePrefix}needs ${d.recommendedQuantity} more units. ${d.explanation}${stockoutSuffix}`;
+      }
+      case "TRANSFER_RECOMMENDATION": {
+        const d = alert.data as unknown as TransferRecommendationAlertData;
+        return `Transfer ${d.transferQuantity} units to cover the shortfall.`;
+      }
+      case "OVERDUE_TRANSACTION": {
+        const d = alert.data as unknown as OverdueTransactionAlertData;
+        return `Overdue — expected ${niceDate(d.expectedDate)}.`;
+      }
+      default:
+        return alert.message;
+    }
+  }
+
   const isLoading = alertsFetch.loading || warehousesFetch.loading || productsFetch.loading;
   const loadError = alertsFetch.error || warehousesFetch.error || productsFetch.error;
 
@@ -186,7 +270,7 @@ export function ControlTowerPage() {
                           <span style={{ fontSize: 10, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>{CATEGORY_LABELS[alert.category]}</span>
                         </div>
                       </div>
-                      <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 14, lineHeight: 1.5, maxWidth: 640 }}>{alert.message}</div>
+                      <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 14, lineHeight: 1.5, maxWidth: 640 }}>{alertDescription(alert)}</div>
                       {(alert.severity === "CRITICAL" || alert.severity === "WARNING") && isRecommendableAlert(alert) && (
                         <div style={{ display: "flex", justifyContent: "flex-end" }}>
                           <RecommendSolutionAction alert={alert} />
@@ -218,7 +302,7 @@ export function ControlTowerPage() {
                           <span style={{ fontSize: 10, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em" }}>{CATEGORY_LABELS[alert.category]}</span>
                         </div>
                       </div>
-                      <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>{alert.message}</div>
+                      <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>{alertDescription(alert)}</div>
                       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
                         {(alert.severity === "CRITICAL" || alert.severity === "WARNING") && isRecommendableAlert(alert) ? (
                           <RecommendSolutionAction alert={alert} />

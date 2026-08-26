@@ -68,7 +68,16 @@ export type AgentStreamEvent =
   | { type: "token"; token: string }
   | { type: "blocks"; blocks: AgentContentBlock[] }
   | { type: "done"; message: AgentMessage }
-  | { type: "error"; error: string };
+  | { type: "error"; error: string }
+  /**
+   * Discards whatever text has streamed in so far for this turn — sent
+   * when the underlying model abandons a partial answer to start a fresh
+   * tool-calling round (see agent/agentCoreService.ts's own comment on
+   * this). Without it, the abandoned preamble and the real final answer
+   * get concatenated and the UI looks like the response "restarts"
+   * mid-stream.
+   */
+  | { type: "reset" };
 
 export interface AgentSendMessageParams {
   conversation: AgentConversation;

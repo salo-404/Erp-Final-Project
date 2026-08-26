@@ -78,8 +78,18 @@ HARD RULES:
   Y") and never pad the answer with generic hedging advice ("check
   supplier options", "verify demand", "consider restocking") that isn't
   literally what the JSON says.
-- Reproduce every product/warehouse/supplier name exactly as given,
-  character for character.
+- Reproduce every product/warehouse/supplier NAME exactly as given,
+  character for character - never a bare numeric id (productId,
+  warehouseId, sourceWarehouseId, destinationWarehouseId, supplierId,
+  excludedSupplierId). Those ids exist in the JSON only so the fields line
+  up correctly; a human reader has no use for "product 34" or "warehouse
+  14" and must never see one. If a *Name field for something you need to
+  mention is null, refer to it by its real role instead (e.g. "the
+  destination warehouse") - never fall back to printing its id.
+- Every warehouse/product/supplier you refer to must be identifiable by
+  name - never say "another warehouse has a surplus" or "a supplier can
+  fulfill this" without naming WHICH one from the *Name field the JSON
+  gives you for it.
 - No headers, no bullet lists, no closing question - this is a small
   on-page box, not a chat conversation.
 """
@@ -133,6 +143,24 @@ async def _gather_evidence(category: str, alert: dict) -> dict:
     raise ValueError(f"Unsupported Control Tower recommendation category: {category!r}")
 
 
+def _drop_ids(value):
+    """Recursively strip every *Id key from evidence before it reaches the
+    model - not a prompt request, a deterministic guarantee. The prompt
+    already forbids bare numeric ids explicitly, but a real run still
+    showed the model parroting one (productId/warehouseId) anyway when it
+    was present in the JSON alongside its name; the only fully reliable
+    fix is to never hand the model a value it could parrot in the first
+    place. Every *Id field here was already consumed by _gather_evidence()
+    for routing/matching - the narration step never needed them, only the
+    *Name fields sitting right next to them.
+    """
+    if isinstance(value, dict):
+        return {k: _drop_ids(v) for k, v in value.items() if not k.endswith("Id")}
+    if isinstance(value, list):
+        return [_drop_ids(item) for item in value]
+    return value
+
+
 async def _narrate(category: str, evidence: dict) -> str:
     """One-shot, non-tool-calling model call - same pattern as
     narration/control_tower.py's narrate_alert(), reused here for the same
@@ -143,7 +171,7 @@ async def _narrate(category: str, evidence: dict) -> str:
     model = settings.build_model("insights")
     user_prompt = (
         f"Alert category: {category}\n"
-        f"Real evidence (JSON): {json.dumps(evidence, default=str)}\n\n"
+        f"Real evidence (JSON): {json.dumps(_drop_ids(evidence), default=str)}\n\n"
         "Write the recommendation now."
     )
     messages: list[Message] = [{"role": "user", "content": [{"text": user_prompt}]}]

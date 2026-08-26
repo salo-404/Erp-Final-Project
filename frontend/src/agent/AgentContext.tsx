@@ -197,6 +197,13 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
           if (event.type === "status") {
             setPendingByConversation((prev) => ({ ...prev, [targetId]: { status: event.status, text: prev[targetId]?.text ?? "" } }));
+          } else if (event.type === "reset") {
+            // The service layer abandoned a partial answer to start a
+            // fresh tool-calling round — see agent/agentCoreService.ts's
+            // own comment on why. Discard the accumulated text so the
+            // typewriter doesn't append the old draft in front of the
+            // real final answer.
+            setPendingByConversation((prev) => ({ ...prev, [targetId]: { status: prev[targetId]?.status ?? null, text: "" } }));
           } else if (event.type === "token") {
             setPendingByConversation((prev) => ({
               ...prev,

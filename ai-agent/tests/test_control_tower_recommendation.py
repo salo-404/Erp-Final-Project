@@ -35,6 +35,22 @@ def test_recommendation_prompt_forbids_hedging_and_fabricated_fields() -> None:
     assert "reflects exactly ONE real decision" in prompt
 
 
+def test_recommendation_prompt_forbids_raw_ids_and_unnamed_references() -> None:
+    """Guards against the real bug this was fixed for: the model rendering
+    "product 34"/"warehouse 14" from a bare id field, or saying "another
+    warehouse has a surplus" without naming which one - both now
+    explicitly forbidden, on top of the evidence itself being enriched
+    with *Name fields (see recommend_dead_stock_transfer()/
+    recommend_stockout_fix()/recommend_alternative_supplier() in
+    agents/insights_agent/tools.py)."""
+    prompt = " ".join(RECOMMENDATION_SYSTEM_PROMPT.split())
+
+    assert "never a bare numeric id" in prompt.lower()
+    assert "productId" in prompt and "warehouseId" in prompt and "supplierId" in prompt
+    assert "never say \"another warehouse has a surplus\"" in prompt.lower()
+    assert "must never see one" in prompt.lower()
+
+
 def test_gather_evidence_dead_stock_finds_the_matching_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_recommend_dead_stock_transfer() -> dict:
         return {

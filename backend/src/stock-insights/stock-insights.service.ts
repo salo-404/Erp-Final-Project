@@ -137,6 +137,10 @@ export interface RestockRecommendation {
   avgDailyConsumption: number;
   daysOfSupply: number | null;
   reason: RestockReason;
+  /** Donor warehouse(s) when reason is 'transfer_available' — the same fromWarehouseId(s), in the same order, as the matching entries in getTransferRecommendations() for this product/warehouse. Empty when reason is 'purchase_required'. */
+  transferSourceWarehouseIds: number[];
+  /** Same value (never recalculated) as the underlying StockoutRiskEntry.predictedStockoutDate — null whenever there's no usable recent consumption rate to project from, never invented. */
+  predictedStockoutDate: Date | null;
   /** Human-readable explanation of why this recommendation (and its reason) exists — for Control Tower/dashboard display, built entirely from fields already on this entry. */
   explanation: string;
 }
@@ -688,19 +692,27 @@ export class StockInsightsService {
       (entry) => entry.projectedRiskLevel !== 'OK',
     );
 
-    const transferAvailableKeys = candidates.length
-      ? new Set(
-          (
-            await this.getTransferRecommendations(
-              consumptionWindowDays,
-              referenceDate,
-              tx,
-            )
-          ).map((transfer) =>
-            this.inventoryKey(transfer.productId, transfer.toWarehouseId),
-          ),
-        )
-      : new Set<string>();
+    // Same presence check as before (still exactly one reason per entry,
+    // still driven only by whether ANY matching TransferRecommendation
+    // exists), just keyed to a list of donor warehouse ids instead of a
+    // bare boolean-via-Set — a deficit can legitimately be split across
+    // more than one donor (see getTransferRecommendations()'s own inner
+    // loop), so this collects all of them, in the same order they were
+    // generated.
+    const transferSourcesByKey = new Map<string, number[]>();
+    if (candidates.length) {
+      const transfers = await this.getTransferRecommendations(
+        consumptionWindowDays,
+        referenceDate,
+        tx,
+      );
+      for (const transfer of transfers) {
+        const key = this.inventoryKey(transfer.productId, transfer.toWarehouseId);
+        const sources = transferSourcesByKey.get(key) ?? [];
+        sources.push(transfer.fromWarehouseId);
+        transferSourcesByKey.set(key, sources);
+      }
+    }
 
     return candidates
       .map((entry) => {
@@ -708,11 +720,14 @@ export class StockInsightsService {
           entry.reorderThreshold - entry.projectedAvailable,
           0,
         );
-        const reason: RestockReason = transferAvailableKeys.has(
-          this.inventoryKey(entry.productId, entry.warehouseId),
-        )
-          ? 'transfer_available'
-          : 'purchase_required';
+        const transferSourceWarehouseIds =
+          transferSourcesByKey.get(
+            this.inventoryKey(entry.productId, entry.warehouseId),
+          ) ?? [];
+        const reason: RestockReason =
+          transferSourceWarehouseIds.length > 0
+            ? 'transfer_available'
+            : 'purchase_required';
         const explanation = this.explainRestockReason(reason, entry);
 
         return {
@@ -728,6 +743,8 @@ export class StockInsightsService {
           avgDailyConsumption: entry.avgDailyConsumption,
           daysOfSupply: entry.daysOfSupply,
           reason,
+          transferSourceWarehouseIds,
+          predictedStockoutDate: entry.predictedStockoutDate,
           explanation,
         };
       })
@@ -1091,12 +1108,15 @@ export class StockInsightsService {
     }
 
     for (const entry of stockoutRisk) {
-      if (entry.riskLevel === 'OK') {
+      // STOCKOUT_RISK is CRITICAL and fires ONLY for a genuine stockout
+      // (available <= 0, i.e. riskLevel === 'OUT_OF_STOCK'). AT_RISK
+      // (available > 0 but below reorderThreshold) is RESTOCK_RECOMMENDATION's
+      // territory instead (see that loop below) — kept mutually exclusive
+      // so the same product/warehouse never surfaces as both alerts for
+      // the same condition.
+      if (entry.riskLevel !== 'OUT_OF_STOCK') {
         continue;
       }
-      // Confirmed severity mapping: every non-OK stockout risk entry
-      // (OUT_OF_STOCK and AT_RISK alike) is CRITICAL — stockout risk has no
-      // WARNING tier of its own.
       const stockoutDateSuffix =
         entry.predictedStockoutDate !== null
           ? ` (predicted stockout: ${entry.predictedStockoutDate.toISOString()})`
@@ -1105,9 +1125,7 @@ export class StockInsightsService {
         category: 'STOCKOUT_RISK',
         severity: 'CRITICAL',
         message:
-          (entry.riskLevel === 'OUT_OF_STOCK'
-            ? `Product ${entry.productId} is out of stock in warehouse ${entry.warehouseId} (available: ${entry.available})`
-            : `Product ${entry.productId} in warehouse ${entry.warehouseId} is at risk (available: ${entry.available}, reorderThreshold: ${entry.reorderThreshold})`) +
+          `Product ${entry.productId} is out of stock in warehouse ${entry.warehouseId} (available: ${entry.available})` +
           stockoutDateSuffix,
         data: entry as unknown as Record<string, unknown>,
         referenceDate,
@@ -1135,10 +1153,25 @@ export class StockInsightsService {
     }
 
     for (const recommendation of restockRecommendations) {
+      // Mirrors the STOCKOUT_RISK loop's own exclusivity rule: only a
+      // CURRENT (not projected) AT_RISK entry — available > 0 and below
+      // reorderThreshold — becomes a Control Tower restock alert. A
+      // recommendation whose current available is already <= 0 is
+      // STOCKOUT_RISK's alert instead (already emitted above), never
+      // both for the same product/warehouse.
+      if (recommendation.riskLevel !== 'AT_RISK') {
+        continue;
+      }
+      const stockoutDateSuffix =
+        recommendation.predictedStockoutDate !== null
+          ? ` (predicted stockout: ${recommendation.predictedStockoutDate.toISOString()})`
+          : '';
       alerts.push({
         category: 'RESTOCK_RECOMMENDATION',
         severity: 'WARNING',
-        message: `Product ${recommendation.productId} in warehouse ${recommendation.warehouseId} needs ${recommendation.recommendedQuantity} more units (${recommendation.reason}): ${recommendation.explanation}`,
+        message:
+          `Product ${recommendation.productId} in warehouse ${recommendation.warehouseId} needs ${recommendation.recommendedQuantity} more units (${recommendation.reason}): ${recommendation.explanation}` +
+          stockoutDateSuffix,
         data: recommendation as unknown as Record<string, unknown>,
         referenceDate,
       });

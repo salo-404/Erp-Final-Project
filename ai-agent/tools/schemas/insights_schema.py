@@ -643,12 +643,17 @@ class DraftPurchaseOrderResponse(BaseModel):
 
 class RecommendedTransfer(BaseModel):
     destinationWarehouseId: int
+    destinationWarehouseName: Optional[str] = Field(
+        None, description="Real Warehouse.name for destinationWarehouseId - None only if the warehouse lookup itself failed to include it."
+    )
     quantity: int = Field(..., gt=0, description="Units proposed to move to this destination warehouse.")
 
 
 class DeadStockTransferRecommendation(BaseModel):
     productId: int
+    productName: Optional[str] = Field(None, description="Real Product.name for productId.")
     sourceWarehouseId: int
+    sourceWarehouseName: Optional[str] = Field(None, description="Real Warehouse.name for sourceWarehouseId.")
     onHand: int
     recommendedTransfers: list[RecommendedTransfer] = Field(
         default_factory=list,
@@ -710,6 +715,7 @@ class RecommendStockoutFixResponse(BaseModel):
     """
 
     productId: int
+    productName: Optional[str] = Field(None, description="Real Product.name for productId.")
     warehouseId: int
     warehouseName: Optional[str] = None
     action: StockoutFixAction
@@ -732,6 +738,7 @@ class RecommendAlternativeSupplierResponse(BaseModel):
     """
 
     productId: int
+    productName: Optional[str] = Field(None, description="Real Product.name for productId.")
     excludedSupplierId: int
     status: AlternativeSupplierStatus
     recommendedSupplier: Optional[SupplierScore] = None

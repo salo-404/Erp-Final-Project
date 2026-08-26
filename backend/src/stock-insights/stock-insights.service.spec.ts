@@ -1465,6 +1465,8 @@ describe('StockInsightsService.getRestockRecommendations', () => {
         avgDailyConsumption: 0,
         daysOfSupply: null,
         reason: 'purchase_required',
+        transferSourceWarehouseIds: [],
+        predictedStockoutDate: null,
         explanation:
           'No pending incoming stock and no warehouse surplus are available for this product, so a new purchase is required to reach the reorder threshold (10).',
       },
@@ -1526,7 +1528,7 @@ describe('StockInsightsService.getRestockRecommendations', () => {
     expect(result).toEqual([]);
   });
 
-  it("confirmed rule: reason is 'transfer_available' when another warehouse has surplus (reuses getTransferRecommendations, no donor-matching logic duplicated)", async () => {
+  it("confirmed rule: reason is 'transfer_available' when another warehouse has surplus (reuses getTransferRecommendations, no donor-matching logic duplicated), and names the actual donor warehouse", async () => {
     const { service, prisma } = buildService();
     prisma.warehouseInventory.findMany.mockResolvedValue([
       inventoryRow({
@@ -1551,7 +1553,44 @@ describe('StockInsightsService.getRestockRecommendations', () => {
         productId: 100,
         warehouseId: 10,
         reason: 'transfer_available',
+        transferSourceWarehouseIds: [20],
         explanation: expect.stringContaining('transfer') as string,
+      }),
+    ]);
+  });
+
+  it('confirmed rule: transferSourceWarehouseIds lists every donor, in order, when a deficit is split across more than one warehouse', async () => {
+    const { service, prisma } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({
+        productId: 100,
+        warehouseId: 10,
+        onHand: 0,
+        reorderThreshold: 20,
+      }), // deficit: need 20
+      inventoryRow({
+        productId: 100,
+        warehouseId: 20,
+        onHand: 25,
+        reorderThreshold: 10,
+      }), // donatable: 15
+      inventoryRow({
+        productId: 100,
+        warehouseId: 30,
+        onHand: 20,
+        reorderThreshold: 10,
+      }), // donatable: 10
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+
+    const result = await service.getRestockRecommendations(30, NOW);
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        productId: 100,
+        warehouseId: 10,
+        reason: 'transfer_available',
+        transferSourceWarehouseIds: [20, 30],
       }),
     ]);
   });
@@ -1999,7 +2038,6 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
 
     expect(result.map((a) => [a.category, a.severity])).toEqual([
       ['STOCKOUT_RISK', 'CRITICAL'],
-      ['STOCKOUT_RISK', 'CRITICAL'],
       ['DEAD_STOCK', 'WARNING'],
       ['OVERDUE_TRANSACTION', 'WARNING'],
       ['CONSUMPTION_ANOMALY', 'INFO'],
@@ -2007,6 +2045,11 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
     ]);
     // The OK stockout-risk entry (productId 4) must never surface as an alert.
     expect(result.some((a) => a.data.productId === 4)).toBe(false);
+    // The AT_RISK entry (productId 5) is RESTOCK_RECOMMENDATION's territory,
+    // not STOCKOUT_RISK's — and getRestockRecommendations is mocked empty
+    // here (isolated from its own decision logic), so it must produce no
+    // alert at all in this test, not a STOCKOUT_RISK one.
+    expect(result.some((a) => a.data.productId === 5)).toBe(false);
     expect(result.every((a) => a.referenceDate === NOW)).toBe(true);
     const deadStockAlert = result.find((a) => a.category === 'DEAD_STOCK');
     expect(deadStockAlert?.message).toContain(
@@ -2015,7 +2058,7 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
     expect(deadStockAlert?.message).not.toContain('2 days');
   });
 
-  it('confirmed rule: AT_RISK stockout entries are CRITICAL, not WARNING', async () => {
+  it('confirmed rule: an AT_RISK stockout entry never produces a STOCKOUT_RISK alert — that is RESTOCK_RECOMMENDATION\'s territory instead', async () => {
     const { service, getOverdueTransactions, getPendingReviews } =
       buildService();
     jest.spyOn(service, 'getDeadStock').mockResolvedValue([]);
@@ -2037,6 +2080,10 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
         predictedStockoutDate: null,
       },
     ]);
+    // Isolated from getRestockRecommendations()'s own decision logic (see
+    // the exclusivity test below for the full round-trip) — empty here
+    // proves the AT_RISK entry produces NO alert on its own, not that it
+    // silently becomes a STOCKOUT_RISK one.
     jest.spyOn(service, 'getRestockRecommendations').mockResolvedValue([]);
     jest.spyOn(service, 'getTransferRecommendations').mockResolvedValue([]);
     getOverdueTransactions.mockResolvedValue([]);
@@ -2044,12 +2091,83 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
 
     const result = await service.getControlTowerAlerts({}, NOW);
 
-    expect(result).toEqual([
-      expect.objectContaining({
-        category: 'STOCKOUT_RISK',
-        severity: 'CRITICAL',
-      }),
+    expect(result).toEqual([]);
+  });
+
+  it('confirmed rule: STOCKOUT_RISK and RESTOCK_RECOMMENDATION never both fire for the same product/warehouse — CRITICAL only when available <= 0, WARNING only when 0 < available < reorderThreshold', async () => {
+    const { service, getOverdueTransactions, getPendingReviews } =
+      buildService();
+    jest.spyOn(service, 'getDeadStock').mockResolvedValue([]);
+    jest.spyOn(service, 'getConsumptionAnomalies').mockResolvedValue([]);
+    jest.spyOn(service, 'getStockoutRisk').mockResolvedValue([
+      {
+        // Genuinely out of stock — CRITICAL STOCKOUT_RISK only.
+        productId: 1,
+        warehouseId: 10,
+        onHand: 0,
+        activeReserved: 0,
+        available: 0,
+        reorderThreshold: 5,
+        riskLevel: 'OUT_OF_STOCK',
+        pendingIncomingQuantity: 0,
+        projectedAvailable: 0,
+        projectedRiskLevel: 'OUT_OF_STOCK',
+        avgDailyConsumption: 1,
+        daysOfSupply: 0,
+        predictedStockoutDate: NOW,
+      },
+      {
+        // Still holding stock but below threshold — WARNING RESTOCK_RECOMMENDATION only.
+        productId: 2,
+        warehouseId: 10,
+        onHand: 3,
+        activeReserved: 0,
+        available: 3,
+        reorderThreshold: 10,
+        riskLevel: 'AT_RISK',
+        pendingIncomingQuantity: 0,
+        projectedAvailable: 3,
+        projectedRiskLevel: 'AT_RISK',
+        avgDailyConsumption: 1,
+        daysOfSupply: 3,
+        predictedStockoutDate: new Date('2026-06-05T00:00:00.000Z'),
+      },
     ]);
+    jest.spyOn(service, 'getRestockRecommendations').mockResolvedValue([
+      {
+        productId: 2,
+        warehouseId: 10,
+        available: 3,
+        pendingIncomingQuantity: 0,
+        projectedAvailable: 3,
+        reorderThreshold: 10,
+        riskLevel: 'AT_RISK',
+        projectedRiskLevel: 'AT_RISK',
+        recommendedQuantity: 7,
+        avgDailyConsumption: 1,
+        daysOfSupply: 3,
+        reason: 'purchase_required',
+        transferSourceWarehouseIds: [],
+        predictedStockoutDate: new Date('2026-06-05T00:00:00.000Z'),
+        explanation: 'A purchase is required.',
+      },
+    ]);
+    jest.spyOn(service, 'getTransferRecommendations').mockResolvedValue([]);
+    getOverdueTransactions.mockResolvedValue([]);
+    getPendingReviews.mockResolvedValue([]);
+
+    const result = await service.getControlTowerAlerts({}, NOW);
+
+    expect(result.map((a) => [a.category, a.severity, a.data.productId])).toEqual([
+      ['STOCKOUT_RISK', 'CRITICAL', 1],
+      ['RESTOCK_RECOMMENDATION', 'WARNING', 2],
+    ]);
+    // Never both categories for the same product/warehouse.
+    expect(result.filter((a) => a.data.productId === 1)).toHaveLength(1);
+    expect(result.filter((a) => a.data.productId === 2)).toHaveLength(1);
+    // Non-null predictedStockoutDate is surfaced in the restock message; never invented.
+    const restockAlert = result.find((a) => a.category === 'RESTOCK_RECOMMENDATION');
+    expect(restockAlert?.message).toContain('predicted stockout: 2026-06-05');
   });
 
   it('promotes restock/transfer recommendations to alerts', async () => {
@@ -2072,6 +2190,8 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
         avgDailyConsumption: 0,
         daysOfSupply: null,
         reason: 'purchase_required',
+        transferSourceWarehouseIds: [],
+        predictedStockoutDate: null,
         explanation: 'A purchase is required.',
       },
     ]);
@@ -2100,6 +2220,9 @@ describe('StockInsightsService.getControlTowerAlerts', () => {
       ['TRANSFER_RECOMMENDATION', 3],
     ]);
     expect(result.every((a) => a.severity === 'WARNING')).toBe(true);
+    // predictedStockoutDate is null here — must never be invented into the message.
+    const restockAlert = result.find((a) => a.category === 'RESTOCK_RECOMMENDATION');
+    expect(restockAlert?.message).not.toContain('predicted stockout');
   });
 
   it('passes options through to the underlying calculations', async () => {

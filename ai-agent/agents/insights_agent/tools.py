@@ -1164,6 +1164,17 @@ async def recommend_dead_stock_transfer() -> dict:
         lookup failed - never fabricate a result.
     """
     client = get_backend_client()
+
+    # Real names for the user-facing narration this feeds (Control Tower
+    # "Recommend Solution" - see narration/control_tower_recommendation.py).
+    # _compute_recommended_transfers()/_qualifying_warehouses_by_recency()
+    # stay id-only pure functions (unchanged, still unit-tested directly on
+    # ids) - names are attached here, once, after the real calculation.
+    products = await client.get("/products")
+    product_names = {product["id"]: product["name"] for product in products}
+    warehouses = await client.get("/warehouses")
+    warehouse_names = {warehouse["id"]: warehouse["name"] for warehouse in warehouses}
+
     dead_stock_entries = await client.get("/stock-insights/dead-stock")
     date_from = datetime.now() - timedelta(days=_DEAD_STOCK_TRANSFER_LOOKBACK_DAYS)
 
@@ -1179,6 +1190,10 @@ async def recommend_dead_stock_transfer() -> dict:
         )
         qualifying_warehouses = _qualifying_warehouses_by_recency(movements, entry["warehouseId"])
         transfers = _compute_recommended_transfers(entry["onHand"], qualifying_warehouses)
+        named_transfers = [
+            {**transfer, "destinationWarehouseName": warehouse_names.get(transfer["destinationWarehouseId"])}
+            for transfer in transfers
+        ]
         reason = _build_dead_stock_transfer_reason(
             days_since_last_outgoing=entry["daysSinceLastOutgoingMovement"],
             qualifying_count=len(qualifying_warehouses),
@@ -1188,9 +1203,11 @@ async def recommend_dead_stock_transfer() -> dict:
         recommendations.append(
             {
                 "productId": entry["productId"],
+                "productName": product_names.get(entry["productId"]),
                 "sourceWarehouseId": entry["warehouseId"],
+                "sourceWarehouseName": warehouse_names.get(entry["warehouseId"]),
                 "onHand": entry["onHand"],
-                "recommendedTransfers": transfers,
+                "recommendedTransfers": named_transfers,
                 "reason": reason,
             }
         )
@@ -1235,6 +1252,8 @@ async def recommend_stockout_fix(product_id: int, warehouse_id: int) -> dict:
     dead_stock_entries = await client.get("/stock-insights/dead-stock")
     warehouses = await client.get("/warehouses")
     warehouse_names = {w["id"]: w["name"] for w in warehouses}
+    products = await client.get("/products")
+    product_names = {p["id"]: p["name"] for p in products}
 
     donor_candidates = [
         entry
@@ -1247,7 +1266,12 @@ async def recommend_stockout_fix(product_id: int, warehouse_id: int) -> dict:
         quantity = donor["onHand"] // 2
 
         if quantity > 0:
-            donor_name = warehouse_names.get(donor["warehouseId"], f"warehouse {donor['warehouseId']}")
+            # Falls back to a role description, never the raw id - this
+            # reason string is itself fed to the narration model as part of
+            # the evidence JSON (see narration/control_tower_recommendation.py),
+            # so a bare "warehouse 14" here would leak straight into the
+            # user-facing recommendation text.
+            donor_name = warehouse_names.get(donor["warehouseId"], "the source warehouse")
             staleness = (
                 "has never had a recorded sale of this product"
                 if donor["daysSinceLastOutgoingMovement"] is None
@@ -1256,6 +1280,7 @@ async def recommend_stockout_fix(product_id: int, warehouse_id: int) -> dict:
             return RecommendStockoutFixResponse.model_validate(
                 {
                     "productId": product_id,
+                    "productName": product_names.get(product_id),
                     "warehouseId": warehouse_id,
                     "warehouseName": warehouse_names.get(warehouse_id),
                     "action": "transfer_in",
@@ -1280,6 +1305,7 @@ async def recommend_stockout_fix(product_id: int, warehouse_id: int) -> dict:
         return RecommendStockoutFixResponse.model_validate(
             {
                 "productId": product_id,
+                "productName": product_names.get(product_id),
                 "warehouseId": warehouse_id,
                 "warehouseName": warehouse_names.get(warehouse_id),
                 "action": "order_from_supplier",
@@ -1296,6 +1322,7 @@ async def recommend_stockout_fix(product_id: int, warehouse_id: int) -> dict:
     return RecommendStockoutFixResponse.model_validate(
         {
             "productId": product_id,
+            "productName": product_names.get(product_id),
             "warehouseId": warehouse_id,
             "warehouseName": warehouse_names.get(warehouse_id),
             "action": "no_solution",
@@ -1337,6 +1364,9 @@ async def recommend_alternative_supplier(product_id: int, exclude_supplier_id: i
         fails. Deliberately NOT caught/swallowed here - same pattern as
         every other wired tool in this file.
     """
+    products = await get_backend_client().get("/products")
+    product_names = {p["id"]: p["name"] for p in products}
+
     supplier_comparison = await compare_suppliers(product_id)
     remaining_ranked = [
         score
@@ -1348,6 +1378,7 @@ async def recommend_alternative_supplier(product_id: int, exclude_supplier_id: i
         return RecommendAlternativeSupplierResponse.model_validate(
             {
                 "productId": product_id,
+                "productName": product_names.get(product_id),
                 "excludedSupplierId": exclude_supplier_id,
                 "status": "no_alternative",
                 "recommendedSupplier": None,
@@ -1360,6 +1391,7 @@ async def recommend_alternative_supplier(product_id: int, exclude_supplier_id: i
     return RecommendAlternativeSupplierResponse.model_validate(
         {
             "productId": product_id,
+            "productName": product_names.get(product_id),
             "excludedSupplierId": exclude_supplier_id,
             "status": "alternative_recommended",
             "recommendedSupplier": best_alternative,

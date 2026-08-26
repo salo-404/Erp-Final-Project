@@ -588,6 +588,21 @@ def test_recommend_dead_stock_transfer_wired_end_to_end_against_mocked_backend(
                 )
             return httpx.Response(200, json=[])  # productId 990/991: nobody else sold it
 
+        if request.url.path == "/products":
+            return httpx.Response(200, json=[
+                {"id": 501, "name": "Wireless Mouse", "category": None, "description": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+                {"id": 990, "name": "Standing Desk Lamp", "category": None, "description": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+                {"id": 991, "name": "USB-C Hub", "category": None, "description": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+            ])
+
+        if request.url.path == "/warehouses":
+            return httpx.Response(200, json=[
+                {"id": 1, "name": "Beirut Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+                {"id": 3, "name": "Saida Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+                {"id": 5, "name": "Tripoli Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+                {"id": 6, "name": "Zahle Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+            ])
+
         raise AssertionError(f"unexpected path {request.url.path}")
 
     _patch_backend_client(monkeypatch, handler)
@@ -595,10 +610,18 @@ def test_recommend_dead_stock_transfer_wired_end_to_end_against_mocked_backend(
     result = asyncio.run(recommend_dead_stock_transfer())
 
     by_product = {rec["productId"]: rec for rec in result["recommendations"]}
+    assert by_product[501]["productName"] == "Wireless Mouse"
     assert by_product[501]["sourceWarehouseId"] == 3
-    assert by_product[501]["recommendedTransfers"] == [{"destinationWarehouseId": 1, "quantity": 50}]
+    assert by_product[501]["sourceWarehouseName"] == "Saida Warehouse"
+    assert by_product[501]["recommendedTransfers"] == [
+        {"destinationWarehouseId": 1, "destinationWarehouseName": "Beirut Warehouse", "quantity": 50}
+    ]
+    assert by_product[990]["productName"] == "Standing Desk Lamp"
+    assert by_product[990]["sourceWarehouseName"] == "Tripoli Warehouse"
     assert by_product[990]["recommendedTransfers"] == []
     assert "no transfer destination available" in by_product[990]["reason"]
+    assert by_product[991]["productName"] == "USB-C Hub"
+    assert by_product[991]["sourceWarehouseName"] == "Zahle Warehouse"
     assert by_product[991]["recommendedTransfers"] == []
     assert "never had a recorded sale" in by_product[991]["reason"]
     assert "None" not in by_product[991]["reason"], "must never render the null day-count literally"
@@ -701,6 +724,10 @@ def test_recommend_stockout_fix_transfers_in_from_dead_stock_warehouse(monkeypat
                 {"id": 2, "name": "Beirut Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
                 {"id": 3, "name": "Saida Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
             ])
+        if request.url.path == "/products":
+            return httpx.Response(200, json=[
+                {"id": 75, "name": "Mechanical Keyboard", "category": None, "description": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+            ])
         raise AssertionError(f"unexpected path {request.url.path}")
 
     _patch_backend_client(monkeypatch, handler)
@@ -710,6 +737,7 @@ def test_recommend_stockout_fix_transfers_in_from_dead_stock_warehouse(monkeypat
     assert "/suppliers" not in requested_paths
     assert "/supplier-intelligence/rank" not in requested_paths
     assert result["action"] == "transfer_in"
+    assert result["productName"] == "Mechanical Keyboard"
     assert result["supplierRecommendation"] is None
     # Warehouse 2 has the most onHand (40 > 4) among qualifying donors for
     # product 75 - product 999's dead-stock entry must never be considered.
@@ -735,6 +763,10 @@ def test_recommend_stockout_fix_falls_back_to_supplier_when_no_donor_qualifies(m
             return httpx.Response(200, json=[{"id": 7, "name": "Acme Supply Co", "email": None, "leadTimeDays": 5, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"}])
         if request.url.path == "/supplier-intelligence/rank":
             return httpx.Response(200, json=[_supplier_rank_entry(7, "Acme Supply Co", 75, rank=1, score=88.5)])
+        if request.url.path == "/products":
+            return httpx.Response(200, json=[
+                {"id": 75, "name": "Mechanical Keyboard", "category": None, "description": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+            ])
         raise AssertionError(f"unexpected path {request.url.path}")
 
     _patch_backend_client(monkeypatch, handler)
@@ -742,6 +774,7 @@ def test_recommend_stockout_fix_falls_back_to_supplier_when_no_donor_qualifies(m
     result = asyncio.run(recommend_stockout_fix(product_id=75, warehouse_id=1))
 
     assert result["action"] == "order_from_supplier"
+    assert result["productName"] == "Mechanical Keyboard"
     assert result["transfer"] is None
     assert result["supplierRecommendation"]["supplierId"] == 7
     assert result["supplierRecommendation"]["supplierName"] == "Acme Supply Co"
@@ -760,6 +793,10 @@ def test_recommend_stockout_fix_reports_no_solution_honestly(monkeypatch: pytest
             return httpx.Response(200, json=[{"id": 7, "name": "Acme Supply Co", "email": None, "leadTimeDays": 5, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"}])
         if request.url.path == "/supplier-intelligence/rank":
             return httpx.Response(200, json=[_supplier_rank_entry(7, "Acme Supply Co", 75, rank=1, score=0.0, insufficient=True)])
+        if request.url.path == "/products":
+            return httpx.Response(200, json=[
+                {"id": 75, "name": "Mechanical Keyboard", "category": None, "description": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+            ])
         raise AssertionError(f"unexpected path {request.url.path}")
 
     _patch_backend_client(monkeypatch, handler)
@@ -767,6 +804,7 @@ def test_recommend_stockout_fix_reports_no_solution_honestly(monkeypatch: pytest
     result = asyncio.run(recommend_stockout_fix(product_id=75, warehouse_id=1))
 
     assert result["action"] == "no_solution"
+    assert result["productName"] == "Mechanical Keyboard"
     assert result["transfer"] is None
     assert result["supplierRecommendation"] is None
 
@@ -787,6 +825,10 @@ def test_recommend_alternative_supplier_excludes_the_original_supplier(monkeypat
                 _supplier_rank_entry(7, "Acme Supply Co", 102, rank=1, score=88.5),
                 _supplier_rank_entry(9, "Budget Parts Ltd", 102, rank=2, score=62.0),
             ])
+        if request.url.path == "/products":
+            return httpx.Response(200, json=[
+                {"id": 102, "name": "Laptop Pro 14", "category": None, "description": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+            ])
         raise AssertionError(f"unexpected path {request.url.path}")
 
     _patch_backend_client(monkeypatch, handler)
@@ -794,6 +836,7 @@ def test_recommend_alternative_supplier_excludes_the_original_supplier(monkeypat
     result = asyncio.run(recommend_alternative_supplier(product_id=102, exclude_supplier_id=7))
 
     assert result["status"] == "alternative_recommended"
+    assert result["productName"] == "Laptop Pro 14"
     assert result["recommendedSupplier"]["supplierId"] == 9
     assert result["excludedSupplierId"] == 7
 
@@ -807,6 +850,10 @@ def test_recommend_alternative_supplier_reports_no_alternative_honestly(monkeypa
             return httpx.Response(200, json=[{"id": 7, "name": "Acme Supply Co", "email": None, "leadTimeDays": 5, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"}])
         if request.url.path == "/supplier-intelligence/rank":
             return httpx.Response(200, json=[_supplier_rank_entry(7, "Acme Supply Co", 102, rank=1, score=88.5)])
+        if request.url.path == "/products":
+            return httpx.Response(200, json=[
+                {"id": 102, "name": "Laptop Pro 14", "category": None, "description": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
+            ])
         raise AssertionError(f"unexpected path {request.url.path}")
 
     _patch_backend_client(monkeypatch, handler)
@@ -814,6 +861,7 @@ def test_recommend_alternative_supplier_reports_no_alternative_honestly(monkeypa
     result = asyncio.run(recommend_alternative_supplier(product_id=102, exclude_supplier_id=7))
 
     assert result["status"] == "no_alternative"
+    assert result["productName"] == "Laptop Pro 14"
     assert result["recommendedSupplier"] is None
 
 

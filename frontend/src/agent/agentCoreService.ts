@@ -109,6 +109,19 @@ async function* agentCoreSendMessage(params: AgentSendMessageParams): AsyncGener
       streamed += event.text;
       yield { type: "token", token: event.text };
     } else if (event.type === "tool_status" && event.label) {
+      // A tool call arriving AFTER some text already streamed means the
+      // model abandoned that partial answer to start a fresh tool-calling
+      // round (a real, observed behavior of this model — see
+      // narration/control_tower_recommendation.py's own docstring for the
+      // same model doing this elsewhere). It never resumes the old text;
+      // it generates an entirely new answer once the tool result comes
+      // back. Forwarding both halves concatenated is what makes the UI
+      // look like the response "restarts" mid-stream — so the abandoned
+      // draft is discarded here, not just visually hidden.
+      if (streamed) {
+        streamed = "";
+        yield { type: "reset" };
+      }
       yield { type: "status", status: event.label };
     } else if (event.type === "error") {
       yield { type: "error", error: event.message ?? "The assistant hit an unexpected error." };
