@@ -338,8 +338,39 @@ export const DOCUMENT_SEMANTIC_MATCH_PROVIDER = Symbol(
   'DOCUMENT_SEMANTIC_MATCH_PROVIDER',
 );
 
+/**
+ * A brand-new product to create ATOMICALLY as part of this approval — never
+ * created ahead of time (see ApproveDocumentReviewItemInput's own
+ * docstring). category is grounded in the reviewer's own choice (often
+ * pre-filled from the Document agent's category hint — see
+ * DocumentReviewPage.tsx's categoryHintFromSearch() — but always editable
+ * and never trusted blindly here either: re-validated against the real
+ * category value the reviewer actually submitted, nothing invented).
+ */
+export interface NewProductDefinition {
+  name: string;
+  category?: string | null;
+}
+
 export interface ApproveDocumentReviewItemInput {
-  productId: number;
+  /**
+   * Set when this line resolves to an EXISTING product — mutually
+   * exclusive with newProduct. At least one of the two must be set;
+   * approve() rejects a line with neither (see resolveApprovalItems()).
+   */
+  productId?: number;
+  /**
+   * Set when this line defines a brand-new product instead — ONLY valid
+   * for an INCOMING review (an OUTGOING/TRANSFER line can never define
+   * one: shipping something that was never in the catalog makes no sense,
+   * and resolveProduct() itself has no "create" path there — see
+   * ResolveSearchInput's noMatchAlert). Never created until approve()
+   * actually runs, inside the SAME transaction as the rest of the
+   * approval — a duplicate name or any other failure elsewhere in the
+   * batch rolls the new product back too, exactly like everything else
+   * approve() does.
+   */
+  newProduct?: NewProductDefinition;
   quantity: number;
   price?: number;
 }
@@ -348,7 +379,8 @@ export interface ApproveDocumentReviewItemInput {
  * The reviewer's CONFIRMED values — not the raw extractedX strings on the
  * review row. Matching (resolveProduct/resolveSupplier) only ever produces
  * suggestions; approve() requires the reviewer to have already turned those
- * suggestions into real IDs.
+ * suggestions into real IDs, or — for a genuinely new INCOMING product —
+ * a real newProduct definition (see ApproveDocumentReviewItemInput above).
  */
 export interface ApproveDocumentReviewInput {
   reviewedById: number;
@@ -927,7 +959,11 @@ export class DocumentReviewService {
       where: { id },
     });
 
-    const items: TransactionItemInput[] = input.items;
+    const items: TransactionItemInput[] = await this.resolveApprovalItems(
+      tx,
+      input.items,
+      review.transactionType,
+    );
     let transactionId: number;
 
     switch (review.transactionType) {
@@ -994,6 +1030,83 @@ export class DocumentReviewService {
       where: { id },
       include: { transaction: { include: { items: true } }, reviewedBy: true },
     });
+  }
+
+  /**
+   * Turns each ApproveDocumentReviewItemInput into a real
+   * TransactionItemInput — resolving an existing productId as-is, or
+   * creating a brand-new Product row for a newProduct definition, INSIDE
+   * this same transaction so InventoryTransactionsService's own validation
+   * (or a later item in this same batch) rolling the whole approval back
+   * rolls the new product(s) back too. Never called outside approveWithClient's
+   * own transaction.
+   *
+   * Only an INCOMING review's lines may define a newProduct — an
+   * OUTGOING/TRANSFER line without a productId is rejected outright
+   * (there's no "create it" path for stock you're shipping out that was
+   * never in the catalog). Rejects a name that exactly (case-insensitively)
+   * matches an already-active product, or that's defined more than once
+   * within this same approval batch — "exact" only, never a fuzzy check,
+   * so a genuinely different but similarly-worded product is never blocked.
+   */
+  private async resolveApprovalItems(
+    tx: Prisma.TransactionClient,
+    items: ApproveDocumentReviewItemInput[],
+    transactionType: InventoryTransactionType,
+  ): Promise<TransactionItemInput[]> {
+    const namesClaimedThisApproval = new Set<string>();
+    const resolved: TransactionItemInput[] = [];
+
+    for (const item of items) {
+      if (item.productId !== undefined) {
+        resolved.push({
+          productId: item.productId,
+          quantity: item.quantity,
+          price: item.price,
+        });
+        continue;
+      }
+
+      if (transactionType !== InventoryTransactionType.INCOMING) {
+        throw new BadRequestException(
+          'Every line item must reference an existing product for a non-INCOMING review',
+        );
+      }
+      if (!item.newProduct || !item.newProduct.name.trim()) {
+        throw new BadRequestException(
+          'Every line item must reference an existing product or define a new one',
+        );
+      }
+
+      const name = item.newProduct.name.trim();
+      const normalizedName = name.toLowerCase();
+      if (namesClaimedThisApproval.has(normalizedName)) {
+        throw new ConflictException(
+          `"${name}" is defined as a new product on more than one line in this approval`,
+        );
+      }
+
+      const existing = await tx.product.findFirst({
+        where: { name: { equals: name, mode: 'insensitive' }, isActive: true },
+        select: { id: true },
+      });
+      if (existing) {
+        throw new ConflictException(`A product named "${name}" already exists`);
+      }
+
+      const category = item.newProduct.category?.trim();
+      const created = await tx.product.create({
+        data: { name, category: category || null, isActive: true },
+      });
+      namesClaimedThisApproval.add(normalizedName);
+      resolved.push({
+        productId: created.id,
+        quantity: item.quantity,
+        price: item.price,
+      });
+    }
+
+    return resolved;
   }
 
   private async rejectWithClient(

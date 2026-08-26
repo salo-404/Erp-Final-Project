@@ -4,6 +4,7 @@ import {
   IsArray,
   IsDate,
   IsInt,
+  IsNotEmpty,
   IsOptional,
   IsPositive,
   IsString,
@@ -11,10 +12,39 @@ import {
   ValidateNested,
 } from 'class-validator';
 
+/**
+ * A brand-new product to create atomically with approval — see
+ * ApproveDocumentReviewItemInput's own docstring in document-review.service.ts.
+ * Only structural validation here; DocumentReviewService.resolveApprovalItems()
+ * is what actually enforces the transactionType restriction, the exact-
+ * duplicate check, and that a line has exactly one resolution path.
+ */
+export class NewProductDefinitionDto {
+  @IsString()
+  @IsNotEmpty()
+  name: string;
+
+  @IsOptional()
+  @IsString()
+  category?: string;
+}
+
 export class ApproveDocumentReviewItemDto {
+  /**
+   * Set when this line resolves to an existing product. Mutually exclusive
+   * with newProduct — a line must supply exactly one; the service layer
+   * rejects both missing or both present.
+   */
+  @IsOptional()
   @IsInt()
   @IsPositive()
-  productId: number;
+  productId?: number;
+
+  /** Set instead of productId for a brand-new INCOMING product — see NewProductDefinitionDto. */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => NewProductDefinitionDto)
+  newProduct?: NewProductDefinitionDto;
 
   @IsInt()
   @IsPositive()

@@ -30,6 +30,12 @@ function createMockTx() {
       findUniqueOrThrow: jest.fn(),
       update: jest.fn(),
     },
+    // Only touched by resolveApprovalItems() for a newProduct line — see
+    // the DocumentReviewService.approve newProduct tests below.
+    product: {
+      findFirst: jest.fn(),
+      create: jest.fn(),
+    },
   };
 }
 
@@ -528,6 +534,208 @@ describe('DocumentReviewService.approve', () => {
       tx,
     );
     expect(createIncoming).not.toHaveBeenCalled();
+  });
+
+  it('creates a brand-new product atomically for an INCOMING newProduct line, then uses its real id in createIncoming()', async () => {
+    const tx = createMockTx();
+    const { service, createIncoming } = buildService(tx);
+    tx.pendingDocumentReview.updateMany.mockResolvedValue({ count: 1 });
+    tx.pendingDocumentReview.findUniqueOrThrow.mockResolvedValueOnce({
+      id: 1,
+      transactionType: 'INCOMING',
+      documentUrl: 'https://s3.example.com/doc-1.pdf',
+    });
+    tx.pendingDocumentReview.findUniqueOrThrow.mockResolvedValueOnce({
+      id: 1,
+      status: 'APPROVED',
+      transactionId: 501,
+    });
+    tx.product.findFirst.mockResolvedValue(null);
+    tx.product.create.mockResolvedValue({ id: 777, name: 'USB-C Hub', category: 'Accessories' });
+
+    const input: ApproveDocumentReviewInput = {
+      reviewedById: 9,
+      supplierId: 1,
+      destinationWarehouseId: 10,
+      items: [
+        { productId: 100, quantity: 5, price: 10 },
+        { newProduct: { name: 'USB-C Hub', category: 'Accessories' }, quantity: 3, price: 15 },
+      ],
+    };
+
+    await service.approve(1, input);
+
+    expect(tx.product.findFirst).toHaveBeenCalledWith({
+      where: { name: { equals: 'USB-C Hub', mode: 'insensitive' }, isActive: true },
+      select: { id: true },
+    });
+    expect(tx.product.create).toHaveBeenCalledWith({
+      data: { name: 'USB-C Hub', category: 'Accessories', isActive: true },
+    });
+    expect(createIncoming).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          { productId: 100, quantity: 5, price: 10 },
+          { productId: 777, quantity: 3, price: 15 },
+        ],
+      }),
+      tx,
+    );
+  });
+
+  it('trims the new-product name/category and stores a null category when none was given', async () => {
+    const tx = createMockTx();
+    const { service, createIncoming } = buildService(tx);
+    tx.pendingDocumentReview.updateMany.mockResolvedValue({ count: 1 });
+    tx.pendingDocumentReview.findUniqueOrThrow.mockResolvedValueOnce({
+      id: 1,
+      transactionType: 'INCOMING',
+      documentUrl: 'https://s3.example.com/doc-1.pdf',
+    });
+    tx.pendingDocumentReview.findUniqueOrThrow.mockResolvedValueOnce({
+      id: 1,
+      status: 'APPROVED',
+      transactionId: 501,
+    });
+    tx.product.findFirst.mockResolvedValue(null);
+    tx.product.create.mockResolvedValue({ id: 778, name: 'Desk Lamp', category: null });
+
+    await service.approve(1, {
+      reviewedById: 9,
+      supplierId: 1,
+      destinationWarehouseId: 10,
+      items: [{ newProduct: { name: '  Desk Lamp  ' }, quantity: 1, price: 20 }],
+    });
+
+    expect(tx.product.create).toHaveBeenCalledWith({
+      data: { name: 'Desk Lamp', category: null, isActive: true },
+    });
+    expect(createIncoming).toHaveBeenCalledWith(
+      expect.objectContaining({ items: [{ productId: 778, quantity: 1, price: 20 }] }),
+      tx,
+    );
+  });
+
+  it('rejects an INCOMING newProduct whose name exactly (case-insensitively) matches an already-active product, and never creates it', async () => {
+    const tx = createMockTx();
+    const { service, createIncoming } = buildService(tx);
+    tx.pendingDocumentReview.updateMany.mockResolvedValue({ count: 1 });
+    tx.pendingDocumentReview.findUniqueOrThrow.mockResolvedValue({
+      id: 1,
+      transactionType: 'INCOMING',
+      documentUrl: 'https://s3.example.com/doc-1.pdf',
+    });
+    tx.product.findFirst.mockResolvedValue({ id: 42 });
+
+    await expect(
+      service.approve(1, {
+        reviewedById: 9,
+        supplierId: 1,
+        destinationWarehouseId: 10,
+        items: [{ newProduct: { name: 'usb-c hub' }, quantity: 1 }],
+      }),
+    ).rejects.toThrow('A product named "usb-c hub" already exists');
+
+    expect(tx.product.create).not.toHaveBeenCalled();
+    expect(createIncoming).not.toHaveBeenCalled();
+    expect(tx.pendingDocumentReview.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects two lines in the same approval defining the same new product name, and never creates either', async () => {
+    const tx = createMockTx();
+    const { service, createIncoming } = buildService(tx);
+    tx.pendingDocumentReview.updateMany.mockResolvedValue({ count: 1 });
+    tx.pendingDocumentReview.findUniqueOrThrow.mockResolvedValue({
+      id: 1,
+      transactionType: 'INCOMING',
+      documentUrl: 'https://s3.example.com/doc-1.pdf',
+    });
+    tx.product.findFirst.mockResolvedValue(null);
+    tx.product.create.mockResolvedValue({ id: 777, name: 'USB-C Hub' });
+
+    await expect(
+      service.approve(1, {
+        reviewedById: 9,
+        supplierId: 1,
+        destinationWarehouseId: 10,
+        items: [
+          { newProduct: { name: 'USB-C Hub' }, quantity: 1 },
+          { newProduct: { name: 'usb-c hub' }, quantity: 2 },
+        ],
+      }),
+    ).rejects.toThrow('"usb-c hub" is defined as a new product on more than one line in this approval');
+
+    expect(createIncoming).not.toHaveBeenCalled();
+    expect(tx.pendingDocumentReview.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects an INCOMING line with neither an existing product nor a new-product definition', async () => {
+    const tx = createMockTx();
+    const { service, createIncoming } = buildService(tx);
+    tx.pendingDocumentReview.updateMany.mockResolvedValue({ count: 1 });
+    tx.pendingDocumentReview.findUniqueOrThrow.mockResolvedValue({
+      id: 1,
+      transactionType: 'INCOMING',
+      documentUrl: 'https://s3.example.com/doc-1.pdf',
+    });
+
+    await expect(
+      service.approve(1, {
+        reviewedById: 9,
+        supplierId: 1,
+        destinationWarehouseId: 10,
+        items: [{ quantity: 1 }],
+      }),
+    ).rejects.toThrow('Every line item must reference an existing product or define a new one');
+
+    expect(createIncoming).not.toHaveBeenCalled();
+  });
+
+  it('rejects an INCOMING newProduct with a blank/whitespace-only name', async () => {
+    const tx = createMockTx();
+    const { service, createIncoming } = buildService(tx);
+    tx.pendingDocumentReview.updateMany.mockResolvedValue({ count: 1 });
+    tx.pendingDocumentReview.findUniqueOrThrow.mockResolvedValue({
+      id: 1,
+      transactionType: 'INCOMING',
+      documentUrl: 'https://s3.example.com/doc-1.pdf',
+    });
+
+    await expect(
+      service.approve(1, {
+        reviewedById: 9,
+        supplierId: 1,
+        destinationWarehouseId: 10,
+        items: [{ newProduct: { name: '   ' }, quantity: 1 }],
+      }),
+    ).rejects.toThrow('Every line item must reference an existing product or define a new one');
+
+    expect(createIncoming).not.toHaveBeenCalled();
+    expect(tx.product.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an OUTGOING line with no productId even if a newProduct definition was supplied — no create-path for a non-INCOMING review', async () => {
+    const tx = createMockTx();
+    const { service, createOutgoing } = buildService(tx);
+    tx.pendingDocumentReview.updateMany.mockResolvedValue({ count: 1 });
+    tx.pendingDocumentReview.findUniqueOrThrow.mockResolvedValue({
+      id: 2,
+      transactionType: 'OUTGOING',
+      documentUrl: 'https://s3.example.com/doc-2.pdf',
+    });
+
+    await expect(
+      service.approve(2, {
+        reviewedById: 9,
+        sourceWarehouseId: 10,
+        items: [{ newProduct: { name: 'Ghost Product' }, quantity: 1 }],
+      }),
+    ).rejects.toThrow(
+      'Every line item must reference an existing product for a non-INCOMING review',
+    );
+
+    expect(tx.product.create).not.toHaveBeenCalled();
+    expect(createOutgoing).not.toHaveBeenCalled();
   });
 
   it('rejects approving an INCOMING review missing supplierId/destinationWarehouseId', async () => {

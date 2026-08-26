@@ -308,24 +308,32 @@ def test_validate_verdict_rejects_no_match_with_candidates() -> None:
         _validate(verdict, real_ids={73})
 
 
-def test_validate_verdict_rejects_recommendation_outside_no_match() -> None:
+def test_validate_verdict_strips_a_recommendation_attached_outside_no_match_instead_of_rejecting() -> None:
+    # A recommendation is purely advisory extra data - it never drives the
+    # match decision - so a model that attaches one to an otherwise
+    # well-reasoned UNRESOLVED verdict shouldn't have its real, correct
+    # candidates thrown away over that one extraneous field. See the
+    # comment on this check in matching_agent.py for the full reasoning.
     verdict = DocumentAgentMatchVerdict(
         status="UNRESOLVED",
         candidates=[DocumentAgentMatchCandidate(id=73, name="X", confidence=0.6, reason="r")],
         recommendation=DocumentAgentMatchRecommendation(normalizedName="X"),
     )
-    with pytest.raises(InvalidDocumentAgentMatchOutput, match="only NO_MATCH may carry one"):
-        _validate(verdict, real_ids={73})
+    _validate(verdict, real_ids={73})
+    assert verdict.recommendation is None
+    assert verdict.status == "UNRESOLVED"
+    assert len(verdict.candidates) == 1
 
 
-def test_validate_verdict_rejects_supplier_recommendation() -> None:
+def test_validate_verdict_strips_a_supplier_recommendation_instead_of_rejecting() -> None:
     verdict = DocumentAgentMatchVerdict(
         status="NO_MATCH",
         candidates=[],
         recommendation=DocumentAgentMatchRecommendation(normalizedName="New Supplier"),
     )
-    with pytest.raises(InvalidDocumentAgentMatchOutput, match="suppliers never get"):
-        _validate(verdict, entity_type="supplier", real_ids={41})
+    _validate(verdict, entity_type="supplier", real_ids={41})
+    assert verdict.recommendation is None
+    assert verdict.status == "NO_MATCH"
 
 
 def test_validate_verdict_rejects_product_no_match_without_recommendation() -> None:

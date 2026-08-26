@@ -30,6 +30,17 @@ interface ItemRow {
   price: string;
   isNewProduct: boolean;
   /**
+   * The new product's DEFINITION when isNewProduct is true — never sent
+   * anywhere, never created, until Approve & Sync: the backend creates it
+   * atomically inside the same transaction as the resulting inventory
+   * transaction (see DocumentReviewService.resolveApprovalItems()), so a
+   * duplicate name or any other failure in the batch rolls it back too
+   * instead of leaving an orphaned product from a review that never
+   * completed.
+   */
+  newProductName: string;
+  newProductCategory: string;
+  /**
    * A category to offer as a starting point if the reviewer marks this
    * line a new product — the Document agent's own NO_MATCH recommendation
    * when its last search gave one, otherwise the real category of the top
@@ -117,6 +128,8 @@ export function DocumentReviewPage() {
         quantity: String(it.quantity),
         price: it.price != null ? String(it.price) : "",
         isNewProduct: false,
+        newProductName: "",
+        newProductCategory: "",
         categoryHint: null,
         categoryHintLoading: false,
       })),
@@ -179,17 +192,24 @@ export function DocumentReviewPage() {
       });
   }
 
-  // Catalog names plus anything already resolved/created for another line
-  // item in this same review, so the "new product" flow can't create the
-  // same product twice - once for this document, once again for a
-  // duplicate/near-duplicate extracted line.
-  const existingProductNames = useMemo(() => {
+  // Catalog names plus every OTHER line's resolved match or in-progress
+  // new-product name — excludes the row's OWN in-progress name, or every
+  // row would immediately "collide" with itself the moment it's typed.
+  // Lets a reviewer catch defining the same new product twice across two
+  // lines of the same document before Approve & Sync (the backend rejects
+  // that too — this is just earlier, friendlier feedback for the same
+  // rule; see resolveApprovalItems() in document-review.service.ts). The
+  // catalog is confirmed small, so recomputing this per row is cheap.
+  function existingProductNamesExcluding(excludeIndex: number): string[] {
     const names = (productsFetch.data ?? []).map((p) => p.name);
-    for (const it of items) {
+    items.forEach((it, idx) => {
       if (it.resolvedName) names.push(it.resolvedName);
-    }
+      if (idx !== excludeIndex && it.isNewProduct && it.newProductName.trim()) {
+        names.push(it.newProductName.trim());
+      }
+    });
     return names;
-  }, [productsFetch.data, items]);
+  }
 
   const itemsTotal = useMemo(
     () =>
@@ -206,8 +226,27 @@ export function DocumentReviewPage() {
     if (urlId === null || !reviewFetch.data) return;
     setDecisionError(null);
 
-    if (items.some((it) => it.productId === null)) {
-      setDecisionError("Resolve every line item to a real product before approving.");
+    // Every line needs EITHER a resolved existing product OR (INCOMING
+    // only — enforced again server-side in resolveApprovalItems()) a
+    // non-empty new-product name. Nothing is created here — new products
+    // are only ever defined client-side and created atomically by the
+    // backend inside the Approve & Sync transaction itself.
+    if (items.some((it) => (it.isNewProduct ? !it.newProductName.trim() : it.productId === null))) {
+      setDecisionError(
+        reviewFetch.data.transactionType === "OUTGOING"
+          ? "Resolve every line item to a real product before approving — an outgoing shipment can't reference a product that isn't in the catalog."
+          : "Resolve every line item to a real product, or name a new one, before approving.",
+      );
+      return;
+    }
+    // Friendlier, immediate feedback for the exact rule the backend also
+    // enforces (case-insensitive exact match, within this batch or against
+    // the real catalog) — the server stays authoritative either way; this
+    // just avoids a round trip for the common case of a typo'd duplicate.
+    const newProductNames = items.filter((it) => it.isNewProduct).map((it) => it.newProductName.trim().toLowerCase());
+    const duplicateNewProductName = newProductNames.find((name, idx) => newProductNames.indexOf(name) !== idx);
+    if (duplicateNewProductName) {
+      setDecisionError(`"${duplicateNewProductName}" is defined as a new product on more than one line — give each a distinct name.`);
       return;
     }
     if (reviewFetch.data.transactionType === "INCOMING" && (supplierId === null || !warehouseId)) {
@@ -223,7 +262,9 @@ export function DocumentReviewPage() {
     try {
       const base = {
         items: items.map((it) => ({
-          productId: it.productId!,
+          ...(it.isNewProduct
+            ? { newProduct: { name: it.newProductName.trim(), category: it.newProductCategory.trim() || null } }
+            : { productId: it.productId! }),
           quantity: Number(it.quantity),
           price: it.price ? Number(it.price) : undefined,
         })),
@@ -446,7 +487,12 @@ export function DocumentReviewPage() {
                               checked={row.isNewProduct}
                               onChange={(e) => {
                                 const isNewProduct = e.target.checked;
-                                updateItem(i, { isNewProduct, productId: null, resolvedName: null });
+                                updateItem(i, {
+                                  isNewProduct,
+                                  productId: null,
+                                  resolvedName: null,
+                                  newProductName: isNewProduct && !row.newProductName ? row.extractedName : row.newProductName,
+                                });
                                 if (isNewProduct && !row.categoryHint) ensureCategoryHint(i, row.extractedName);
                               }}
                             />
@@ -456,12 +502,14 @@ export function DocumentReviewPage() {
 
                         {row.isNewProduct ? (
                           <NewProductInput
-                            initialName={row.extractedName}
-                            initialCategory={row.categoryHint}
+                            name={row.newProductName}
+                            onNameChange={(newProductName) => updateItem(i, { newProductName })}
+                            category={row.newProductCategory}
+                            onCategoryChange={(newProductCategory) => updateItem(i, { newProductCategory })}
+                            categorySuggestion={row.categoryHint}
                             categoryLoading={row.categoryHintLoading}
                             categories={existingCategories}
-                            existingNames={existingProductNames}
-                            onCreated={({ productId, name }) => updateItem(i, { productId, resolvedName: name })}
+                            existingNames={existingProductNamesExcluding(i)}
                           />
                         ) : (
                           <ResolveSearchInput

@@ -40,14 +40,21 @@ means exactly one definitive candidate, UNRESOLVED means at least one
 plausible candidate, NO_MATCH means none, that a recommendation only ever
 accompanies NO_MATCH, that a supplier verdict never carries one at all,
 and that a recommended category is always one of the real categories
-supplied. Any violation - including a timeout or a call that raises - is
-treated identically: this module raises, agentcore_entrypoint.py's
+supplied. Almost any violation - including a timeout or a call that
+raises - is treated identically: this module raises, agentcore_entrypoint.py's
 document_match mode turns that into an "error" SSE event, and the real ERP
 backend (DocumentReviewService.resolveProduct()/resolveSupplier()) falls
-back to its own existing fuzzy matcher. A validation failure is never
-silently downgraded or partially trusted - and the backend independently
-re-validates the same invariants again against its own candidate set
-before ever showing a result to a human reviewer (defense in depth).
+back to its own existing fuzzy matcher. The one deliberate exception is a
+recommendation attached somewhere it isn't allowed (a supplier, or
+alongside RESOLVED/UNRESOLVED) - this model occasionally does that despite
+the prompt forbidding it outright, and since the recommendation never
+drives the actual match decision, _validate_verdict() strips the stray
+field and keeps the rest of the (still fully validated) verdict rather
+than discarding real, correctly-reasoned candidates over one extraneous
+field. Every other validation failure is never silently downgraded or
+partially trusted - and the backend independently re-validates the same
+invariants again against its own candidate set before ever showing a
+result to a human reviewer (defense in depth).
 """
 
 from __future__ import annotations
@@ -254,12 +261,16 @@ def _validate_verdict(
     real_categories: set[str],
 ) -> None:
     """Post-call safety net - the model's own structured output is never
-    trusted blindly. See this module's docstring for why every violation
-    here is treated as a hard failure (never a partial/downgraded accept).
-    The real ERP backend independently re-validates every one of these same
-    invariants again against its own candidate set before ever showing a
-    result to a human reviewer (defense in depth - this module's check is
-    not the only line of defense).
+    trusted blindly. See this module's docstring for why almost every
+    violation here is a hard failure (never a partial/downgraded accept) -
+    the one deliberate exception is a recommendation attached where it
+    isn't allowed (a supplier, or alongside RESOLVED/UNRESOLVED), which is
+    stripped rather than rejected - see the comment at that check below for
+    why that specific case is safely correctable. The real ERP backend
+    independently re-validates every one of these same invariants again
+    against its own candidate set before ever showing a result to a human
+    reviewer (defense in depth - this module's check is not the only line
+    of defense).
     """
     if len(verdict.candidates) > 3:
         raise InvalidDocumentAgentMatchOutput(
@@ -301,14 +312,28 @@ def _validate_verdict(
         raise InvalidDocumentAgentMatchOutput(
             "Document agent returned product NO_MATCH without a new-product recommendation"
         )
-    if entity_type == "supplier" and verdict.recommendation is not None:
-        raise InvalidDocumentAgentMatchOutput(
-            "Document agent returned a recommendation for a supplier - suppliers never get a new-entity recommendation"
+
+    # A recommendation attached to a supplier, or alongside a RESOLVED/
+    # UNRESOLVED status, is a contradiction the prompt already forbids
+    # explicitly (rule 4) - but this model still does it occasionally
+    # anyway, tacking a "helpful" suggestion onto an otherwise well-reasoned
+    # real candidate. Unlike an invented id or a genuinely wrong candidate
+    # set, this is safely correctable: the recommendation never drives the
+    # match decision itself, it's purely advisory extra data for the
+    # NO_MATCH+new-product case. Dropping the stray field and keeping the
+    # verdict's real (still fully validated below) candidates/status is
+    # strictly better than discarding an otherwise-correct, genuinely-
+    # reasoned answer over one extraneous field - the caller falling back
+    # to the fuzzy matcher for THIS would throw away real Document agent
+    # reasoning for no safety benefit.
+    if verdict.recommendation is not None and (entity_type == "supplier" or verdict.status != "NO_MATCH"):
+        logger.warning(
+            "Document agent attached a recommendation to a %s %s verdict - dropping it "
+            "(a recommendation is only ever valid for a product NO_MATCH)",
+            entity_type,
+            verdict.status,
         )
-    if verdict.status != "NO_MATCH" and verdict.recommendation is not None:
-        raise InvalidDocumentAgentMatchOutput(
-            f"Document agent returned a recommendation with status {verdict.status}, only NO_MATCH may carry one"
-        )
+        verdict.recommendation = None
 
     if verdict.recommendation is not None:
         if not verdict.recommendation.normalizedName.strip():

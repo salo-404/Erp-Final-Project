@@ -331,8 +331,27 @@ export interface DocumentMatchResult {
   recommendation: DocumentMatchRecommendation | null;
 }
 
+/**
+ * A brand-new product, created ATOMICALLY inside the same backend approval
+ * transaction that creates the resulting inventory transaction — never
+ * created ahead of time. Only valid for an INCOMING review's line item;
+ * rolled back along with everything else in approve() if anything in the
+ * batch fails (a duplicate name, another line, etc).
+ */
+export interface NewProductDefinition {
+  name: string;
+  category?: string | null;
+}
+
 export interface ApproveDocumentReviewInput {
-  items: { productId: number; quantity: number; price?: number }[];
+  items: {
+    /** Set for a line resolved to an existing product — mutually exclusive with newProduct. */
+    productId?: number;
+    /** Set for a line defining a brand-new INCOMING product instead — see NewProductDefinition. */
+    newProduct?: NewProductDefinition;
+    quantity: number;
+    price?: number;
+  }[];
   expectedDate?: string;
   supplierId?: number;
   destinationWarehouseId?: number;
