@@ -18,6 +18,7 @@ import {
 } from "../lib/controlTowerStats";
 import { TransferStockModal } from "../components/inventory/TransferStockModal";
 import { CreatePurchaseOrderModal } from "../components/suppliers/CreatePurchaseOrderModal";
+import { RecommendSolutionAction } from "../components/control-tower/RecommendSolutionAction";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import { ErrorMessage } from "../components/ui/ErrorMessage";
 import { ControlTowerIcon } from "../components/ui/icons";
@@ -276,11 +277,16 @@ export function ControlTowerPage() {
                       </div>
                       <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 15, marginBottom: 4 }}>{attentionTitle(alert)}</div>
                       <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 14, lineHeight: 1.5, maxWidth: 640 }}>{alert.message}</div>
-                      {action && (
-                        <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                          <div onClick={action.onClick} style={{ fontSize: 12.5, fontWeight: 600, padding: "8px 14px", borderRadius: 6, background: "var(--color-accent)", color: "var(--color-on-accent)", cursor: "pointer" }}>
-                            {action.label}
-                          </div>
+                      {(action || alert.severity === "CRITICAL" || alert.severity === "WARNING") && (
+                        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
+                          {(alert.severity === "CRITICAL" || alert.severity === "WARNING") && (
+                            <RecommendSolutionAction alert={alert} title={attentionTitle(alert)} />
+                          )}
+                          {action && (
+                            <div onClick={action.onClick} style={{ fontSize: 12.5, fontWeight: 600, padding: "8px 14px", borderRadius: 6, background: "var(--color-accent)", color: "var(--color-on-accent)", cursor: "pointer" }}>
+                              {action.label}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -303,7 +309,7 @@ export function ControlTowerPage() {
                       <div style={{ fontSize: 10, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{CATEGORY_LABELS[alert.category]}</div>
                       <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{productName(productId)}</div>
                       <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>{alert.message}</div>
-                      <div style={{ display: "flex", gap: 16 }}>
+                      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
                         <div onClick={() => navigate(`/products/${productId}`)} style={{ fontSize: 12, color: "var(--color-accent)", fontWeight: 600, cursor: "pointer" }}>
                           View Product
                         </div>
@@ -311,6 +317,9 @@ export function ControlTowerPage() {
                           <div onClick={() => openTransferForDeadStock(deadStock)} style={{ fontSize: 12, color: "var(--color-accent)", fontWeight: 600, cursor: "pointer" }}>
                             Transfer
                           </div>
+                        )}
+                        {(alert.severity === "CRITICAL" || alert.severity === "WARNING") && (
+                          <RecommendSolutionAction alert={alert} title={productName(productId)} />
                         )}
                       </div>
                     </div>
