@@ -79,6 +79,15 @@ _DEFAULT_BEDROCK_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 # answer, unlike single-shot SQL generation.
 _CONVERSATIONAL_TEMPERATURE = 0.1
 
+# Bedrock's own per-model default output cap applies whenever max_tokens is
+# left unset - a value this codebase doesn't control or display anywhere,
+# and isn't necessarily generous. Set explicitly so a real multi-warehouse
+# or multi-tool-call answer can never be silently cut off by an unknown
+# provider default. Separate from sql/sql_generator.py's maxTokens=1200,
+# which is deliberately much smaller - that call produces exactly one SQL
+# statement with no prose, not a user-facing conversational answer.
+_CONVERSATIONAL_MAX_TOKENS = 2048
+
 
 def _environment_flag(name: str, default: bool = False) -> bool:
     """Parse a boolean environment flag without accepting ambiguous values."""
@@ -328,6 +337,7 @@ class Settings:
                 model_id=model_id,
                 region_name=self.aws_region,
                 temperature=_CONVERSATIONAL_TEMPERATURE,
+                max_tokens=_CONVERSATIONAL_MAX_TOKENS,
             )
 
         raise ValueError(
