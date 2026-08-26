@@ -34,6 +34,8 @@ class TestRoleController {
 
 describe('Cognito authentication and database roles (e2e)', () => {
   let app: INestApplication;
+  let updateUser: jest.Mock;
+  let removeUser: jest.Mock;
 
   beforeAll(async () => {
     const verifier = {
@@ -43,12 +45,22 @@ describe('Cognito authentication and database roles (e2e)', () => {
       }),
     };
     const users = new Map([
-      ['admin-sub', { id: 1, email: 'admin@example.com', role: UserRole.ADMIN }],
-      ['employee-sub', { id: 2, email: 'employee@example.com', role: UserRole.EMPLOYEE }],
+      [
+        'admin-sub',
+        { id: 1, email: 'admin@example.com', role: UserRole.ADMIN },
+      ],
+      [
+        'employee-sub',
+        { id: 2, email: 'employee@example.com', role: UserRole.EMPLOYEE },
+      ],
     ]);
     const prisma = {
-      user: { findUnique: jest.fn(({ where }) => users.get(where.cognitoSub) ?? null) },
+      user: {
+        findUnique: jest.fn(({ where }) => users.get(where.cognitoSub) ?? null),
+      },
     };
+    updateUser = jest.fn(async (id, dto) => ({ id, ...dto }));
+    removeUser = jest.fn(async () => undefined);
 
     const moduleRef = await Test.createTestingModule({
       controllers: [
@@ -72,6 +84,8 @@ describe('Cognito authentication and database roles (e2e)', () => {
             findOne: jest.fn(async (id: number) =>
               [...users.values()].find((user) => user.id === id),
             ),
+            update: updateUser,
+            remove: removeUser,
           },
         },
         {
@@ -91,7 +105,11 @@ describe('Cognito authentication and database roles (e2e)', () => {
     app = moduleRef.createNestApplication();
     app.setGlobalPrefix('api');
     app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
     );
     await app.init();
   });
@@ -132,7 +150,11 @@ describe('Cognito authentication and database roles (e2e)', () => {
   });
 
   it('POST /api/users requires no password and rejects the retired password field', async () => {
-    const payload = { name: 'Provisioned', email: 'new@example.com', role: UserRole.EMPLOYEE };
+    const payload = {
+      name: 'Provisioned',
+      email: 'new@example.com',
+      role: UserRole.EMPLOYEE,
+    };
     await request(app.getHttpServer())
       .post('/api/users')
       .set('Authorization', 'Bearer admin-sub')
@@ -143,7 +165,10 @@ describe('Cognito authentication and database roles (e2e)', () => {
       .set('Authorization', 'Bearer employee-sub')
       .send(payload)
       .expect(403);
-    await request(app.getHttpServer()).post('/api/users').send(payload).expect(401);
+    await request(app.getHttpServer())
+      .post('/api/users')
+      .send(payload)
+      .expect(401);
     await request(app.getHttpServer())
       .post('/api/users')
       .set('Authorization', 'Bearer admin-sub')
@@ -175,23 +200,88 @@ describe('Cognito authentication and database roles (e2e)', () => {
     await request(app.getHttpServer()).get('/api/users/1').expect(401);
   });
 
+  it('PATCH /api/users/:id accepts only role and remains ADMIN-only', async () => {
+    await request(app.getHttpServer())
+      .patch('/api/users/2')
+      .set('Authorization', 'Bearer admin-sub')
+      .send({ role: UserRole.ADMIN })
+      .expect(200);
+
+    for (const extraField of [
+      { name: 'Renamed' },
+      { email: 'changed@example.com' },
+      { password: 'Password1!' },
+    ]) {
+      await request(app.getHttpServer())
+        .patch('/api/users/2')
+        .set('Authorization', 'Bearer admin-sub')
+        .send({ role: UserRole.EMPLOYEE, ...extraField })
+        .expect(400);
+    }
+
+    await request(app.getHttpServer())
+      .patch('/api/users/1')
+      .set('Authorization', 'Bearer employee-sub')
+      .send({ role: UserRole.EMPLOYEE })
+      .expect(403);
+    await request(app.getHttpServer())
+      .patch('/api/users/1')
+      .send({ role: UserRole.EMPLOYEE })
+      .expect(401);
+  });
+
+  it('DELETE /api/users/:id is ADMIN-only and passes the authenticated actor id', async () => {
+    await request(app.getHttpServer())
+      .delete('/api/users/2')
+      .set('Authorization', 'Bearer admin-sub')
+      .expect(200);
+    expect(removeUser).toHaveBeenCalledWith(2, 1);
+
+    await request(app.getHttpServer())
+      .delete('/api/users/1')
+      .set('Authorization', 'Bearer employee-sub')
+      .expect(403);
+    await request(app.getHttpServer()).delete('/api/users/1').expect(401);
+  });
+
   it.each([
-    ['post', '/api/integrations/email/send', { to: 'x@example.com', subject: 'x', body: 'x' }],
-    ['post', '/api/integrations/calendar/event', { summary: 'x', startDateTime: '2026-08-23T10:00:00.000Z', endDateTime: '2026-08-23T11:00:00.000Z' }],
-    ['post', '/api/integrations/calendar/shipment-reminder', { transactionId: 1 }],
+    [
+      'post',
+      '/api/integrations/email/send',
+      { to: 'x@example.com', subject: 'x', body: 'x' },
+    ],
+    [
+      'post',
+      '/api/integrations/calendar/event',
+      {
+        summary: 'x',
+        startDateTime: '2026-08-23T10:00:00.000Z',
+        endDateTime: '2026-08-23T11:00:00.000Z',
+      },
+    ],
+    [
+      'post',
+      '/api/integrations/calendar/shipment-reminder',
+      { transactionId: 1 },
+    ],
   ] as const)(
     'restricts %s %s to ADMIN while preserving authentication',
     async (method, path, payload) => {
-      await request(app.getHttpServer())[method](path)
+      await request(app.getHttpServer())
+        [method](path)
         .set('Authorization', 'Bearer admin-sub')
         .send(payload)
         .expect((status) => expect(status.status).not.toBe(401))
         .expect((status) => expect(status.status).not.toBe(403));
-      await request(app.getHttpServer())[method](path)
+      await request(app.getHttpServer())
+        [method](path)
         .set('Authorization', 'Bearer employee-sub')
         .send(payload)
         .expect(403);
-      await request(app.getHttpServer())[method](path).send(payload).expect(401);
+      await request(app.getHttpServer())
+        [method](path)
+        .send(payload)
+        .expect(401);
     },
   );
 });

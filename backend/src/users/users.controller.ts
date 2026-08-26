@@ -15,6 +15,8 @@ import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { UserRole } from '../../generated/prisma/enums';
 
 @Controller('users')
@@ -52,11 +54,11 @@ export class UsersController {
     return this.usersService.update(id, dto);
   }
 
-  /** ADMIN-only. */
+  /** ADMIN-only. currentUser comes from the authenticated JWT, never the client, so self-delete can't be spoofed by passing a different id in the body. */
   @Delete(':id')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.usersService.remove(id);
+  remove(@Param('id', ParseIntPipe) id: number, @CurrentUser() currentUser: AuthenticatedUser) {
+    return this.usersService.remove(id, currentUser.id);
   }
 }

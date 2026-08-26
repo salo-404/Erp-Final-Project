@@ -15,6 +15,7 @@ interface AuthContextValue {
   status: AuthStatus;
   user: User | null;
   login: (email: string, password: string) => Promise<LoginOutcome>;
+  refreshIdentity: () => Promise<void>;
   logout: () => void;
 }
 
@@ -41,6 +42,22 @@ function writeCachedUser(user: User | null): void {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [user, setUser] = useState<User | null>(null);
+
+  const refreshIdentity = useCallback(async () => {
+    const identity = await fetchCurrentIdentity();
+    setUser((current) => {
+      const resolved: User = {
+        id: identity.id,
+        email: identity.email,
+        role: identity.role,
+        name: current?.name ?? identity.email,
+        createdAt: current?.createdAt ?? "",
+        updatedAt: current?.updatedAt ?? "",
+      };
+      writeCachedUser(resolved);
+      return resolved;
+    });
+  }, []);
 
   useEffect(() => {
     const token = getStoredToken();
@@ -132,7 +149,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
   }, [logout]);
 
-  const value = useMemo(() => ({ status, user, login, logout }), [status, user, login, logout]);
+  const value = useMemo(
+    () => ({ status, user, login, refreshIdentity, logout }),
+    [status, user, login, refreshIdentity, logout],
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

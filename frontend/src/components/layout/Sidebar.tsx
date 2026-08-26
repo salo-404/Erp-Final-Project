@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
+import { useAuth } from "../../auth/AuthContext";
 import {
   AiAgentIcon,
   AnalyticsIcon,
@@ -13,6 +14,7 @@ import {
   SuppliersIcon,
   TransactionsIcon,
   TransferIcon,
+  UsersIcon,
   WarehouseIcon,
 } from "../ui/icons";
 import type { ComponentType, SVGProps } from "react";
@@ -66,8 +68,21 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
+const EMPLOYEES_NAV_ITEM: NavItem = { to: "/employees", label: "Employees", Icon: UsersIcon };
+
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "ADMIN";
+
+  // Employee management is admin-only (see EmployeesPage.tsx, which also
+  // enforces this itself for anyone who navigates there directly) - hidden
+  // from the nav entirely for a non-admin rather than shown-then-blocked.
+  const navGroups = isAdmin
+    ? NAV_GROUPS.map((group) =>
+        group.label === "System" ? { ...group, items: [EMPLOYEES_NAV_ITEM, ...group.items] } : group,
+      )
+    : NAV_GROUPS;
 
   return (
     <aside
@@ -93,7 +108,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 space-y-4 overflow-y-auto px-3 pb-4">
-        {NAV_GROUPS.map((group) => (
+        {navGroups.map((group) => (
           <div key={group.label}>
             {!collapsed && (
               <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/40">

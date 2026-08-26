@@ -19,6 +19,7 @@ import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { CalendarPage } from "./pages/CalendarPage";
 import { AiAgentPage } from "./pages/AiAgentPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { EmployeesPage } from "./pages/EmployeesPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 
 function App() {
@@ -46,6 +47,7 @@ function App() {
                       <Route path="/analytics" element={<AnalyticsPage />} />
                       <Route path="/calendar" element={<CalendarPage />} />
                       <Route path="/ai-agent" element={<AiAgentPage />} />
+                      <Route path="/employees" element={<EmployeesPage />} />
                       <Route path="/settings" element={<SettingsPage />} />
                     </Route>
                   </Route>

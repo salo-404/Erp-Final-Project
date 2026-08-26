@@ -330,3 +330,14 @@ export function MinusIcon(props: IconProps) {
     </svg>
   );
 }
+
+export function UsersIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M3.5 20c0-3.3 2.5-5.5 5.5-5.5s5.5 2.2 5.5 5.5" />
+      <path d="M15.5 5.2c1.4.5 2.4 1.8 2.4 3.3 0 1.6-1 2.9-2.5 3.4" />
+      <path d="M17.5 14.6c2.1.6 3.5 2.4 3.5 4.9" />
+    </svg>
+  );
+}
