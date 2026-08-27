@@ -736,7 +736,6 @@ class RecommendStockoutFixResponse(BaseModel):
 
 class RestockFixAction(str, Enum):
     TRANSFER_IN = "transfer_in"
-    TRANSFER_AND_PURCHASE = "transfer_and_purchase"
     ORDER_FROM_SUPPLIER = "order_from_supplier"
     NO_SOLUTION = "no_solution"
 
@@ -747,7 +746,11 @@ class RestockFixTransfer(BaseModel):
     quantity: int = Field(
         ...,
         gt=0,
-        description="Backend-computed transferQuantity from a donor whose sourceIsDeadStock flag is true.",
+        description=(
+            "At most half of the donor's safe surplus (available - reorderThreshold) - "
+            "see _select_restock_dead_stock_donor() in tools.py - and always the ENTIRE "
+            "remaining restock need; this policy never recommends a partial transfer."
+        ),
     )
 
 
@@ -756,9 +759,15 @@ class RecommendRestockFixResponse(BaseModel):
 
     This is deliberately separate from RecommendStockoutFixResponse. The
     normal transfer/stockout paths may use any backend-qualified surplus
-    donor, while this Restock-only flow may use a donor only when the
-    backend also marks that exact product/warehouse stock as dead stock
-    (no customer OUTGOING for at least 60 days).
+    donor and may combine multiple donors, while this Restock-only flow
+    may use at most ONE donor - and only when it is both holding the same
+    product and confirmed 60+-day dead stock for it (no customer OUTGOING
+    sale in that window) - and only when that single donor's own
+    transferQuantity, alone, covers the entire remaining need. A partial
+    transfer plus a purchase for the remainder is never produced: `action`
+    is either "transfer_in" (transfer covers it fully, purchaseQuantity is
+    0) or "order_from_supplier"/"no_solution" (transfer is None,
+    purchaseQuantity is the full remaining need).
     """
 
     productId: int
@@ -768,8 +777,7 @@ class RecommendRestockFixResponse(BaseModel):
     recommendedQuantity: int = Field(..., gt=0)
     pendingIncomingQuantity: int = Field(..., ge=0)
     action: RestockFixAction
-    transfers: list[RestockFixTransfer]
-    totalTransferQuantity: int = Field(..., ge=0)
+    transfer: Optional[RestockFixTransfer] = None
     purchaseQuantity: int = Field(..., ge=0)
     supplierRecommendation: Optional[SupplierScore] = None
     reason: str = Field(..., description="Deterministic explanation built only from validated backend evidence.")

@@ -1,3 +1,4 @@
+import asyncio
 import io
 import importlib
 import inspect
@@ -5,9 +6,9 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-import psycopg
 import pytest
 
+from backend_client import BackendError, ServiceUnavailable
 from retrieval import embedding_service, query_example_repository
 from sql import read_only_db
 from sql.sql_guard import IdentifierQuotingError
@@ -18,6 +19,22 @@ query_database_module = importlib.import_module("tools.query_database")
 generate_embeddings_module = importlib.import_module(
     "scripts.generate_query_embeddings"
 )
+
+
+class _FakeAsyncBackendClient:
+    """Stands in for backend_client.get_backend_client() - records every
+    POST call and returns one canned response, so tests can assert on the
+    exact SQL text sent to POST /ai/query-database without any real HTTP
+    or database connection.
+    """
+
+    def __init__(self, response: dict) -> None:
+        self.response = response
+        self.calls: list[tuple[str, dict]] = []
+
+    async def post(self, path: str, json: dict | None = None) -> dict:
+        self.calls.append((path, json))
+        return self.response
 
 
 def test_final_bedrock_model_map_and_dimensions() -> None:
@@ -142,60 +159,50 @@ class _FakeConnection:
 
 
 def test_retrieval_is_top_three_non_null_nearest_first(monkeypatch) -> None:
-    rows = [
-        (1, "nearest", "SELECT 1", "stock", None, 0.95),
-        (2, "next", "SELECT 2", "stock", None, 0.80),
-    ]
-    cursor = _FakeCursor(rows)
-    connection = _FakeConnection(cursor)
-    connected_urls: list[str] = []
-    configured = replace(
-        settings_module.settings,
-        ai_database_url="postgresql://runtime-readonly",
-        query_example_write_database_url="postgresql://embedding-writer",
-    )
-    monkeypatch.setattr(query_example_repository, "settings", configured)
+    """find_similar_examples() no longer opens a direct DB connection - it
+    POSTs fixed, code-authored SQL (only the embedding vector and limit
+    vary) to the real backend's POST /ai/query-database, same as
+    execute_query() - see read_only_db.py and this module's own docstring
+    for why (the AgentCore Runtime cannot reach RDS directly)."""
+    response = {
+        "rows": [
+            {
+                "id": 1,
+                "question": "nearest",
+                "sqlQuery": "SELECT 1",
+                "category": "stock",
+                "description": None,
+                "similarity": 0.95,
+            },
+            {
+                "id": 2,
+                "question": "next",
+                "sqlQuery": "SELECT 2",
+                "category": "stock",
+                "description": None,
+                "similarity": 0.80,
+            },
+        ]
+    }
+    fake_client = _FakeAsyncBackendClient(response)
     monkeypatch.setattr(
-        query_example_repository.psycopg,
-        "connect",
-        lambda url: connected_urls.append(url) or connection,
+        query_example_repository, "get_backend_client", lambda: fake_client
     )
 
-    examples = query_example_repository.find_similar_examples([0.1, 0.2])
+    examples = asyncio.run(query_example_repository.find_similar_examples([0.1, 0.2]))
 
-    sql, params = cursor.executions[0]
-    assert 'WHERE embedding IS NOT NULL' in sql
-    assert 'ORDER BY embedding <=> %s::vector' in sql
-    assert params[2] == 3
+    path, body = fake_client.calls[0]
+    assert path == "/ai/query-database"
+    assert 'WHERE embedding IS NOT NULL' in body["sql"]
+    assert 'ORDER BY embedding <=> ' in body["sql"]
+    assert body["sql"].rstrip().endswith("LIMIT 3")
     assert [example["question"] for example in examples] == ["nearest", "next"]
-    assert connected_urls == ["postgresql://runtime-readonly"]
-
-
-@pytest.mark.parametrize("module", [query_example_repository, read_only_db])
-def test_missing_ai_database_url_fails_closed(monkeypatch, module) -> None:
-    configured = replace(
-        settings_module.settings,
-        ai_database_url="",
-        query_example_write_database_url="postgresql://embedding-writer",
-    )
-    monkeypatch.setattr(module, "settings", configured)
-    monkeypatch.setattr(
-        module.psycopg,
-        "connect",
-        lambda *_: pytest.fail("database connection must not be attempted"),
-    )
-
-    with pytest.raises(RuntimeError, match="AI_DATABASE_URL must be configured"):
-        if module is query_example_repository:
-            module.find_similar_examples([0.1])
-        else:
-            module.execute_query('SELECT "id" FROM "Product"')
+    assert [example["similarity"] for example in examples] == [0.95, 0.80]
 
 
 def test_missing_embedding_write_url_fails_before_connecting(monkeypatch) -> None:
     configured = replace(
         settings_module.settings,
-        ai_database_url="postgresql://runtime-readonly",
         query_example_write_database_url="",
     )
     monkeypatch.setattr(generate_embeddings_module, "settings", configured)
@@ -218,7 +225,6 @@ def test_embedding_generation_uses_only_maintenance_write_url(monkeypatch) -> No
     connected_urls: list[str] = []
     configured = replace(
         settings_module.settings,
-        ai_database_url="postgresql://runtime-readonly",
         query_example_write_database_url="postgresql://embedding-writer",
     )
     monkeypatch.setattr(generate_embeddings_module, "settings", configured)
@@ -243,37 +249,55 @@ def test_embedding_generation_uses_only_maintenance_write_url(monkeypatch) -> No
     assert connection.committed is True
 
 
-def test_read_only_timeout_and_200_row_cap(monkeypatch) -> None:
-    description = [type("Column", (), {"name": "id"})()]
-    cursor = _FakeCursor(rows=[(index,) for index in range(201)], description=description)
-    connection = _FakeConnection(cursor)
-    configured = replace(settings_module.settings, ai_database_url="postgresql://readonly")
-    monkeypatch.setattr(read_only_db, "settings", configured)
-    monkeypatch.setattr(read_only_db.psycopg, "connect", lambda url: connection)
+def test_execute_query_posts_already_validated_sql_and_returns_backend_rows(monkeypatch) -> None:
+    """The statement-timeout/200-row-cap/read-only enforcement itself now
+    lives on the backend (backend/src/ai-query/ai-query.service.ts, and
+    its own spec) - the AI-agent side has no database connection left to
+    test at all, only that it sends the exact validated SQL and returns
+    whatever rows the backend answers with."""
+    response = {"rows": [{"id": index} for index in range(5)]}
+    fake_client = _FakeAsyncBackendClient(response)
+    monkeypatch.setattr(read_only_db, "get_backend_client", lambda: fake_client)
 
-    with pytest.raises(ValueError, match="more than 200 rows"):
-        read_only_db.execute_query('SELECT "id" FROM "Product"')
+    rows = asyncio.run(read_only_db.execute_query('SELECT "id" FROM "Product"'))
 
-    assert connection.executions == [
-        "SET TRANSACTION READ ONLY",
-        "SET LOCAL statement_timeout = 3000",
+    assert rows == response["rows"]
+    assert fake_client.calls == [
+        ("/ai/query-database", {"sql": 'SELECT "id" FROM "Product"'})
     ]
-    assert cursor.executions[0][0] == 'SELECT "id" FROM "Product"'
+
+
+def test_execute_query_propagates_a_typed_backend_error(monkeypatch) -> None:
+    """A rejection from the backend's own independent read-only guard (or
+    any other BackendError) propagates uncaught from execute_query() -
+    query_database()'s _RETRYABLE_ERRORS is what decides whether to retry
+    it, exactly like a sql_guard rejection (see test_sql_rag_config.py's
+    query_database()-level retry tests below)."""
+    class _RejectingClient:
+        async def post(self, path: str, json: dict | None = None) -> dict:
+            raise ServiceUnavailable(0, "Could not reach the backend: ConnectTimeout")
+
+    monkeypatch.setattr(read_only_db, "get_backend_client", lambda: _RejectingClient())
+
+    with pytest.raises(ServiceUnavailable):
+        asyncio.run(read_only_db.execute_query('SELECT "id" FROM "Product"'))
 
 
 def _configure_query_database_dependencies(monkeypatch) -> None:
     monkeypatch.setattr(query_database_module, "embed_text", lambda question: [0.1])
-    monkeypatch.setattr(
-        query_database_module,
-        "find_similar_examples",
-        lambda embedding, limit: [
+
+    async def fake_find_similar_examples(embedding, limit):
+        return [
             {
                 "question": "example",
                 "sqlQuery": 'SELECT "id" FROM "Product"',
                 "similarity": 0.9,
                 "category": "inventory",
             }
-        ],
+        ]
+
+    monkeypatch.setattr(
+        query_database_module, "find_similar_examples", fake_find_similar_examples
     )
 
 
@@ -294,13 +318,14 @@ def test_quoting_error_retries_once_with_exact_feedback(monkeypatch) -> None:
             )
         return sql
 
+    async def execute_query(sql):
+        return [{"id": 1}]
+
     monkeypatch.setattr(query_database_module, "generate_sql", generate_sql)
     monkeypatch.setattr(query_database_module, "validate_sql", validate_sql)
-    monkeypatch.setattr(
-        query_database_module, "execute_query", lambda sql: [{"id": 1}]
-    )
+    monkeypatch.setattr(query_database_module, "execute_query", execute_query)
 
-    result = query_database_module.query_database("show products")
+    result = asyncio.run(query_database_module.query_database("show products"))
 
     assert len(generation_calls) == 2
     assert generation_calls[1]["validation_feedback"] == (
@@ -323,23 +348,25 @@ def test_unsafe_sql_is_not_retried_or_executed(monkeypatch) -> None:
         "validate_sql",
         lambda sql: (_ for _ in ()).throw(ValueError("Forbidden SQL keyword detected: DELETE")),
     )
-    monkeypatch.setattr(
-        query_database_module,
-        "execute_query",
-        lambda sql: pytest.fail("unsafe SQL must never execute"),
-    )
+
+    async def execute_query(sql):
+        pytest.fail("unsafe SQL must never execute")
+
+    monkeypatch.setattr(query_database_module, "execute_query", execute_query)
 
     with pytest.raises(ValueError, match="Forbidden SQL keyword"):
-        query_database_module.query_database("delete products")
+        asyncio.run(query_database_module.query_database("delete products"))
 
     assert len(generation_calls) == 1
 
 
 def test_execution_error_retries_once_with_exact_feedback(monkeypatch) -> None:
-    """A real PostgreSQL execution failure (e.g. a GROUP BY violation
-    sql_guard's static AST check can't predict - reproduced live against
-    real data, not hypothetical) gets exactly one regenerate-and-retry,
-    same as a fixable sql_guard rejection above - not left unretried."""
+    """A real execution failure the backend surfaces (e.g. a GROUP BY
+    violation sql_guard's static AST check can't predict - reproduced live
+    against real data, not hypothetical - now arriving as a BackendError
+    from POST /ai/query-database rather than a raw psycopg error) gets
+    exactly one regenerate-and-retry, same as a fixable sql_guard rejection
+    above - not left unretried."""
     _configure_query_database_dependencies(monkeypatch)
     generation_calls: list[dict] = []
     execution_calls: list[str] = []
@@ -348,11 +375,12 @@ def test_execution_error_retries_once_with_exact_feedback(monkeypatch) -> None:
         generation_calls.append(kwargs)
         return 'SELECT it.id FROM "InventoryTransaction" it'
 
-    def execute_query(sql):
+    async def execute_query(sql):
         execution_calls.append(sql)
         if len(execution_calls) == 1:
-            raise psycopg.errors.GroupingError(
-                'column "it.id" must appear in the GROUP BY clause or be used in an aggregate function'
+            raise BackendError(
+                400,
+                'column "it.id" must appear in the GROUP BY clause or be used in an aggregate function',
             )
         return [{"id": 86}]
 
@@ -360,11 +388,12 @@ def test_execution_error_retries_once_with_exact_feedback(monkeypatch) -> None:
     monkeypatch.setattr(query_database_module, "validate_sql", lambda sql: sql)
     monkeypatch.setattr(query_database_module, "execute_query", execute_query)
 
-    result = query_database_module.query_database("last completed order")
+    result = asyncio.run(query_database_module.query_database("last completed order"))
 
     assert len(generation_calls) == 2
     assert generation_calls[1]["validation_feedback"] == (
-        'column "it.id" must appear in the GROUP BY clause or be used in an aggregate function'
+        'Backend error 400: column "it.id" must appear in the GROUP BY '
+        "clause or be used in an aggregate function"
     )
     assert len(execution_calls) == 2
     assert result["rows"] == [{"id": 86}]
@@ -380,10 +409,10 @@ def test_execution_error_not_retried_twice(monkeypatch) -> None:
     )
     monkeypatch.setattr(query_database_module, "validate_sql", lambda sql: sql)
 
-    def always_fails(sql):
-        raise psycopg.errors.GroupingError("still broken")
+    async def always_fails(sql):
+        raise BackendError(400, "still broken")
 
     monkeypatch.setattr(query_database_module, "execute_query", always_fails)
 
-    with pytest.raises(psycopg.errors.GroupingError, match="still broken"):
-        query_database_module.query_database("last completed order")
+    with pytest.raises(BackendError, match="still broken"):
+        asyncio.run(query_database_module.query_database("last completed order"))

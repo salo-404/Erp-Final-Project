@@ -1,46 +1,29 @@
-import psycopg
-
-from config.settings import settings
+from backend_client import get_backend_client
 
 
-DATABASE_URL = settings.ai_database_url
-
-STATEMENT_TIMEOUT_MS = 3000
-MAX_ROWS = 200
-
-
-def execute_query(sql: str) -> list[dict]:
+async def execute_query(sql: str) -> list[dict]:
     """
     Execute already-validated read-only SQL and return rows as dictionaries.
 
     IMPORTANT:
     This function assumes sql_guard.validate_sql() was called first.
+
+    The AgentCore Runtime cannot reach RDS directly (it is not VPC-attached
+    - RDS is private-only, and VPC-attaching the runtime would cut off its
+    own access to Bedrock/Cognito unless a NAT Gateway or per-service VPC
+    endpoints were also added, a real cost/complexity tradeoff that was
+    deliberately avoided). Instead, this POSTs the already-validated SQL to
+    POST /ai/query-database on the real ERP backend, which already runs
+    inside the VPC with a working DATABASE_URL. The backend independently
+    re-enforces read-only/single-statement/row-cap/timeout - see
+    backend/src/ai-query/ai-query.service.ts's own docstring - it never
+    trusts that sql_guard.py already validated the text.
+
+    Authenticates as the AI service Cognito identity (get_backend_client()
+    - the same shared, cached-token client every other tool uses), not a
+    per-user token - no database credential of any kind is ever available
+    to this process.
     """
-
-    database_url = settings.require_ai_database_url()
-
-    with psycopg.connect(database_url) as conn:
-        conn.execute("SET TRANSACTION READ ONLY")
-        conn.execute(
-            f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"
-        )
-
-        with conn.cursor() as cur:
-            cur.execute(sql)
-
-            if cur.description is None:
-                return []
-
-            columns = [column.name for column in cur.description]
-
-            rows = cur.fetchmany(MAX_ROWS + 1)
-
-            if len(rows) > MAX_ROWS:
-                raise ValueError(
-                    f"Query returned more than {MAX_ROWS} rows"
-                )
-
-            return [
-                dict(zip(columns, row))
-                for row in rows
-            ]
+    client = get_backend_client()
+    response = await client.post("/ai/query-database", json={"sql": sql})
+    return response["rows"]

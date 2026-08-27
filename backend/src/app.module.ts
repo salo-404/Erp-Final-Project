@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AiQueryModule } from './ai-query/ai-query.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuthModule } from './auth/auth.module';
 import { DocumentReviewModule } from './document-review/document-review.module';
@@ -38,6 +39,7 @@ import { WarehousesModule } from './warehouses/warehouses.module';
     StockInsightsModule,
     EmailModule,
     CalendarModule,
+    AiQueryModule,
   ],
   controllers: [AppController],
   providers: [AppService],

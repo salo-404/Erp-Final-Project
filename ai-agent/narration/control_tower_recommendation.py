@@ -41,10 +41,13 @@ The five scenarios (exhaustive - there is no sixth):
      instead. (Not a dead-stock-only check - see that tool's own
      docstring for the real bug this fixed.)
   3. RESTOCK_RECOMMENDATION: recommend_restock_fix() applies the narrower
-     Restock policy: use only backend-qualified transfer rows whose source
-     is also confirmed 60-day dead stock, combine multiple donors, and use
-     supplier ranking for any uncovered remainder. Generic surplus alone
-     remains valid for TRANSFER_RECOMMENDATION, but never for this path.
+     Restock policy: at most ONE donor, only when it is both holding the
+     same product and confirmed 60-day dead stock for it, transferring at
+     most half its safe surplus above its own reorder threshold - and only
+     when that alone covers the ENTIRE remaining need (never combined with
+     a purchase for a remainder; an insufficient transfer is replaced
+     entirely by a supplier purchase). Generic surplus alone remains valid
+     for TRANSFER_RECOMMENDATION, but never for this path.
   4. TRANSFER_RECOMMENDATION: get_transfer_recommendations()'s own real
      result, re-fetched fresh and matched by (productId, fromWarehouseId,
      toWarehouseId) - never the client-held copy of the alert taken as
@@ -89,11 +92,9 @@ HARD RULES:
   number, name, or fact that isn't literally present in it - if the JSON
   has no reorder threshold, no consumption figure, and no pending-delivery
   status, your answer must not mention any of those either.
-- The JSON already reflects exactly ONE real plan. That plan may combine
-  dead-stock transfers with a purchase remainder when action is
-  transfer_and_purchase. State both required parts of that one plan; never
-  turn them into alternatives ("X, or alternatively Y") and never pad the
-  answer with generic hedging advice that isn't literally what the JSON says.
+- The JSON already reflects exactly ONE real plan - never turn it into
+  alternatives ("X, or alternatively Y") and never pad the answer with
+  generic hedging advice that isn't literally what the JSON says.
 - Reproduce every product/warehouse/supplier NAME exactly as given,
   character for character - never a bare numeric id (productId,
   warehouseId, sourceWarehouseId, destinationWarehouseId, supplierId,

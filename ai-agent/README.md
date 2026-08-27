@@ -106,14 +106,26 @@ validated before execution: one SELECT/query statement, operational ERP tables
 only, no schema qualification, no writes/DDL, no unsafe system functions,
 validated Prisma identifiers/columns, bounded results, and CTE support.
 
-`AI_DATABASE_URL` is required at runtime and must identify a SELECT-only role.
-That role needs SELECT on the eight operational ERP tables plus `QueryExample`
-for internal pgvector retrieval. `QueryExample` is excluded from the generated
-SQL table allowlist despite that database-role permission.
+There is no direct database credential for SQL-RAG at runtime. The AgentCore
+Runtime is not VPC-attached (RDS is private-only, and VPC-attaching the
+runtime would also cut off its own access to Bedrock/Cognito unless a NAT
+Gateway or per-service VPC endpoints were added too - a real cost/complexity
+tradeoff, deliberately not taken). Instead, both the execution step and the
+pgvector example-retrieval step send their SQL text to the real backend's
+`POST /ai/query-database` (see `backend/src/ai-query/`), authenticated as the
+AI service Cognito identity via the same `BACKEND_SERVICE_COGNITO_USERNAME` /
+`BACKEND_SERVICE_COGNITO_PASSWORD` every other tool already uses -
+`AiServiceGuard` rejects any human caller, even an ADMIN, since it checks the
+token's Cognito app-client id, not the user's role. The backend independently
+re-enforces read-only/single-statement/row-cap/statement-timeout on whatever
+SQL text it receives - it never trusts that `sql_guard.py` already validated
+it (see `ai-query.service.ts`'s own docstring). No database credential is
+ever exposed to AgentCore.
 
-`QUERY_EXAMPLE_WRITE_DATABASE_URL` is maintenance/bootstrap-only. Its role only
-needs SELECT on `QueryExample` and UPDATE on `QueryExample.embedding`. Never
-provide it to AgentCore and never use it as a fallback for `AI_DATABASE_URL`.
+`QUERY_EXAMPLE_WRITE_DATABASE_URL` is maintenance/bootstrap-only, used solely
+by `scripts/generate_query_embeddings.py` (never at runtime, never given to
+AgentCore). Its role only needs SELECT on `QueryExample` and UPDATE on
+`QueryExample.embedding`.
 
 Fresh SQL-RAG deployment order:
 
@@ -123,7 +135,8 @@ Fresh SQL-RAG deployment order:
 4. Configure `QUERY_EXAMPLE_WRITE_DATABASE_URL` and run
    `python scripts/generate_query_embeddings.py`.
 5. Verify intended embeddings are non-null and exactly 512-dimensional.
-6. Run AgentCore with the SELECT-only `AI_DATABASE_URL` role.
+6. Run AgentCore - it reaches the database only through the backend's
+   `POST /ai/query-database`, never directly.
 
 ## Document extraction and review
 

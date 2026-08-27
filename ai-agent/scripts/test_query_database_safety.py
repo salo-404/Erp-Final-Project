@@ -1,3 +1,5 @@
+import asyncio
+
 from tools.query_database import query_database
 
 
@@ -35,7 +37,7 @@ TEST_CASES = [
 ]
 
 
-def main():
+async def main():
     print("QUERY DATABASE SAFETY TEST")
     print("=" * 100)
 
@@ -43,7 +45,7 @@ def main():
         print(f"\nQUESTION: {question}")
 
         try:
-            result = query_database(question)
+            result = await query_database(question)
 
             print("RESULT: TOOL RETURNED")
             print("SQL:")
@@ -60,4 +62,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -31,7 +31,6 @@ from agents.insights_agent.tools import (
     _build_dead_stock_transfer_reason,
     _build_transfer_recommendation_reason,
     _compute_recommended_transfers,
-    _get_restock_dead_stock_transfers,
     _is_overdue,
     _qualifying_warehouses_by_recency,
     _sum_transaction_value,
@@ -876,12 +875,14 @@ def test_recommend_stockout_fix_reports_no_solution_honestly(monkeypatch: pytest
     assert result["supplierRecommendation"] is None
 
 
-def _restock_solution_entry(*, recommended_quantity: int = 10, pending_incoming: int = 0) -> dict:
+def _restock_solution_entry(
+    *, recommended_quantity: int = 10, pending_incoming: int = 0, warehouse_name: str = "Main Warehouse"
+) -> dict:
     return {
         "productId": 75,
         "productName": "Mechanical Keyboard",
         "warehouseId": 1,
-        "warehouseName": "Main Warehouse",
+        "warehouseName": warehouse_name,
         "available": 5,
         "pendingIncomingQuantity": pending_incoming,
         "projectedAvailable": 5 + pending_incoming,
@@ -896,23 +897,42 @@ def _restock_solution_entry(*, recommended_quantity: int = 10, pending_incoming:
     }
 
 
-def _restock_transfer(*, source_id: int, source_name: str, quantity: int, dead_stock: bool) -> dict:
+def _restock_donor_risk_item(*, warehouse_id: int, warehouse_name: str, available: int, reorder_threshold: int) -> dict:
+    """One GET /stock-insights/stockout-risk entry for a candidate donor
+    warehouse - the real source of `available`/`reorderThreshold` used vs
+    a hand-rolled figure, matching what get_stockout_risk() actually
+    returns for every WarehouseInventory row (not just at-risk ones)."""
     return {
         "productId": 75,
         "productName": "Mechanical Keyboard",
-        "fromWarehouseId": source_id,
-        "fromWarehouseName": source_name,
-        "toWarehouseId": 1,
-        "toWarehouseName": "Main Warehouse",
-        "transferQuantity": quantity,
-        "fromWarehouseAvailableAfterTransfer": 20,
-        "toWarehouseProjectedAvailableAfterTransfer": 15,
-        "sourcePendingIncomingQuantity": 0,
-        "sourceIsDeadStock": dead_stock,
-        "destinationRiskLevel": "AT_RISK",
-        "destinationAvgDailyConsumption": 1.0,
-        "destinationDaysOfSupply": 5.0,
-        "reason": "Backend-qualified transfer.",
+        "warehouseId": warehouse_id,
+        "warehouseName": warehouse_name,
+        "onHand": available,
+        "activeReserved": 0,
+        "available": available,
+        "reorderThreshold": reorder_threshold,
+        "riskLevel": "OK",
+        "pendingIncomingQuantity": 0,
+        "projectedAvailable": available,
+        "projectedRiskLevel": "OK",
+        "avgDailyConsumption": 0.0,
+        "daysOfSupply": None,
+        "predictedStockoutDate": None,
+    }
+
+
+def _restock_dead_stock_entry(*, warehouse_id: int, days_since_last_outgoing: int | None = 75) -> dict:
+    """One GET /stock-insights/dead-stock entry - present only for a
+    (productId, warehouseId) pair the real backend already confirms has had
+    no customer OUTGOING sale in at least 60 days (or ever, when None)."""
+    return {
+        "productId": 75,
+        "warehouseId": warehouse_id,
+        "onHand": 100,
+        "lastMovementAt": None,
+        "daysSinceLastMovement": None,
+        "lastOutgoingMovementAt": None,
+        "daysSinceLastOutgoingMovement": days_since_last_outgoing,
     }
 
 
@@ -950,130 +970,441 @@ def _patch_restock_solution_sources(
     monkeypatch: pytest.MonkeyPatch,
     *,
     restock: dict,
-    transfers: list[dict],
+    donor_risk_items: list[dict],
+    dead_stock_entries: list[dict],
+    remaining_capacity: int | None,
     supplier: dict | None,
 ) -> list[int]:
+    """Mocks every real source recommend_restock_fix() now reads from:
+    get_restock_recommendations() (destination's remaining need, already
+    netted for pending incoming), get_stockout_risk() (candidate donors'
+    real available/reorderThreshold), GET /stock-insights/dead-stock (which
+    (productId, warehouseId) pairs are confirmed 60+-day dead stock), and
+    GET /warehouse-inventory/capacity/:id (destination's remaining
+    capacity headroom). compare_suppliers() only when a purchase fallback
+    is expected."""
     supplier_calls: list[int] = []
 
     async def fake_restock() -> dict:
         return {"recommendations": [restock]}
 
-    async def fake_transfers() -> dict:
-        return {"recommendations": transfers}
+    async def fake_stockout_risk() -> dict:
+        return {"items": donor_risk_items}
 
     async def fake_suppliers(product_id: int) -> dict:
         supplier_calls.append(product_id)
         return {"recommendedSupplier": supplier}
 
+    class _FakeBackendClient:
+        async def get(self, path: str, params: dict | None = None):
+            if path == "/stock-insights/dead-stock":
+                return dead_stock_entries
+            if path == f"/warehouse-inventory/capacity/{restock['warehouseId']}":
+                return {
+                    "warehouseId": restock["warehouseId"],
+                    "maxCapacity": None if remaining_capacity is None else remaining_capacity + 1000,
+                    "currentStock": 0,
+                    "remainingCapacity": remaining_capacity,
+                }
+            raise AssertionError(f"unexpected backend path in restock-fix test: {path}")
+
     monkeypatch.setattr(insights_tools_module, "get_restock_recommendations", fake_restock)
-    monkeypatch.setattr(insights_tools_module, "_get_restock_dead_stock_transfers", fake_transfers)
+    monkeypatch.setattr(insights_tools_module, "get_stockout_risk", fake_stockout_risk)
     monkeypatch.setattr(insights_tools_module, "compare_suppliers", fake_suppliers)
+    monkeypatch.setattr(insights_tools_module, "get_backend_client", lambda: _FakeBackendClient())
     return supplier_calls
 
 
-def test_recommend_restock_fix_uses_valid_60_day_dead_stock_donor(monkeypatch: pytest.MonkeyPatch) -> None:
+def _cedar_electronics() -> dict:
+    supplier = _ranked_supplier()
+    supplier["supplierName"] = "Cedar Electronics"
+    return supplier
+
+
+# ---------------------------------------------------------------------------
+# recommend_restock_fix(): Case 1 - a single valid dead-stock donor whose
+# transferQuantity (half its safe surplus) alone fully covers the need.
+# ---------------------------------------------------------------------------
+
+
+def test_restock_fix_full_dead_stock_transfer_covers_need(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Destination needs 6. Donor has 30 available, threshold 10:
+    safeSurplus=20, halfSafeSurplus=10, transferQuantity=min(10,6,cap)=6."""
     supplier_calls = _patch_restock_solution_sources(
         monkeypatch,
-        restock=_restock_solution_entry(recommended_quantity=8),
-        transfers=[_restock_transfer(source_id=2, source_name="Beirut Warehouse", quantity=8, dead_stock=True)],
+        restock=_restock_solution_entry(recommended_quantity=6, warehouse_name="Tripoli Warehouse"),
+        donor_risk_items=[
+            _restock_donor_risk_item(warehouse_id=2, warehouse_name="Zahle Warehouse", available=30, reorder_threshold=10)
+        ],
+        dead_stock_entries=[_restock_dead_stock_entry(warehouse_id=2)],
+        remaining_capacity=None,
         supplier=_ranked_supplier(),
     )
 
     result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
 
     assert result["action"] == "transfer_in"
-    assert result["totalTransferQuantity"] == 8
+    assert result["transfer"] == {"sourceWarehouseId": 2, "sourceWarehouseName": "Zahle Warehouse", "quantity": 6}
     assert result["purchaseQuantity"] == 0
-    assert result["transfers"] == [{"sourceWarehouseId": 2, "sourceWarehouseName": "Beirut Warehouse", "quantity": 8}]
     assert supplier_calls == []
+    reason = result["reason"]
+    assert "Transfer 6 units from Zahle Warehouse" in reason
+    assert "no customer sales" in reason and "60 days" in reason
+    assert "dead stock" in reason
+    assert "Tripoli Warehouse" in reason
+    assert "reorder threshold" in reason
+    # Never expose the raw internal flags/numbers to the user-facing text.
+    assert "sourceIsDeadStock" not in reason
+    assert "safeSurplus" not in reason and "halfSafeSurplus" not in reason
 
 
-def test_restock_solution_uses_narrow_backend_transfer_feed(monkeypatch: pytest.MonkeyPatch) -> None:
-    requested_paths: list[str] = []
-
-    async def fake_load(path: str) -> dict:
-        requested_paths.append(path)
-        return {"recommendations": []}
-
-    monkeypatch.setattr(insights_tools_module, "_load_transfer_recommendations", fake_load)
-
-    result = asyncio.run(_get_restock_dead_stock_transfers())
-
-    assert result == {"recommendations": []}
-    assert requested_paths == ["/stock-insights/restock-dead-stock-transfers"]
+# ---------------------------------------------------------------------------
+# Case 2 - a dead-stock donor exists, but half its safe surplus can't fully
+# cover the need -> full purchase, never a 7-transfer-plus-3-purchase mix.
+# ---------------------------------------------------------------------------
 
 
-def test_recommend_restock_fix_rejects_donor_with_recent_customer_sale(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_restock_fix_half_surplus_insufficient_falls_back_to_full_purchase(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Destination needs 10. Donor has 24 available, threshold 10:
+    safeSurplus=14, halfSafeSurplus=7 - cannot cover the 10-unit need."""
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=10),
+        donor_risk_items=[
+            _restock_donor_risk_item(warehouse_id=2, warehouse_name="Some Warehouse", available=24, reorder_threshold=10)
+        ],
+        dead_stock_entries=[_restock_dead_stock_entry(warehouse_id=2)],
+        remaining_capacity=None,
+        supplier=_cedar_electronics(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "order_from_supplier"
+    assert result["transfer"] is None
+    assert result["purchaseQuantity"] == 10
+    assert result["supplierRecommendation"]["supplierName"] == "Cedar Electronics"
+    reason = result["reason"]
+    assert "fully cover" in reason and "10-unit shortage" in reason
+    assert "Cedar Electronics" in reason
+    assert "7 units" not in reason  # never surface a partial-transfer number
+
+
+# ---------------------------------------------------------------------------
+# Case 3 - no warehouse holding this product qualifies as 60+ day dead
+# stock at all (one has huge surplus, but sold 20 days ago) -> full purchase.
+# ---------------------------------------------------------------------------
+
+
+def test_restock_fix_no_dead_stock_donor_ignores_ordinary_surplus(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_restock_solution_sources(
         monkeypatch,
         restock=_restock_solution_entry(recommended_quantity=8),
-        transfers=[_restock_transfer(source_id=2, source_name="Beirut Warehouse", quantity=8, dead_stock=False)],
+        # A real warehouse with huge surplus for this product - but it is
+        # NOT in dead_stock_entries below (last sale 20 days ago, under the
+        # 60-day threshold), so it must never be used as a donor here.
+        donor_risk_items=[
+            _restock_donor_risk_item(warehouse_id=2, warehouse_name="Busy Warehouse", available=500, reorder_threshold=5)
+        ],
+        dead_stock_entries=[],
+        remaining_capacity=None,
         supplier=_ranked_supplier(),
     )
 
     result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
 
     assert result["action"] == "order_from_supplier"
-    assert result["transfers"] == []
+    assert result["transfer"] is None
     assert result["purchaseQuantity"] == 8
-    assert result["supplierRecommendation"]["supplierName"] == "Acme Supply Co"
+    reason = result["reason"]
+    assert "60+ day dead stock" in reason
+    assert "Busy Warehouse" not in reason
 
 
-def test_recommend_restock_fix_combines_multiple_dead_stock_donors(monkeypatch: pytest.MonkeyPatch) -> None:
+# ---------------------------------------------------------------------------
+# Case 4 - pending incoming already reduces the remaining need; the
+# transfer must be sized to the REMAINING need, not the original gap.
+# ---------------------------------------------------------------------------
+
+
+def test_restock_fix_pending_incoming_reduces_transfer_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    """12 below threshold, 5 already pending incoming -> remaining need 7.
+    get_restock_recommendations() already nets this (recommendedQuantity
+    IS reorderThreshold - projectedAvailable), so restock's own
+    recommendedQuantity is passed in as 7, not recomputed here."""
     _patch_restock_solution_sources(
         monkeypatch,
-        restock=_restock_solution_entry(recommended_quantity=10),
-        transfers=[
-            _restock_transfer(source_id=2, source_name="Beirut Warehouse", quantity=4, dead_stock=True),
-            _restock_transfer(source_id=3, source_name="Saida Warehouse", quantity=6, dead_stock=True),
+        restock=_restock_solution_entry(recommended_quantity=7, pending_incoming=5, warehouse_name="Beirut Warehouse"),
+        donor_risk_items=[
+            _restock_donor_risk_item(warehouse_id=3, warehouse_name="Saida Warehouse", available=25, reorder_threshold=11)
         ],
+        dead_stock_entries=[_restock_dead_stock_entry(warehouse_id=3)],
+        remaining_capacity=None,
         supplier=_ranked_supplier(),
     )
 
     result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
 
     assert result["action"] == "transfer_in"
-    assert result["totalTransferQuantity"] == 10
-    assert [transfer["quantity"] for transfer in result["transfers"]] == [4, 6]
-    assert result["purchaseQuantity"] == 0
+    assert result["transfer"] == {"sourceWarehouseId": 3, "sourceWarehouseName": "Saida Warehouse", "quantity": 7}
+    assert result["pendingIncomingQuantity"] == 5
+    reason = result["reason"]
+    assert "5 units are already pending incoming" in reason
+    assert "remaining need of 7 units" in reason
+    assert "Transfer 7 units from Saida Warehouse" in reason
 
 
-def test_recommend_restock_fix_combines_partial_transfer_with_purchase_remainder(monkeypatch: pytest.MonkeyPatch) -> None:
+# ---------------------------------------------------------------------------
+# Case 5 - the only dead-stock donor is already at (or below) its own
+# reorder threshold: zero safe surplus, nothing can safely leave it.
+# ---------------------------------------------------------------------------
+
+
+def test_restock_fix_donor_at_reorder_threshold_has_no_safe_surplus(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_restock_solution_sources(
         monkeypatch,
-        restock=_restock_solution_entry(recommended_quantity=10, pending_incoming=3),
-        transfers=[_restock_transfer(source_id=2, source_name="Beirut Warehouse", quantity=4, dead_stock=True)],
+        restock=_restock_solution_entry(recommended_quantity=5),
+        donor_risk_items=[
+            _restock_donor_risk_item(warehouse_id=2, warehouse_name="Tight Warehouse", available=10, reorder_threshold=10)
+        ],
+        dead_stock_entries=[_restock_dead_stock_entry(warehouse_id=2)],
+        remaining_capacity=None,
         supplier=_ranked_supplier(),
     )
 
     result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
 
-    assert result["action"] == "transfer_and_purchase"
-    assert result["totalTransferQuantity"] == 4
-    assert result["purchaseQuantity"] == 6
-    assert result["pendingIncomingQuantity"] == 3
-    assert "3 units are already pending incoming but are insufficient" in result["reason"]
-    assert "Purchase the remaining 6 units from Acme Supply Co" in result["reason"]
+    assert result["action"] == "order_from_supplier"
+    assert result["transfer"] is None
+    assert result["purchaseQuantity"] == 5
+    assert "no safely transferable stock above its reorder threshold" in result["reason"]
 
 
-def test_recommend_restock_fix_capacity_limited_transfer_is_not_presented_as_full_solution(
+# ---------------------------------------------------------------------------
+# Case 6 - reservations reduce a donor's AVAILABLE stock (not raw on-hand);
+# the safe-surplus math must be based on available.
+# ---------------------------------------------------------------------------
+
+
+def test_restock_fix_uses_available_not_onhand_and_covers_smaller_need(monkeypatch: pytest.MonkeyPatch) -> None:
+    """onHand=40, reserved=15 -> available=25, threshold=15: safeSurplus=10,
+    halfSafeSurplus=5. Destination needs 5 - exactly covered."""
+    donor_item = _restock_donor_risk_item(warehouse_id=2, warehouse_name="Reserved Warehouse", available=25, reorder_threshold=15)
+    donor_item["onHand"] = 40
+    donor_item["activeReserved"] = 15
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=5),
+        donor_risk_items=[donor_item],
+        dead_stock_entries=[_restock_dead_stock_entry(warehouse_id=2)],
+        remaining_capacity=None,
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "transfer_in"
+    assert result["transfer"]["quantity"] == 5
+    assert "Transfer 5 units from Reserved Warehouse" in result["reason"]
+
+
+def test_restock_fix_uses_available_not_onhand_and_cannot_cover_larger_need(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same donor (available=25, threshold=15, halfSafeSurplus=5), but the
+    destination needs 8 - 5 cannot cover it, so it's a full purchase, not
+    a 5-transfer-plus-3-purchase mix."""
+    donor_item = _restock_donor_risk_item(warehouse_id=2, warehouse_name="Reserved Warehouse", available=25, reorder_threshold=15)
+    donor_item["onHand"] = 40
+    donor_item["activeReserved"] = 15
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=8),
+        donor_risk_items=[donor_item],
+        dead_stock_entries=[_restock_dead_stock_entry(warehouse_id=2)],
+        remaining_capacity=None,
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "order_from_supplier"
+    assert result["transfer"] is None
+    assert result["purchaseQuantity"] == 8
+    reason = result["reason"]
+    assert "fully cover" in reason and "8-unit shortage" in reason
+
+
+# ---------------------------------------------------------------------------
+# Case 7 - multiple dead-stock donors: never combined, single strongest
+# donor wins, deterministic tie-break when more than one fully covers it.
+# ---------------------------------------------------------------------------
+
+
+def test_restock_fix_multiple_donors_only_the_fully_covering_one_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Donor A's transferQuantity=4, Donor B's=8, need=8 - only B alone
+    covers it, so B is used; A is never combined in."""
+    donor_a = _restock_donor_risk_item(warehouse_id=2, warehouse_name="Donor A", available=18, reorder_threshold=10)  # safeSurplus=8, half=4
+    donor_b = _restock_donor_risk_item(warehouse_id=3, warehouse_name="Donor B", available=26, reorder_threshold=10)  # safeSurplus=16, half=8
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=8),
+        donor_risk_items=[donor_a, donor_b],
+        dead_stock_entries=[_restock_dead_stock_entry(warehouse_id=2), _restock_dead_stock_entry(warehouse_id=3)],
+        remaining_capacity=None,
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "transfer_in"
+    assert result["transfer"] == {"sourceWarehouseId": 3, "sourceWarehouseName": "Donor B", "quantity": 8}
+    assert "Transfer 8 units from Donor B" in result["reason"]
+
+
+def test_restock_fix_multiple_fully_covering_donors_break_tie_by_largest_safe_surplus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Both donors' transferQuantity, once capped at the 8-unit need, equal
+    8 - so both fully cover it. Donor A has the larger safeSurplus (40 vs
+    20) and must win the deterministic tie-break."""
+    donor_a = _restock_donor_risk_item(warehouse_id=2, warehouse_name="Donor A", available=50, reorder_threshold=10)  # safeSurplus=40, half=20 -> capped to 8
+    donor_b = _restock_donor_risk_item(warehouse_id=3, warehouse_name="Donor B", available=30, reorder_threshold=10)  # safeSurplus=20, half=10 -> capped to 8
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=8),
+        donor_risk_items=[donor_a, donor_b],
+        dead_stock_entries=[_restock_dead_stock_entry(warehouse_id=2), _restock_dead_stock_entry(warehouse_id=3)],
+        remaining_capacity=None,
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "transfer_in"
+    assert result["transfer"]["sourceWarehouseId"] == 2
+    assert result["transfer"]["quantity"] == 8
+
+
+def test_restock_fix_multiple_partial_donors_never_combined_even_if_sum_covers_need(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Donor A's transferQuantity=4, Donor B's=5 - combined (9) would cover
+    the 8-unit need, but neither alone does, so the policy purchases the
+    entire 8 units instead of splitting across both."""
+    donor_a = _restock_donor_risk_item(warehouse_id=2, warehouse_name="Donor A", available=18, reorder_threshold=10)  # half=4
+    donor_b = _restock_donor_risk_item(warehouse_id=3, warehouse_name="Donor B", available=20, reorder_threshold=10)  # half=5
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=8),
+        donor_risk_items=[donor_a, donor_b],
+        dead_stock_entries=[_restock_dead_stock_entry(warehouse_id=2), _restock_dead_stock_entry(warehouse_id=3)],
+        remaining_capacity=None,
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "order_from_supplier"
+    assert result["transfer"] is None
+    assert result["purchaseQuantity"] == 8
+
+
+# ---------------------------------------------------------------------------
+# Case 8 - destination capacity caps the transfer below the full need.
+# ---------------------------------------------------------------------------
+
+
+def test_restock_fix_destination_capacity_prevents_full_transfer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Destination needs 10 but has room for only 6 more units. The donor's
+    own surplus would easily cover 10 (halfSafeSurplus=20), so capacity -
+    not surplus - is the binding constraint."""
     _patch_restock_solution_sources(
         monkeypatch,
         restock=_restock_solution_entry(recommended_quantity=10),
-        # The backend has already capped this transfer to destination
-        # capacity. The Restock layer must preserve 3 and purchase the other 7.
-        transfers=[_restock_transfer(source_id=2, source_name="Beirut Warehouse", quantity=3, dead_stock=True)],
+        donor_risk_items=[
+            _restock_donor_risk_item(warehouse_id=2, warehouse_name="Ample Warehouse", available=50, reorder_threshold=10)
+        ],
+        dead_stock_entries=[_restock_dead_stock_entry(warehouse_id=2)],
+        remaining_capacity=6,
         supplier=_ranked_supplier(),
     )
 
     result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
 
-    assert result["action"] == "transfer_and_purchase"
-    assert result["totalTransferQuantity"] == 3
-    assert result["purchaseQuantity"] == 7
-    assert "full 10-unit restock need" not in result["reason"]
+    assert result["action"] == "order_from_supplier"
+    assert result["transfer"] is None
+    assert result["purchaseQuantity"] == 10
+    reason = result["reason"]
+    assert "destination capacity" in reason
+
+
+# ---------------------------------------------------------------------------
+# Case 9 - a recent (under 60 days) sale disqualifies a donor even with a
+# huge surplus; another 60+ day donor, if any, is used instead.
+# ---------------------------------------------------------------------------
+
+
+def test_restock_fix_recent_sale_donor_is_ignored_even_with_huge_surplus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 45-day donor is never in dead_stock_entries (real backend
+    default is a 60-day cutoff), so it must be completely ignored - not
+    even considered as a fallback candidate."""
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=6),
+        donor_risk_items=[
+            _restock_donor_risk_item(warehouse_id=2, warehouse_name="Recently Sold Warehouse", available=1000, reorder_threshold=5)
+        ],
+        dead_stock_entries=[],  # 45 days since last OUTGOING - under the 60-day cutoff, so absent here
+        remaining_capacity=None,
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "order_from_supplier"
+    assert result["transfer"] is None
+    assert "Recently Sold Warehouse" not in result["reason"]
+
+
+def test_restock_fix_recent_sale_donor_ignored_but_another_60_day_donor_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=6),
+        donor_risk_items=[
+            _restock_donor_risk_item(warehouse_id=2, warehouse_name="Recently Sold Warehouse", available=1000, reorder_threshold=5),
+            _restock_donor_risk_item(warehouse_id=3, warehouse_name="Idle Warehouse", available=30, reorder_threshold=10),
+        ],
+        # Only warehouse 3 is confirmed 60+ day dead stock.
+        dead_stock_entries=[_restock_dead_stock_entry(warehouse_id=3)],
+        remaining_capacity=None,
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "transfer_in"
+    assert result["transfer"]["sourceWarehouseId"] == 3
+    assert "Recently Sold Warehouse" not in result["reason"]
+
+
+def test_restock_fix_no_supplier_available_reports_no_solution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When no dead-stock donor qualifies AND compare_suppliers() has no
+    recommendation either, the honest outcome is no_solution - never a
+    fabricated transfer or a silently-missing purchase quantity."""
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=6),
+        donor_risk_items=[],
+        dead_stock_entries=[],
+        remaining_capacity=None,
+        supplier=None,
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "no_solution"
+    assert result["transfer"] is None
+    assert result["purchaseQuantity"] == 6
+    assert result["supplierRecommendation"] is None
 
 
 def test_recommend_alternative_supplier_excludes_the_original_supplier(monkeypatch: pytest.MonkeyPatch) -> None:

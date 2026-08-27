@@ -5,6 +5,15 @@ export interface AuthenticatedUser {
   id: number;
   email: string;
   role: UserRole;
+  /**
+   * True only when the verified Cognito access token's client_id is the
+   * SERVICE app client (COGNITO_SERVICE_APP_CLIENT_ID) - set by
+   * JwtAuthGuard from the token itself, never from the User row (role is
+   * shared with ordinary EMPLOYEE accounts and cannot distinguish the AI
+   * service identity on its own). Gates AiServiceGuard-protected routes
+   * such as POST /ai/query-database.
+   */
+  isAiService: boolean;
 }
 
 interface RequestWithUser {

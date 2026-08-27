@@ -1,3 +1,5 @@
+import asyncio
+
 from tools.query_database import query_database
 
 
@@ -39,7 +41,7 @@ TEST_QUESTIONS = [
 ]
 
 
-def main():
+async def main():
     passed = 0
     failed = 0
 
@@ -48,7 +50,7 @@ def main():
         print(f"QUESTION: {question}")
 
         try:
-            result = query_database(question)
+            result = await query_database(question)
 
             print("\nRETRIEVED EXAMPLES:")
             for example in result["retrievedExamples"]:
@@ -85,4 +87,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

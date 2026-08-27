@@ -31,9 +31,8 @@ def test_recommendation_prompt_forbids_hedging_and_fabricated_fields() -> None:
 
     assert "already been looked up for you" in prompt
     assert "never mention a number, name, or fact that isn't literally present" in prompt.lower()
-    assert "never turn them into alternatives" in prompt.lower()
+    assert "never turn it into alternatives" in prompt.lower()
     assert "reflects exactly ONE real plan" in prompt
-    assert "transfer_and_purchase" in prompt
 
 
 def test_recommendation_prompt_forbids_raw_ids_and_unnamed_references() -> None:
@@ -156,14 +155,21 @@ def test_gather_evidence_restock_recommendation_calls_restock_only_fix(monkeypat
 
     async def fake_recommend_restock_fix(*, product_id: int, warehouse_id: int) -> dict:
         calls.append({"product_id": product_id, "warehouse_id": warehouse_id})
-        return {"productId": product_id, "warehouseId": warehouse_id, "action": "transfer_and_purchase", "transfers": [{"sourceWarehouseId": 4}], "purchaseQuantity": 3, "reason": "dead-stock transfer plus purchase remainder"}
+        return {
+            "productId": product_id,
+            "warehouseId": warehouse_id,
+            "action": "transfer_in",
+            "transfer": {"sourceWarehouseId": 4, "sourceWarehouseName": "Zahle Warehouse", "quantity": 6},
+            "purchaseQuantity": 0,
+            "reason": "Transfer 6 units from Zahle Warehouse - confirmed 60-day dead stock.",
+        }
 
     monkeypatch.setattr(recommendation_module, "recommend_restock_fix", fake_recommend_restock_fix)
 
     evidence = asyncio.run(_gather_evidence("RESTOCK_RECOMMENDATION", {"productId": 3, "warehouseId": 2}))
 
     assert calls == [{"product_id": 3, "warehouse_id": 2}]
-    assert evidence["action"] == "transfer_and_purchase"
+    assert evidence["action"] == "transfer_in"
 
 
 def test_gather_evidence_transfer_recommendation_finds_the_matching_entry(monkeypatch: pytest.MonkeyPatch) -> None:

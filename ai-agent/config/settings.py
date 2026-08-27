@@ -230,12 +230,6 @@ class Settings:
     )
     backend_request_timeout_seconds: float = float(os.getenv("BACKEND_REQUEST_TIMEOUT_SECONDS", "10"))
 
-    # Direct read-only PostgreSQL connection used by the SQL-RAG pipeline.
-    ai_database_url: str = os.getenv(
-        "AI_DATABASE_URL",
-        "",
-    )
-
     # Maintenance-only connection used by the offline embedding-generation
     # script. This must never be supplied to the AgentCore runtime or used as
     # a fallback for SQL-RAG reads.
@@ -267,15 +261,6 @@ class Settings:
             raise ValueError(
                 "EMBEDDING_DIMENSIONS must be exactly 512 to match QueryExample.embedding"
             )
-
-    def require_ai_database_url(self) -> str:
-        """Return the dedicated SQL-RAG URL, failing closed when absent."""
-        database_url = self.ai_database_url.strip()
-        if not database_url:
-            raise RuntimeError(
-                "AI_DATABASE_URL must be configured for the SQL-RAG read-only database connection"
-            )
-        return database_url
 
     def require_query_example_write_database_url(self) -> str:
         """Return the maintenance embedding-write URL, failing closed."""

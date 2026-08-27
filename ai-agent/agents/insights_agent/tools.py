@@ -646,13 +646,6 @@ async def _load_transfer_recommendations(path: str) -> dict:
     ).model_dump(mode="json")
 
 
-async def _get_restock_dead_stock_transfers() -> dict:
-    """Narrow backend feed used only by Control Tower Restock solutions."""
-    return await _load_transfer_recommendations(
-        "/stock-insights/restock-dead-stock-transfers"
-    )
-
-
 @tool
 async def get_transfer_recommendations() -> dict:
     """Get backend-recommended stock transfers between warehouses to balance surplus and shortage.
@@ -1353,17 +1346,199 @@ async def recommend_stockout_fix(product_id: int, warehouse_id: int) -> dict:
     ).model_dump(mode="json")
 
 
+def _select_restock_dead_stock_donor(
+    donor_candidates: list[dict],
+    remaining_need: int,
+    remaining_capacity: Optional[int],
+) -> tuple[Optional[dict], list[dict]]:
+    """Pure calculation: pick the single best dead-stock donor for a Restock
+    shortage, or none. See recommend_restock_fix() for how donor_candidates
+    is built (already filtered to OTHER warehouses that both hold this
+    product AND qualify as 60+-day dead stock for it - no ordinary surplus
+    donor ever reaches this function).
+
+    donor_candidates: [{"warehouseId": int, "warehouseName": str | None,
+    "available": int, "reorderThreshold": int}, ...]. remaining_need is the
+    destination's restock shortfall AFTER pending incoming is already
+    netted out (recommend_restock_fix()'s recommendedQuantity - itself
+    already `reorderThreshold - projectedAvailable`, so pending incoming is
+    never double-subtracted here). remaining_capacity is the destination's
+    warehouse-wide remaining capacity headroom (None = unlimited).
+
+    For each candidate:
+      safeSurplus = available - reorderThreshold. Only a POSITIVE
+      safeSurplus is usable - a donor already at or below its own
+      threshold has nothing that can safely leave it.
+      halfSafeSurplus = floor(safeSurplus / 2) - HALF the safe surplus,
+      never all of it, so the donor keeps a real margin above its own
+      threshold after the transfer, not just a nominal one.
+      transferQuantity = min(halfSafeSurplus, remaining_need,
+      remaining_capacity or unlimited).
+
+    This policy NEVER combines donors and NEVER recommends a partial
+    transfer plus a purchase for the remainder: among donors whose
+    transferQuantity alone equals the FULL remaining_need, the winner is
+    chosen by the largest safeSurplus (the safest/most conservative
+    choice), then warehouseId ascending for final determinism. A donor
+    that cannot alone cover the full need is never selected, no matter how
+    large its surplus.
+
+    Returns (winner_or_None, scored_candidates). scored_candidates is every
+    candidate with a positive safeSurplus (whether or not it individually
+    covers remaining_need), returned so the caller can build an accurate
+    "why not" explanation when there is no winner.
+    """
+    scored: list[dict] = []
+    for candidate in donor_candidates:
+        safe_surplus = candidate["available"] - candidate["reorderThreshold"]
+        if safe_surplus <= 0:
+            continue
+        half_safe_surplus = safe_surplus // 2
+        if half_safe_surplus <= 0:
+            continue
+        constraints = [half_safe_surplus, remaining_need]
+        if remaining_capacity is not None:
+            constraints.append(remaining_capacity)
+        transfer_quantity = min(constraints)
+        if transfer_quantity <= 0:
+            continue
+        scored.append(
+            {
+                "warehouseId": candidate["warehouseId"],
+                "warehouseName": candidate["warehouseName"],
+                "safeSurplus": safe_surplus,
+                "halfSafeSurplus": half_safe_surplus,
+                "transferQuantity": transfer_quantity,
+            }
+        )
+
+    fully_covering = [c for c in scored if c["transferQuantity"] == remaining_need]
+    if not fully_covering:
+        return None, scored
+
+    winner = sorted(fully_covering, key=lambda c: (-c["safeSurplus"], c["warehouseId"]))[0]
+    return winner, scored
+
+
+def _build_restock_transfer_reason(
+    winner: dict,
+    destination_warehouse_name: Optional[str],
+    remaining_need: int,
+    pending_quantity: int,
+) -> str:
+    """The transfer explanation the Restock policy requires: WHY this donor
+    (60+ days with no customer sale, so it's confirmed dead stock) and WHY
+    it's still safe for the donor (transferring transferQuantity - at most
+    half its safe surplus - leaves it at or above its own reorder
+    threshold, by construction of _select_restock_dead_stock_donor)."""
+    pending_clause = (
+        f"{pending_quantity} units are already pending incoming, leaving a remaining need of "
+        f"{remaining_need} units. "
+        if pending_quantity > 0
+        else ""
+    )
+    donor_name = winner["warehouseName"] or "the donor warehouse"
+    destination_name = destination_warehouse_name or "the destination warehouse"
+    return (
+        f"{pending_clause}Transfer {winner['transferQuantity']} units from {donor_name}. "
+        "This product has had no customer sales there for at least 60 days, so the stock "
+        f"qualifies as dead stock, and the transfer fully covers {destination_name}'s remaining "
+        f"need while leaving {donor_name} at or above its reorder threshold."
+    )
+
+
+def _build_restock_purchase_reason(
+    remaining_need: int,
+    remaining_capacity: Optional[int],
+    donor_candidate_count: int,
+    scored_candidates: list[dict],
+    purchase_quantity: int,
+    supplier_name: Optional[str],
+) -> str:
+    """The four distinct "why a purchase instead" explanations the Restock
+    policy requires - each names the real root cause rather than one vague
+    catch-all, so the reader knows whether the problem is "no dead stock
+    anywhere", "the only dead stock is already at its own floor", "not
+    enough of it to spare", or "there'd be enough surplus but nowhere to
+    put it"."""
+    supplier_clause = (
+        f"Purchase the full remaining {purchase_quantity} units from {supplier_name}, "
+        "the highest-ranked supplier."
+        if supplier_name is not None
+        else (
+            f"A purchase of {purchase_quantity} units is still required, but no supplier has "
+            "enough evaluated history to recommend one."
+        )
+    )
+
+    if donor_candidate_count == 0:
+        return (
+            "No warehouse holding this product qualifies as 60+ day dead stock. " + supplier_clause
+        )
+
+    if not scored_candidates:
+        return (
+            "The dead-stock warehouse has no safely transferable stock above its reorder "
+            "threshold. " + supplier_clause
+        )
+
+    best = max(scored_candidates, key=lambda c: (c["transferQuantity"], c["safeSurplus"]))
+    capacity_bound = (
+        remaining_capacity is not None
+        and remaining_capacity < remaining_need
+        and remaining_capacity <= best["halfSafeSurplus"]
+    )
+    if capacity_bound:
+        return (
+            "The available dead-stock transfer cannot fully satisfy the remaining restock "
+            "requirement within destination capacity. " + supplier_clause
+        )
+
+    return (
+        f"No qualifying dead-stock warehouse can fully cover the {remaining_need}-unit shortage "
+        "under the transfer policy. " + supplier_clause
+    )
+
+
 async def recommend_restock_fix(product_id: int, warehouse_id: int) -> dict:
     """Build the Control Tower RESTOCK_RECOMMENDATION solution.
 
-    Unlike the normal transfer recommendation path, this Restock-only flow
-    accepts only backend-computed transfers whose donor is also marked dead
-    stock for this exact product (`sourceIsDeadStock is True`). The backend
-    owns all safety calculations: donor surplus above its reorder threshold,
-    active reservations, pending incoming, destination capacity, and each
-    transfer quantity. This function only filters, aggregates, and derives the
-    uncovered remainder from the backend's recommendedQuantity.
+    This Restock-only flow is deliberately narrower and DIFFERENT from the
+    generic STOCKOUT_RISK/TRANSFER_RECOMMENDATION donor logic
+    (get_transfer_recommendations() - unchanged, still used by those): a
+    transfer here is only ever allowed from a SINGLE warehouse that is BOTH
+    (a) holding the same product and (b) confirmed 60+-day dead stock for
+    it (no customer OUTGOING sale in that window - see GET
+    /stock-insights/dead-stock), and only ever for HALF of that donor's
+    safe surplus above its own reorder threshold (see
+    _select_restock_dead_stock_donor). Multiple donors are never combined,
+    and a transfer is only ever recommended when a single donor's
+    transferQuantity alone covers the ENTIRE remaining need - a partial
+    transfer plus a purchase for the remainder is never recommended;
+    instead the full remaining quantity is purchased from the best-ranked
+    supplier (see _build_restock_purchase_reason for the four distinct
+    reasons that can lead here).
+
+    Returns:
+        A dict shaped like RecommendRestockFixResponse. action is
+        "transfer_in" (transfer populated, purchaseQuantity 0),
+        "order_from_supplier" (supplierRecommendation populated, transfer
+        None), or "no_solution" (neither - no qualifying donor AND no
+        supplier has enough evaluated history either, a genuine "nothing
+        to recommend" answer). reason never exposes the raw sourceIsDeadStock/
+        safeSurplus/halfSafeSurplus internals - only their real-world
+        meaning in plain language.
+
+    Raises:
+        LookupError if no restock recommendation currently exists for this
+        exact product/warehouse. Unauthorized, Forbidden, NotFound,
+        ValidationError, Conflict, or ServiceUnavailable (see
+        backend_client.py) if a backend call fails. Deliberately NOT
+        caught/swallowed here - same convention as every other tool in
+        this file.
     """
+    client = get_backend_client()
+
     restock_entries = (await get_restock_recommendations())["recommendations"]
     restock = next(
         (
@@ -1378,91 +1553,65 @@ async def recommend_restock_fix(product_id: int, warehouse_id: int) -> dict:
             f"No restock recommendation currently exists for product {product_id} at warehouse {warehouse_id}."
         )
 
-    recommended_quantity = restock["recommendedQuantity"]
-    transfer_entries = (await _get_restock_dead_stock_transfers())["recommendations"]
-    qualifying = [
-        entry
-        for entry in transfer_entries
-        if entry["productId"] == product_id
-        and entry["toWarehouseId"] == warehouse_id
-        and entry["sourceIsDeadStock"] is True
-    ]
-    # Defensive guard, evaluated BEFORE any of this evidence can reach
-    # narration: the Restock policy's one hard rule is that a transfer here
-    # is only ever allowed from a confirmed 60-day dead-stock donor - never
-    # a merely-healthy surplus donor (that's what distinguishes this path
-    # from the generic STOCKOUT_RISK/TRANSFER_RECOMMENDATION donor logic).
-    # The filter above already enforces this, so this should never fire in
-    # practice - it exists purely so a future change to the filter, or to
-    # _get_restock_dead_stock_transfers()'s own backend query, fails loudly
-    # here instead of silently narrating a non-dead-stock donor as if it
-    # were policy-compliant.
-    for entry in qualifying:
-        if entry["sourceIsDeadStock"] is not True:
-            raise AssertionError(
-                "Restock dead-stock-only invariant violated: donor warehouse "
-                f"{entry.get('fromWarehouseId')} for product {product_id} has "
-                f"sourceIsDeadStock={entry['sourceIsDeadStock']!r}, not True."
-            )
-    total_transfer_quantity = sum(entry["transferQuantity"] for entry in qualifying)
-    if total_transfer_quantity > recommended_quantity:
-        raise ValueError(
-            "Backend dead-stock transfer quantities exceed the current restock recommendation."
-        )
-
-    purchase_quantity = recommended_quantity - total_transfer_quantity
-    supplier_recommendation = None
-    if purchase_quantity > 0:
-        supplier_recommendation = (await compare_suppliers(product_id))["recommendedSupplier"]
-
-    transfers = [
-        {
-            "sourceWarehouseId": entry["fromWarehouseId"],
-            "sourceWarehouseName": entry["fromWarehouseName"],
-            "quantity": entry["transferQuantity"],
-        }
-        for entry in qualifying
-    ]
+    # Already reorderThreshold - projectedAvailable (projectedAvailable
+    # already includes pending incoming) - the real "remaining need after
+    # pending incoming" the policy requires, not recomputed here.
+    remaining_need = restock["recommendedQuantity"]
     pending_quantity = restock["pendingIncomingQuantity"]
-    pending_context = (
-        f" {pending_quantity} units are already pending incoming but are insufficient to close the remaining gap."
-        if pending_quantity > 0
-        else " There is no pending incoming stock for this product."
+
+    capacity = await client.get(f"/warehouse-inventory/capacity/{warehouse_id}")
+    remaining_capacity = capacity["remainingCapacity"]
+
+    dead_stock_entries = await client.get("/stock-insights/dead-stock")
+    dead_stock_donor_keys = {
+        entry["warehouseId"]
+        for entry in dead_stock_entries
+        if entry["productId"] == product_id and entry["warehouseId"] != warehouse_id
+    }
+
+    risk_items = (await get_stockout_risk())["items"]
+    donor_candidates = [
+        {
+            "warehouseId": item["warehouseId"],
+            "warehouseName": item["warehouseName"],
+            "available": item["available"],
+            "reorderThreshold": item["reorderThreshold"],
+        }
+        for item in risk_items
+        if item["productId"] == product_id and item["warehouseId"] in dead_stock_donor_keys
+    ]
+
+    winner, scored_candidates = _select_restock_dead_stock_donor(
+        donor_candidates, remaining_need, remaining_capacity
     )
 
-    if total_transfer_quantity == recommended_quantity:
+    if winner is not None:
         action = "transfer_in"
+        transfer = {
+            "sourceWarehouseId": winner["warehouseId"],
+            "sourceWarehouseName": winner["warehouseName"],
+            "quantity": winner["transferQuantity"],
+        }
+        purchase_quantity = 0
         supplier_recommendation = None
-        transfer_summary = ", ".join(
-            f"{entry['transferQuantity']} units from {entry['fromWarehouseName'] or 'a qualifying dead-stock warehouse'}"
-            for entry in qualifying
-        )
-        reason = (
-            f"The full {recommended_quantity}-unit restock need can be covered by 60-day dead-stock transfers: "
-            f"{transfer_summary}.{pending_context}"
-        )
-    elif total_transfer_quantity > 0:
-        action = "transfer_and_purchase"
-        supplier_text = (
-            f" Purchase the remaining {purchase_quantity} units from {supplier_recommendation['supplierName']}."
-            if supplier_recommendation is not None
-            else f" Purchase the remaining {purchase_quantity} units; no supplier has enough evaluated history to name one."
-        )
-        reason = (
-            f"Qualifying 60-day dead-stock donors can safely transfer {total_transfer_quantity} of the "
-            f"{recommended_quantity} required units.{supplier_text}{pending_context}"
-        )
-    elif supplier_recommendation is not None:
-        action = "order_from_supplier"
-        reason = (
-            f"No 60-day dead-stock donor has a backend-qualified transfer for this shortage. Purchase "
-            f"{purchase_quantity} units from {supplier_recommendation['supplierName']}.{pending_context}"
+        reason = _build_restock_transfer_reason(
+            winner, restock["warehouseName"], remaining_need, pending_quantity
         )
     else:
-        action = "no_solution"
-        reason = (
-            f"No 60-day dead-stock donor has a backend-qualified transfer. A purchase of {purchase_quantity} "
-            f"units is still required, but no supplier has enough evaluated history to recommend one.{pending_context}"
+        transfer = None
+        purchase_quantity = remaining_need
+        supplier_recommendation = (await compare_suppliers(product_id))["recommendedSupplier"]
+        supplier_name = (
+            supplier_recommendation["supplierName"] if supplier_recommendation is not None else None
+        )
+        action = "order_from_supplier" if supplier_recommendation is not None else "no_solution"
+        reason = _build_restock_purchase_reason(
+            remaining_need,
+            remaining_capacity,
+            len(donor_candidates),
+            scored_candidates,
+            purchase_quantity,
+            supplier_name,
         )
 
     return RecommendRestockFixResponse.model_validate(
@@ -1471,11 +1620,10 @@ async def recommend_restock_fix(product_id: int, warehouse_id: int) -> dict:
             "productName": restock["productName"],
             "warehouseId": warehouse_id,
             "warehouseName": restock["warehouseName"],
-            "recommendedQuantity": recommended_quantity,
+            "recommendedQuantity": remaining_need,
             "pendingIncomingQuantity": pending_quantity,
             "action": action,
-            "transfers": transfers,
-            "totalTransferQuantity": total_transfer_quantity,
+            "transfer": transfer,
             "purchaseQuantity": purchase_quantity,
             "supplierRecommendation": supplier_recommendation,
             "reason": reason,

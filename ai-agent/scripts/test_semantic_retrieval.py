@@ -1,3 +1,5 @@
+import asyncio
+
 from retrieval.embedding_service import embed_text
 from retrieval.query_example_repository import TOP_K, find_similar_examples
 
@@ -16,9 +18,9 @@ TEST_QUESTIONS = [
 ]
 
 
-def print_results(question: str):
+async def print_results(question: str):
     embedding = embed_text(question)
-    examples = find_similar_examples(embedding, limit=TOP_K)
+    examples = await find_similar_examples(embedding, limit=TOP_K)
 
     print("=" * 90)
     print(f"QUESTION: {question}")
@@ -33,10 +35,10 @@ def print_results(question: str):
         )
 
 
-def main():
+async def main():
     for question in TEST_QUESTIONS:
-        print_results(question)
+        await print_results(question)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
