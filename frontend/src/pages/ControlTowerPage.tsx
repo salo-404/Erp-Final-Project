@@ -247,8 +247,15 @@ export function ControlTowerPage() {
             <div>
               <div style={sectionLabelStyle}>Needs Attention</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 900 }}>
-                {grouped.attention.map((alert) => {
+                {grouped.attention.map((alert, index) => {
                   const badge = severityBadge(alert.severity);
+                  // The FIRST Overdue Transaction card never shows Recommend
+                  // Solution, even when isRecommendableAlert() would
+                  // otherwise allow it — every other overdue card (and every
+                  // other category) is unaffected.
+                  const isFirstOverdue =
+                    alert.category === "OVERDUE_TRANSACTION" &&
+                    grouped.attention.findIndex((a) => a.category === "OVERDUE_TRANSACTION") === index;
                   return (
                     <div key={alertKey(alert)} style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderLeft: `3px solid ${badge.color}`, borderRadius: 8, padding: "18px 20px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, marginBottom: 10 }}>
@@ -259,7 +266,7 @@ export function ControlTowerPage() {
                         </div>
                       </div>
                       <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 14, lineHeight: 1.5, maxWidth: 640 }}>{alertDescription(alert)}</div>
-                      {(alert.severity === "CRITICAL" || alert.severity === "WARNING") && isRecommendableAlert(alert) && (
+                      {(alert.severity === "CRITICAL" || alert.severity === "WARNING") && isRecommendableAlert(alert) && !isFirstOverdue && (
                         <div style={{ display: "flex", justifyContent: "flex-end" }}>
                           <RecommendSolutionAction alert={alert} />
                         </div>
