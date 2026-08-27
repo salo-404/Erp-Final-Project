@@ -208,3 +208,14 @@ Before launching AgentCore, provision/configure externally:
 Optional Bedrock Guardrails remain an unprovisioned deployment hardening layer;
 the implemented scope gate and hardened Supervisor prompt remain active without
 it.
+
+### Deploying via direct code (S3) instead of a container
+
+AgentCore Runtime also supports deploying straight from a source + dependency
+zip in S3, instead of a container image in ECR. `python -m
+scripts.package_for_s3_deploy [--upload]` (requires `uv`: `pip install uv`)
+builds `deployment_package.zip` with real ARM64/Python-3.11 wheels and the
+same source files the Dockerfile ships; `--upload` also pushes it to the
+AgentCore code S3 bucket. Pointing a runtime (new or existing) at the result
+is a separate, deliberate `create-agent-runtime`/`update-agent-runtime` call -
+not something this script does on its own.

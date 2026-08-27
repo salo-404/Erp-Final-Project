@@ -3,6 +3,11 @@ generator client {
   output              = "../generated/prisma"
   moduleFormat        = "cjs"
   importFileExtension = ""
+  // "native" keeps local dev (Windows/whatever the dev machine is) working;
+  // debian-openssl-3.0.x is the real target for the node:22-slim (Debian)
+  // container this generates the query engine binary for on `npm run build`
+  // - the ECS/Fargate deployment image, not just local dev.
+  binaryTargets       = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
