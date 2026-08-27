@@ -21,6 +21,12 @@ IN_SCOPE_QUERIES = [
     "What's the available stock for the 27in Monitor at Manchester North?",
     "Draft a purchase order for 60 units of the Mechanical Keyboard.",
     "Is there a duplicate for the order we just received from Bluewater Retail Group?",
+    # "sales revenue, purchase costs, or profit margin" was added to
+    # GATE_SYSTEM_PROMPT's IN SCOPE list on 2026-08-27 - a real, confirmed
+    # bug had this declined as out of scope (no listed keyword matched)
+    # even though the exact same data is real, available, and answerable
+    # via query_database()/the Analytics endpoints.
+    "What is our total revenue, purchase cost, and net margin over the last 30 days?",
     # "expiry" was deliberately removed from GATE_SYSTEM_PROMPT's IN SCOPE
     # list on 2026-08-21 (get_expiry_risk no longer exists - see
     # agents/insights_agent). This query stays here NOT because "expiry" is

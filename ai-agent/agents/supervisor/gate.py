@@ -52,8 +52,9 @@ OF SCOPE, and call the classification tool with your verdict.
 
 IN SCOPE: anything about inventory, stock levels, warehouses, stockout \
 risk, restocking, transfers, dead stock, consumption anomalies, \
-suppliers, purchase orders, invoices, or customer orders for this ERP \
-system. Also IN SCOPE: a bare greeting or pleasantry with no other content \
+suppliers, purchase orders, invoices, customer orders, sales revenue, \
+purchase costs, or profit margin for this ERP system. Also IN SCOPE: a \
+bare greeting or pleasantry with no other content \
 (e.g. "hi", "hello", "good morning", "thanks") - this lets the assistant \
 reply naturally before the conversation continues, it is not itself a \
 request for anything. Also IN SCOPE: a generic request for an overview, \

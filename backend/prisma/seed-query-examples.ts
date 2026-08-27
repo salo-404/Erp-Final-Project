@@ -432,6 +432,35 @@ ORDER BY sale_date
   {
     category: 'sales',
     question:
+      'What is our total revenue, purchase cost, and net margin over the last 30 days?',
+    description:
+      'Revenue is COMPLETED OUTGOING quantity times price; purchase cost is the same for COMPLETED INCOMING; margin is revenue minus purchase cost. Two independent one-row subqueries (not a JOIN on a shared key) avoid a row-count mismatch inflating either total.',
+    sql: `
+SELECT
+    ROUND(COALESCE(sales.revenue, 0), 2) AS total_revenue,
+    ROUND(COALESCE(purchases.cost, 0), 2) AS total_purchase_cost,
+    ROUND(COALESCE(sales.revenue, 0) - COALESCE(purchases.cost, 0), 2) AS net_margin
+FROM
+    (SELECT SUM(iti.quantity * COALESCE(iti.price, 0)) AS revenue
+     FROM "InventoryTransaction" it
+     JOIN "InventoryTransactionItem" iti
+         ON iti."transactionId" = it.id
+     WHERE it.type = 'OUTGOING'
+       AND it.status = 'COMPLETED'
+       AND it."actualDate" >= CURRENT_DATE - INTERVAL '30 days') AS sales,
+    (SELECT SUM(iti.quantity * COALESCE(iti.price, 0)) AS cost
+     FROM "InventoryTransaction" it
+     JOIN "InventoryTransactionItem" iti
+         ON iti."transactionId" = it.id
+     WHERE it.type = 'INCOMING'
+       AND it.status = 'COMPLETED'
+       AND it."actualDate" >= CURRENT_DATE - INTERVAL '30 days') AS purchases
+`,
+  },
+
+  {
+    category: 'sales',
+    question:
       'What has our monthly sales trend looked like over the last year?',
     description: 'Monthly completed OUTGOING trend.',
     sql: `
