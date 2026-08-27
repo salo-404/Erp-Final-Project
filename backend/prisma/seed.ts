@@ -67,7 +67,7 @@ const isProduction =
   process.env.NODE_ENV?.toLowerCase() === 'production' ||
   process.env.APP_ENV?.toLowerCase() === 'production';
 
-function cognitoIdentity(key: string, fallback: string): string {
+function seedIdentity(key: string, fallback: string): string {
   const value = process.env[key]?.trim();
   if (value) return value;
   if (isProduction) {
@@ -148,16 +148,22 @@ async function main() {
   // MUST be supplied. The seed never creates/deletes Cognito users itself.
   const admin = await prisma.user.create({
     data: {
-      cognitoSub: cognitoIdentity(
+      cognitoSub: seedIdentity(
         'SEED_ADMIN_COGNITO_SUB',
         'UNMAPPED_DEV_ADMIN_SUB',
       ),
-      cognitoUsername: cognitoIdentity(
+      cognitoUsername: seedIdentity(
         'SEED_ADMIN_COGNITO_USERNAME',
         'UNMAPPED_DEV_ADMIN_USERNAME',
       ),
-      name: 'Demo Administrator',
-      email: 'admin@minierp.demo',
+      name: seedIdentity(
+        'SEED_ADMIN_NAME',
+        'Demo Administrator',
+      ),
+      email: seedIdentity(
+        'SEED_ADMIN_EMAIL',
+        'admin@minierp.demo',
+      ),
       role: UserRole.ADMIN,
       createdAt: daysAgo(365),
     },
@@ -165,11 +171,11 @@ async function main() {
 
   await prisma.user.create({
     data: {
-      cognitoSub: cognitoIdentity(
+      cognitoSub: seedIdentity(
         'SEED_EMPLOYEE_COGNITO_SUB',
         'UNMAPPED_DEV_EMPLOYEE_SUB',
       ),
-      cognitoUsername: cognitoIdentity(
+      cognitoUsername: seedIdentity(
         'SEED_EMPLOYEE_COGNITO_USERNAME',
         'UNMAPPED_DEV_EMPLOYEE_USERNAME',
       ),
@@ -182,11 +188,11 @@ async function main() {
 
   await prisma.user.create({
     data: {
-      cognitoSub: cognitoIdentity(
+      cognitoSub: seedIdentity(
         'AI_SERVICE_COGNITO_SUB',
         'UNMAPPED_DEV_AI_SERVICE_SUB',
       ),
-      cognitoUsername: cognitoIdentity(
+      cognitoUsername: seedIdentity(
         'AI_SERVICE_COGNITO_USERNAME',
         'UNMAPPED_DEV_AI_SERVICE_USERNAME',
       ),
