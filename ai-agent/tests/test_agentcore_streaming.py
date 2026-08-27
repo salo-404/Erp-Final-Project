@@ -96,9 +96,19 @@ def test_only_safe_text_deltas_are_exposed_and_done_is_emitted_once(
     assert sum(event == {"type": "done"} for event in events) == 1
 
 
-def test_gate_decline_uses_stream_contract_without_memory_or_supervisor(
+def test_gate_decline_still_uses_the_correct_stream_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The Supervisor is now restored/built BEFORE the gate runs (see
+    agentcore_entrypoint.py's stream_response - real prior conversation
+    must be visible to the gate even after a microVM reset dropped the
+    in-process cache, confirmed live: an ordinary follow-up like "what
+    about rain jacket" right after a stockout answer was wrongly declined
+    because nothing was cached in-process yet). A declined query must
+    still produce exactly the normal decline event contract - this test
+    now asserts the builders WERE called (the new, deliberate behavior),
+    not that they were skipped."""
+    build_calls: list[str] = []
     _patch_membership(monkeypatch, {"human-token": 7})
     monkeypatch.setattr(
         entrypoint,
@@ -108,16 +118,17 @@ def test_gate_decline_uses_stream_contract_without_memory_or_supervisor(
     monkeypatch.setattr(
         entrypoint,
         "build_agentcore_memory_session_manager",
-        lambda **kwargs: pytest.fail("Memory must not be constructed"),
+        lambda **kwargs: build_calls.append("memory") or None,
     )
     monkeypatch.setattr(
         entrypoint,
         "build_supervisor_agent",
-        lambda **kwargs: pytest.fail("Supervisor must not be constructed"),
+        lambda **kwargs: build_calls.append("supervisor") or SimpleNamespace(messages=[]),
     )
 
     events = asyncio.run(_collect({"prompt": "Weather"}, _context(_session(7))))
 
+    assert build_calls == ["memory", "supervisor"]
     assert events[0]["type"] == "text_delta"
     assert "I can only help with inventory" in events[0]["text"]
     assert "out of scope" in events[0]["text"]
@@ -142,14 +153,12 @@ def test_gate_internal_error_streams_generic_fallback_not_the_decline_template(
         lambda prompt, recent_context=None: (False, distinctive_internal_message, True),
     )
     monkeypatch.setattr(
-        entrypoint,
-        "build_agentcore_memory_session_manager",
-        lambda **kwargs: pytest.fail("Memory must not be constructed"),
+        entrypoint, "build_agentcore_memory_session_manager", lambda **kwargs: None
     )
     monkeypatch.setattr(
         entrypoint,
         "build_supervisor_agent",
-        lambda **kwargs: pytest.fail("Supervisor must not be constructed"),
+        lambda **kwargs: SimpleNamespace(messages=[]),
     )
 
     events = asyncio.run(_collect({"prompt": "hi"}, _context(_session(7))))

@@ -516,14 +516,33 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
             await _acquire_invocation_lock(state.invocation_lock)
             lock_acquired = True
 
-            # Only read context off a Supervisor this session ALREADY built on
-            # an earlier turn - never construct Memory/Supervisor just to feed
-            # the gate. A declined query must still never cause either to be
-            # built (see test_gate_decline_uses_stream_contract_without_memory_or_supervisor).
-            # This means a session's first message, or the first message after
-            # a microVM reset drops the in-process cache, is judged without
-            # context (same as before this fix) - the common case this fixes
-            # is an ordinary follow-up later in an already-active session.
+            # Restore (or build) this session's Supervisor BEFORE the gate,
+            # not after - so the gate sees real prior conversation even when
+            # the in-process cache was dropped (a microVM reset between two
+            # messages of the SAME chat is routine on a serverless runtime,
+            # confirmed live: an ordinary follow-up like "what about rain
+            # jacket" right after a stockout answer was declined as
+            # off-topic because nothing was cached in-process yet, even
+            # though the real conversation was sitting in AgentCore Memory
+            # the whole time). AgentCoreMemorySessionManager restores prior
+            # turns into the new Agent's own message history on construction
+            # (a real Memory read, not free) - this trades that cost on
+            # every message, including ones the gate goes on to decline, for
+            # never losing context a real multi-turn conversation already
+            # established. Building the agent here is still read-only: nothing
+            # is written to Memory until a turn is actually streamed below.
+            if state.supervisor_agent is None:
+                memory_session_manager = build_agentcore_memory_session_manager(
+                    actor_id=owner_erp_user_id,
+                    session_id=session_id,
+                )
+                if memory_session_manager is None:
+                    state.supervisor_agent = build_supervisor_agent()
+                else:
+                    state.supervisor_agent = build_supervisor_agent(
+                        session_manager=memory_session_manager
+                    )
+
             recent_context = _recent_conversation_context(state.supervisor_agent)
             allowed, reason, internal_error = await asyncio.to_thread(
                 is_in_scope, prompt, recent_context
@@ -545,18 +564,6 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
                 yield {"type": "text_delta", "text": text}
                 yield {"type": "done"}
                 return
-
-            if state.supervisor_agent is None:
-                memory_session_manager = build_agentcore_memory_session_manager(
-                    actor_id=owner_erp_user_id,
-                    session_id=session_id,
-                )
-                if memory_session_manager is None:
-                    state.supervisor_agent = build_supervisor_agent()
-                else:
-                    state.supervisor_agent = build_supervisor_agent(
-                        session_manager=memory_session_manager
-                    )
 
             async for event in _stream_agent_events(state.supervisor_agent, prompt, bearer_token):
                 yield event
