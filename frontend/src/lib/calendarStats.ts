@@ -10,8 +10,14 @@ export interface MonthCell {
   isToday: boolean;
 }
 
+// Local, not UTC - the calendar grid itself is built entirely from local
+// Date arithmetic (buildMonthGrid below), so comparing it against a UTC
+// day would drift by one day for roughly half of every 24 hours in any
+// negative-UTC-offset timezone (e.g. late evening local time is already
+// "tomorrow" in UTC) - a real, confirmed bug where "today" landed on the
+// wrong grid cell.
 function dateKey(d: Date): string {
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 /** Always a 6x7 grid (42 cells) so the calendar's height never jumps between months. */

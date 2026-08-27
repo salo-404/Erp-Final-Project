@@ -30,6 +30,7 @@ from tools.schemas.insights_schema import (
     OpenPurchaseOrdersResponse,
     RecommendAlternativeSupplierResponse,
     RecommendDeadStockTransferResponse,
+    RecommendRestockFixResponse,
     RecommendStockoutFixResponse,
     ReorderQuantityResult,
     ResolveProductNameResponse,
@@ -553,6 +554,22 @@ async def get_restock_recommendations() -> dict:
     ).model_dump(mode="json")
 
 
+def _risk_urgency_phrase(risk_level: str) -> str:
+    """Shared deterministic phrasing for a real riskLevel value - "is out of
+    stock" vs "is at risk of stocking out" is a real, meaningful
+    distinction (a stockout ALREADY happened vs. hasn't yet), and leaving
+    it to the model to guess from context alone produced a real, confirmed
+    wrong answer: a genuinely OUT_OF_STOCK product narrated as merely "at
+    risk of running out." Used everywhere a recommendation's reason needs
+    to state current urgency from a real riskLevel field.
+    """
+    return {
+        "OUT_OF_STOCK": "is out of stock",
+        "AT_RISK": "is at risk of stocking out",
+        "OK": "has adequate stock",
+    }.get(risk_level, "has an uncertain stock position")
+
+
 def _build_transfer_recommendation_reason(
     destination_risk_level: str,
     destination_days_of_supply: Optional[float],
@@ -565,11 +582,7 @@ def _build_transfer_recommendation_reason(
     the model (see prompts.py rule 1: the agent interprets, it never
     invents numbers or claims it can't back with a real value).
     """
-    urgency = {
-        "OUT_OF_STOCK": "is out of stock",
-        "AT_RISK": "is at risk of stocking out",
-        "OK": "has adequate stock",
-    }.get(destination_risk_level, "has an uncertain stock position")
+    urgency = _risk_urgency_phrase(destination_risk_level)
 
     supply_clause = (
         f", with about {destination_days_of_supply:.1f} days of supply remaining"
@@ -587,29 +600,8 @@ def _build_transfer_recommendation_reason(
     return f"Destination warehouse {urgency}{supply_clause}.{source_clause}"
 
 
-@tool
-async def get_transfer_recommendations() -> dict:
-    """Get backend-recommended stock transfers between warehouses to balance surplus and shortage.
-
-    Returns:
-        A dict with a `recommendations` list of source/destination
-        warehouse pairs, the product, `transferQuantity`, the backend's
-        post-transfer/source/destination context, a `reason` string
-        the AI layer builds deterministically from real backend fields
-        (destinationRiskLevel, destinationDaysOfSupply, sourceIsDeadStock)
-        - never model-generated - and productName/fromWarehouseName/
-        toWarehouseName (fetched via one shared GET /products +
-        GET /warehouses call, same pattern as get_available_stock - see
-        get_stockout_risk for why this matters: without a real name, the
-        agent guesses one, confirmed live to invent a nonexistent
-        warehouse name).
-
-    Raises:
-        Unauthorized, Forbidden, NotFound, ValidationError, Conflict, or
-        ServiceUnavailable (see backend_client.py) if the backend call
-        fails. Deliberately NOT caught/swallowed here - same pattern as
-        every other wired tool in this file.
-    """
+async def _load_transfer_recommendations(path: str) -> dict:
+    """Load and name-enrich one backend transfer-recommendation feed."""
     client = get_backend_client()
 
     products = await client.get("/products")
@@ -617,8 +609,7 @@ async def get_transfer_recommendations() -> dict:
     warehouses = await client.get("/warehouses")
     warehouse_names = {warehouse["id"]: warehouse["name"] for warehouse in warehouses}
 
-    entries = await client.get("/stock-insights/transfer-recommendations")
-
+    entries = await client.get(path)
     recommendations = [
         {
             "productId": entry["productId"],
@@ -653,6 +644,41 @@ async def get_transfer_recommendations() -> dict:
     return TransferRecommendationsResponse.model_validate(
         {"recommendations": recommendations, "asOf": datetime.now().isoformat()}
     ).model_dump(mode="json")
+
+
+async def _get_restock_dead_stock_transfers() -> dict:
+    """Narrow backend feed used only by Control Tower Restock solutions."""
+    return await _load_transfer_recommendations(
+        "/stock-insights/restock-dead-stock-transfers"
+    )
+
+
+@tool
+async def get_transfer_recommendations() -> dict:
+    """Get backend-recommended stock transfers between warehouses to balance surplus and shortage.
+
+    Returns:
+        A dict with a `recommendations` list of source/destination
+        warehouse pairs, the product, `transferQuantity`, the backend's
+        post-transfer/source/destination context, a `reason` string
+        the AI layer builds deterministically from real backend fields
+        (destinationRiskLevel, destinationDaysOfSupply, sourceIsDeadStock)
+        - never model-generated - and productName/fromWarehouseName/
+        toWarehouseName (fetched via one shared GET /products +
+        GET /warehouses call, same pattern as get_available_stock - see
+        get_stockout_risk for why this matters: without a real name, the
+        agent guesses one, confirmed live to invent a nonexistent
+        warehouse name).
+
+    Raises:
+        Unauthorized, Forbidden, NotFound, ValidationError, Conflict, or
+        ServiceUnavailable (see backend_client.py) if the backend call
+        fails. Deliberately NOT caught/swallowed here - same pattern as
+        every other wired tool in this file.
+    """
+    return await _load_transfer_recommendations(
+        "/stock-insights/transfer-recommendations"
+    )
 
 
 @tool
@@ -1198,14 +1224,26 @@ async def recommend_stockout_fix(product_id: int, warehouse_id: int) -> dict:
     shortage via exactly one of two deterministic outcomes.
 
     READ-ONLY / recommendation-only - never executes a transfer or places
-    an order. Checks every OTHER warehouse for real dead-stock status on
-    this exact product (GET /stock-insights/dead-stock filtered to
-    product_id, excluding warehouse_id) - the same >= 60-day-no-OUTGOING-
-    movement criterion recommend_dead_stock_transfer() uses. If one or more
-    qualify, picks the single qualifying warehouse with the most on-hand
-    (the most useful donor) and proposes transferring floor(its onHand / 2)
-    into warehouse_id. If none qualify, falls back to compare_suppliers()
-    for this product and reports its real recommendedSupplier instead.
+    an order. Calls get_transfer_recommendations() (the SAME real,
+    backend-computed donor logic used everywhere else in the system - a
+    warehouse's own available stock over its own reorder threshold, never
+    a dead-stock-only check) and looks for an entry whose toWarehouseId is
+    warehouse_id and productId is product_id. A real, confirmed bug this
+    replaced: an earlier version checked ONLY 60+-day dead-stock donors
+    here, a materially narrower and different criterion than the one the
+    RESTOCK_RECOMMENDATION alert's own `reason`/`transferSourceWarehouseIds`
+    fields are actually built from - so this tool was reporting "no
+    transfer available, order from supplier" for products the system's
+    own real data already knew had a valid donor. If a match exists, its
+    real fields are used verbatim (never recomputed - not "half of
+    onHand", the tool's own real transferQuantity). If none exists, falls
+    back to compare_suppliers() for this product and reports its real
+    recommendedSupplier instead. Either fallback reason also states the
+    real current riskLevel via get_stockout_risk() ("is out of stock" vs
+    "is at risk of stocking out") - another real, confirmed bug this
+    fixed: without this, the narration model had no real evidence for
+    which phrase was true and guessed "at risk" even for a product that
+    was already fully out of stock.
 
     Args:
         product_id: The stocked-out product's database ID.
@@ -1224,54 +1262,58 @@ async def recommend_stockout_fix(product_id: int, warehouse_id: int) -> dict:
         every other wired tool in this file.
     """
     client = get_backend_client()
-    dead_stock_entries = await client.get("/stock-insights/dead-stock")
     warehouses = await client.get("/warehouses")
     warehouse_names = {w["id"]: w["name"] for w in warehouses}
     products = await client.get("/products")
     product_names = {p["id"]: p["name"] for p in products}
 
-    donor_candidates = [
-        entry
-        for entry in dead_stock_entries
-        if entry["productId"] == product_id and entry["warehouseId"] != warehouse_id
-    ]
+    # Real current urgency for this exact product/warehouse - used only to
+    # phrase the supplier-fallback/no-solution reasons below accurately
+    # ("is out of stock" vs "is at risk of stocking out" are materially
+    # different claims; a real, confirmed bug had the narration model
+    # guess the wrong one when this evidence wasn't available at all). The
+    # transfer_in branch below never needs this - get_transfer_recommendations()'s
+    # own reason already carries the same real distinction.
+    risk_entries = (await get_stockout_risk())["items"]
+    risk_entry = next(
+        (r for r in risk_entries if r["productId"] == product_id and r["warehouseId"] == warehouse_id),
+        None,
+    )
+    urgency = _risk_urgency_phrase(risk_entry["riskLevel"]) if risk_entry is not None else "has an uncertain stock position"
 
-    if donor_candidates:
-        donor = max(donor_candidates, key=lambda entry: entry["onHand"])
-        quantity = donor["onHand"] // 2
+    transfer_result = await get_transfer_recommendations()
+    entry = next(
+        (
+            r
+            for r in transfer_result["recommendations"]
+            if r["productId"] == product_id and r["toWarehouseId"] == warehouse_id
+        ),
+        None,
+    )
 
-        if quantity > 0:
-            # Falls back to a role description, never the raw id - this
-            # reason string is itself fed to the narration model as part of
-            # the evidence JSON (see narration/control_tower_recommendation.py),
-            # so a bare "warehouse 14" here would leak straight into the
-            # user-facing recommendation text.
-            donor_name = warehouse_names.get(donor["warehouseId"], "the source warehouse")
-            staleness = (
-                "has never had a recorded sale of this product"
-                if donor["daysSinceLastOutgoingMovement"] is None
-                else f"has had no sales of this product in {donor['daysSinceLastOutgoingMovement']} days"
-            )
-            return RecommendStockoutFixResponse.model_validate(
-                {
-                    "productId": product_id,
-                    "productName": product_names.get(product_id),
-                    "warehouseId": warehouse_id,
-                    "warehouseName": warehouse_names.get(warehouse_id),
-                    "action": "transfer_in",
-                    "transfer": {
-                        "sourceWarehouseId": donor["warehouseId"],
-                        "sourceWarehouseName": warehouse_names.get(donor["warehouseId"]),
-                        "quantity": quantity,
-                        "sourceDaysSinceLastOutgoingMovement": donor["daysSinceLastOutgoingMovement"],
-                    },
-                    "supplierRecommendation": None,
-                    "reason": (
-                        f"{donor_name} {staleness} and holds {donor['onHand']} units - "
-                        f"transferring half ({quantity}) covers the shortage without a new purchase."
-                    ),
-                }
-            ).model_dump(mode="json")
+    if entry is not None:
+        return RecommendStockoutFixResponse.model_validate(
+            {
+                "productId": product_id,
+                "productName": product_names.get(product_id),
+                "warehouseId": warehouse_id,
+                "warehouseName": warehouse_names.get(warehouse_id),
+                "action": "transfer_in",
+                "transfer": {
+                    "sourceWarehouseId": entry["fromWarehouseId"],
+                    "sourceWarehouseName": entry["fromWarehouseName"],
+                    "quantity": entry["transferQuantity"],
+                    "sourcePendingIncomingQuantity": entry["sourcePendingIncomingQuantity"],
+                    "sourceIsDeadStock": entry["sourceIsDeadStock"],
+                },
+                "supplierRecommendation": None,
+                # Reused verbatim from get_transfer_recommendations()'s own
+                # deterministic reason for this exact entry - never a
+                # separately composed string, so the two tools can never
+                # disagree on why a transfer is (or isn't) the right call.
+                "reason": entry["reason"],
+            }
+        ).model_dump(mode="json")
 
     supplier_comparison = await compare_suppliers(product_id)
     recommended_supplier = supplier_comparison["recommendedSupplier"]
@@ -1287,9 +1329,9 @@ async def recommend_stockout_fix(product_id: int, warehouse_id: int) -> dict:
                 "transfer": None,
                 "supplierRecommendation": recommended_supplier,
                 "reason": (
-                    "No other warehouse has gone 60+ days without selling this product, so there is no "
-                    f"surplus to transfer in - {recommended_supplier['supplierName']} is the best-ranked "
-                    "supplier to order from instead."
+                    f"This warehouse {urgency}, and no other warehouse currently has surplus stock of this "
+                    f"product available to transfer in, so {recommended_supplier['supplierName']} is the "
+                    "best-ranked supplier to order from instead."
                 ),
             }
         ).model_dump(mode="json")
@@ -1304,9 +1346,139 @@ async def recommend_stockout_fix(product_id: int, warehouse_id: int) -> dict:
             "transfer": None,
             "supplierRecommendation": None,
             "reason": (
-                "No other warehouse qualifies as a transfer source, and no supplier has enough evaluated "
-                "history for this product to recommend one."
+                f"This warehouse {urgency}, but no other warehouse qualifies as a transfer source, and no "
+                "supplier has enough evaluated history for this product to recommend one."
             ),
+        }
+    ).model_dump(mode="json")
+
+
+async def recommend_restock_fix(product_id: int, warehouse_id: int) -> dict:
+    """Build the Control Tower RESTOCK_RECOMMENDATION solution.
+
+    Unlike the normal transfer recommendation path, this Restock-only flow
+    accepts only backend-computed transfers whose donor is also marked dead
+    stock for this exact product (`sourceIsDeadStock is True`). The backend
+    owns all safety calculations: donor surplus above its reorder threshold,
+    active reservations, pending incoming, destination capacity, and each
+    transfer quantity. This function only filters, aggregates, and derives the
+    uncovered remainder from the backend's recommendedQuantity.
+    """
+    restock_entries = (await get_restock_recommendations())["recommendations"]
+    restock = next(
+        (
+            entry
+            for entry in restock_entries
+            if entry["productId"] == product_id and entry["warehouseId"] == warehouse_id
+        ),
+        None,
+    )
+    if restock is None:
+        raise LookupError(
+            f"No restock recommendation currently exists for product {product_id} at warehouse {warehouse_id}."
+        )
+
+    recommended_quantity = restock["recommendedQuantity"]
+    transfer_entries = (await _get_restock_dead_stock_transfers())["recommendations"]
+    qualifying = [
+        entry
+        for entry in transfer_entries
+        if entry["productId"] == product_id
+        and entry["toWarehouseId"] == warehouse_id
+        and entry["sourceIsDeadStock"] is True
+    ]
+    # Defensive guard, evaluated BEFORE any of this evidence can reach
+    # narration: the Restock policy's one hard rule is that a transfer here
+    # is only ever allowed from a confirmed 60-day dead-stock donor - never
+    # a merely-healthy surplus donor (that's what distinguishes this path
+    # from the generic STOCKOUT_RISK/TRANSFER_RECOMMENDATION donor logic).
+    # The filter above already enforces this, so this should never fire in
+    # practice - it exists purely so a future change to the filter, or to
+    # _get_restock_dead_stock_transfers()'s own backend query, fails loudly
+    # here instead of silently narrating a non-dead-stock donor as if it
+    # were policy-compliant.
+    for entry in qualifying:
+        if entry["sourceIsDeadStock"] is not True:
+            raise AssertionError(
+                "Restock dead-stock-only invariant violated: donor warehouse "
+                f"{entry.get('fromWarehouseId')} for product {product_id} has "
+                f"sourceIsDeadStock={entry['sourceIsDeadStock']!r}, not True."
+            )
+    total_transfer_quantity = sum(entry["transferQuantity"] for entry in qualifying)
+    if total_transfer_quantity > recommended_quantity:
+        raise ValueError(
+            "Backend dead-stock transfer quantities exceed the current restock recommendation."
+        )
+
+    purchase_quantity = recommended_quantity - total_transfer_quantity
+    supplier_recommendation = None
+    if purchase_quantity > 0:
+        supplier_recommendation = (await compare_suppliers(product_id))["recommendedSupplier"]
+
+    transfers = [
+        {
+            "sourceWarehouseId": entry["fromWarehouseId"],
+            "sourceWarehouseName": entry["fromWarehouseName"],
+            "quantity": entry["transferQuantity"],
+        }
+        for entry in qualifying
+    ]
+    pending_quantity = restock["pendingIncomingQuantity"]
+    pending_context = (
+        f" {pending_quantity} units are already pending incoming but are insufficient to close the remaining gap."
+        if pending_quantity > 0
+        else " There is no pending incoming stock for this product."
+    )
+
+    if total_transfer_quantity == recommended_quantity:
+        action = "transfer_in"
+        supplier_recommendation = None
+        transfer_summary = ", ".join(
+            f"{entry['transferQuantity']} units from {entry['fromWarehouseName'] or 'a qualifying dead-stock warehouse'}"
+            for entry in qualifying
+        )
+        reason = (
+            f"The full {recommended_quantity}-unit restock need can be covered by 60-day dead-stock transfers: "
+            f"{transfer_summary}.{pending_context}"
+        )
+    elif total_transfer_quantity > 0:
+        action = "transfer_and_purchase"
+        supplier_text = (
+            f" Purchase the remaining {purchase_quantity} units from {supplier_recommendation['supplierName']}."
+            if supplier_recommendation is not None
+            else f" Purchase the remaining {purchase_quantity} units; no supplier has enough evaluated history to name one."
+        )
+        reason = (
+            f"Qualifying 60-day dead-stock donors can safely transfer {total_transfer_quantity} of the "
+            f"{recommended_quantity} required units.{supplier_text}{pending_context}"
+        )
+    elif supplier_recommendation is not None:
+        action = "order_from_supplier"
+        reason = (
+            f"No 60-day dead-stock donor has a backend-qualified transfer for this shortage. Purchase "
+            f"{purchase_quantity} units from {supplier_recommendation['supplierName']}.{pending_context}"
+        )
+    else:
+        action = "no_solution"
+        reason = (
+            f"No 60-day dead-stock donor has a backend-qualified transfer. A purchase of {purchase_quantity} "
+            f"units is still required, but no supplier has enough evaluated history to recommend one.{pending_context}"
+        )
+
+    return RecommendRestockFixResponse.model_validate(
+        {
+            "productId": product_id,
+            "productName": restock["productName"],
+            "warehouseId": warehouse_id,
+            "warehouseName": restock["warehouseName"],
+            "recommendedQuantity": recommended_quantity,
+            "pendingIncomingQuantity": pending_quantity,
+            "action": action,
+            "transfers": transfers,
+            "totalTransferQuantity": total_transfer_quantity,
+            "purchaseQuantity": purchase_quantity,
+            "supplierRecommendation": supplier_recommendation,
+            "reason": reason,
         }
     ).model_dump(mode="json")
 

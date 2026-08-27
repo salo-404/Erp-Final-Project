@@ -1473,6 +1473,36 @@ describe('StockInsightsService.getRestockRecommendations', () => {
     ]);
   });
 
+  it('describes insufficient pending incoming accurately instead of claiming none exists', async () => {
+    const { service, prisma, findAllTransactions } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({
+        productId: 100,
+        warehouseId: 10,
+        onHand: 2,
+        reorderThreshold: 10,
+      }),
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+    findAllTransactions.mockResolvedValue([
+      pendingTransaction({
+        type: 'INCOMING',
+        destinationWarehouseId: 10,
+        items: [{ productId: 100, quantity: 3 }],
+      }),
+    ] as never);
+
+    const result = await service.getRestockRecommendations(30, NOW);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].pendingIncomingQuantity).toBe(3);
+    expect(result[0].recommendedQuantity).toBe(5);
+    expect(result[0].explanation).toBe(
+      '3 units are pending incoming, but they are insufficient and no warehouse surplus is available for this product, so a new purchase is required to reach the reorder threshold (10).',
+    );
+    expect(result[0].explanation).not.toContain('No pending incoming stock');
+  });
+
   it("excludes an inactive product from restock recommendations (via getStockoutRisk's query filter)", async () => {
     const { service, prisma } = buildService();
     // In production, `product: { isActive: true }` on the underlying query
@@ -1744,6 +1774,56 @@ describe('StockInsightsService.getTransferRecommendations', () => {
     expect(result[0].destinationRiskLevel).toBe('OUT_OF_STOCK');
     expect(result[0].destinationAvgDailyConsumption).toBe(1);
     expect(result[0].destinationDaysOfSupply).toBe(0);
+  });
+
+  it('uses only 60-day dead-stock donors for the Restock-specific transfer feed while leaving generic transfers unchanged', async () => {
+    const { service, prisma } = buildService();
+    prisma.warehouseInventory.findMany.mockResolvedValue([
+      inventoryRow({
+        productId: 100,
+        warehouseId: 10,
+        onHand: 0,
+        reorderThreshold: 10,
+      }),
+      inventoryRow({
+        productId: 100,
+        warehouseId: 20,
+        onHand: 100,
+        reorderThreshold: 10,
+      }),
+      inventoryRow({
+        productId: 100,
+        warehouseId: 30,
+        onHand: 100,
+        reorderThreshold: 10,
+      }),
+    ]);
+    prisma.reservation.groupBy.mockResolvedValue([]);
+    jest.spyOn(service, 'getDeadStock').mockResolvedValue([
+      {
+        productId: 100,
+        warehouseId: 30,
+        onHand: 100,
+        lastMovementAt: new Date('2026-03-01T00:00:00.000Z'),
+        daysSinceLastMovement: 92,
+        lastOutgoingMovementAt: new Date('2026-03-01T00:00:00.000Z'),
+        daysSinceLastOutgoingMovement: 92,
+      },
+    ]);
+
+    const restockTransfers = await service.getRestockDeadStockTransfers(30, NOW);
+    const genericTransfers = await service.getTransferRecommendations(30, NOW);
+
+    expect(restockTransfers).toHaveLength(1);
+    expect(restockTransfers[0].fromWarehouseId).toBe(30);
+    expect(restockTransfers[0].sourceIsDeadStock).toBe(true);
+    expect(restockTransfers[0].transferQuantity).toBe(10);
+
+    // Generic Transfer recommendations retain their existing warehouse-id
+    // ordering and may use the recent-sales donor at warehouse 20.
+    expect(genericTransfers).toHaveLength(1);
+    expect(genericTransfers[0].fromWarehouseId).toBe(20);
+    expect(genericTransfers[0].sourceIsDeadStock).toBe(false);
   });
 
   it('does not recommend a transfer when no warehouse has surplus for that product', async () => {

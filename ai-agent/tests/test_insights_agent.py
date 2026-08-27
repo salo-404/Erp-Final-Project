@@ -31,6 +31,7 @@ from agents.insights_agent.tools import (
     _build_dead_stock_transfer_reason,
     _build_transfer_recommendation_reason,
     _compute_recommended_transfers,
+    _get_restock_dead_stock_transfers,
     _is_overdue,
     _qualifying_warehouses_by_recency,
     _sum_transaction_value,
@@ -47,6 +48,7 @@ from agents.insights_agent.tools import (
     recommend_fulfillment_warehouse,
     recommend_dead_stock_transfer,
     recommend_alternative_supplier,
+    recommend_restock_fix,
     recommend_stockout_fix,
     resolve_product_name,
 )
@@ -698,28 +700,74 @@ def _supplier_rank_entry(supplier_id: int, name: str, product_id: int, rank: int
     }
 
 
-def test_recommend_stockout_fix_transfers_in_from_dead_stock_warehouse(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A qualifying 60+-day dead-stock donor at another warehouse must win
-    over the supplier fallback - action is "transfer_in", half the
-    donor's onHand (floor), and supplierRecommendation is never called for
-    (no /suppliers or /supplier-intelligence/rank request at all)."""
+def test_recommend_stockout_fix_transfers_in_when_a_real_transfer_recommendation_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real get_transfer_recommendations() entry into warehouse_id for
+    this exact product must win over the supplier fallback - action is
+    "transfer_in", using that entry's real fields VERBATIM (never
+    recomputed - not "half of onHand"), and supplierRecommendation is
+    never called for (no /suppliers or /supplier-intelligence/rank
+    request at all). Regression guard for a real bug: an earlier version
+    checked ONLY 60+-day dead-stock donors here, a narrower and different
+    criterion than the one this alert's own reason/transferSourceWarehouseIds
+    fields are actually built from - so it reported "no transfer
+    available" for products the system's own real data already knew had
+    a valid donor."""
     requested_paths: list[str] = []
+
+    async def fake_get_transfer_recommendations() -> dict:
+        return {
+            "recommendations": [
+                {
+                    "productId": 75,
+                    "productName": "Mechanical Keyboard",
+                    "fromWarehouseId": 2,
+                    "fromWarehouseName": "Beirut Warehouse",
+                    "toWarehouseId": 1,
+                    "toWarehouseName": "Main Warehouse",
+                    "transferQuantity": 9,
+                    "fromWarehouseAvailableAfterTransfer": 31,
+                    "toWarehouseProjectedAvailableAfterTransfer": 25,
+                    "sourcePendingIncomingQuantity": 0,
+                    "sourceIsDeadStock": False,
+                    "destinationRiskLevel": "AT_RISK",
+                    "destinationAvgDailyConsumption": 0.5,
+                    "destinationDaysOfSupply": 16.0,
+                    "reason": "Beirut Warehouse currently holds surplus stock of this product - transferring 9 units covers the shortage.",
+                },
+                # A different product's entry must never be picked.
+                {
+                    "productId": 999,
+                    "productName": "Other Product",
+                    "fromWarehouseId": 2,
+                    "fromWarehouseName": "Beirut Warehouse",
+                    "toWarehouseId": 1,
+                    "toWarehouseName": "Main Warehouse",
+                    "transferQuantity": 3,
+                    "fromWarehouseAvailableAfterTransfer": 10,
+                    "toWarehouseProjectedAvailableAfterTransfer": 5,
+                    "sourcePendingIncomingQuantity": 0,
+                    "sourceIsDeadStock": False,
+                    "destinationRiskLevel": "AT_RISK",
+                    "destinationAvgDailyConsumption": 0.2,
+                    "destinationDaysOfSupply": 25.0,
+                    "reason": "unrelated entry",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(insights_tools_module, "get_transfer_recommendations", fake_get_transfer_recommendations)
+
+    async def fake_get_stockout_risk() -> dict:
+        return {"items": [{"productId": 75, "warehouseId": 1, "riskLevel": "OUT_OF_STOCK"}]}
+
+    monkeypatch.setattr(insights_tools_module, "get_stockout_risk", fake_get_stockout_risk)
 
     def handler(request: httpx.Request) -> httpx.Response:
         requested_paths.append(request.url.path)
-        if request.url.path == "/stock-insights/dead-stock":
-            return httpx.Response(
-                200,
-                json=[
-                    {"productId": 75, "warehouseId": 2, "onHand": 40, "lastMovementAt": None, "daysSinceLastMovement": None, "lastOutgoingMovementAt": None, "daysSinceLastOutgoingMovement": 90},
-                    {"productId": 75, "warehouseId": 3, "onHand": 4, "lastMovementAt": None, "daysSinceLastMovement": None, "lastOutgoingMovementAt": None, "daysSinceLastOutgoingMovement": 61},
-                    {"productId": 999, "warehouseId": 2, "onHand": 10, "lastMovementAt": None, "daysSinceLastMovement": None, "lastOutgoingMovementAt": None, "daysSinceLastOutgoingMovement": 70},
-                ],
-            )
         if request.url.path == "/warehouses":
             return httpx.Response(200, json=[
+                {"id": 1, "name": "Main Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
                 {"id": 2, "name": "Beirut Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
-                {"id": 3, "name": "Saida Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"},
             ])
         if request.url.path == "/products":
             return httpx.Response(200, json=[
@@ -736,24 +784,32 @@ def test_recommend_stockout_fix_transfers_in_from_dead_stock_warehouse(monkeypat
     assert result["action"] == "transfer_in"
     assert result["productName"] == "Mechanical Keyboard"
     assert result["supplierRecommendation"] is None
-    # Warehouse 2 has the most onHand (40 > 4) among qualifying donors for
-    # product 75 - product 999's dead-stock entry must never be considered.
     assert result["transfer"] == {
         "sourceWarehouseId": 2,
         "sourceWarehouseName": "Beirut Warehouse",
-        "quantity": 20,
-        "sourceDaysSinceLastOutgoingMovement": 90,
+        "quantity": 9,
+        "sourcePendingIncomingQuantity": 0,
+        "sourceIsDeadStock": False,
     }
+    assert result["reason"] == "Beirut Warehouse currently holds surplus stock of this product - transferring 9 units covers the shortage."
 
 
-def test_recommend_stockout_fix_falls_back_to_supplier_when_no_donor_qualifies(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No dead-stock entry for this product at any OTHER warehouse ->
-    action is "order_from_supplier", using compare_suppliers()'s own real
-    rank===1 entry - never a fabricated supplier."""
+def test_recommend_stockout_fix_falls_back_to_supplier_when_no_transfer_recommendation_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No get_transfer_recommendations() entry into warehouse_id for this
+    product -> action is "order_from_supplier", using compare_suppliers()'s
+    own real rank===1 entry - never a fabricated supplier."""
+
+    async def fake_get_transfer_recommendations() -> dict:
+        return {"recommendations": []}
+
+    monkeypatch.setattr(insights_tools_module, "get_transfer_recommendations", fake_get_transfer_recommendations)
+
+    async def fake_get_stockout_risk() -> dict:
+        return {"items": [{"productId": 75, "warehouseId": 1, "riskLevel": "OUT_OF_STOCK"}]}
+
+    monkeypatch.setattr(insights_tools_module, "get_stockout_risk", fake_get_stockout_risk)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/stock-insights/dead-stock":
-            return httpx.Response(200, json=[])
         if request.url.path == "/warehouses":
             return httpx.Response(200, json=[{"id": 1, "name": "Main Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"}])
         if request.url.path == "/suppliers":
@@ -775,15 +831,29 @@ def test_recommend_stockout_fix_falls_back_to_supplier_when_no_donor_qualifies(m
     assert result["transfer"] is None
     assert result["supplierRecommendation"]["supplierId"] == 7
     assert result["supplierRecommendation"]["supplierName"] == "Acme Supply Co"
+    # Regression guard for a real bug: the reason must state the real
+    # riskLevel-derived urgency ("is out of stock") rather than leaving the
+    # narration model to guess it from nothing, which produced a
+    # confirmed-wrong "at risk of running out" for an already out-of-stock
+    # product.
+    assert "is out of stock" in result["reason"]
 
 
 def test_recommend_stockout_fix_reports_no_solution_honestly(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No qualifying donor AND no supplier recommendation (every supplier
-    insufficientData) -> "no_solution", never a fabricated fix."""
+    """No qualifying transfer AND no supplier recommendation (every
+    supplier insufficientData) -> "no_solution", never a fabricated fix."""
+
+    async def fake_get_transfer_recommendations() -> dict:
+        return {"recommendations": []}
+
+    monkeypatch.setattr(insights_tools_module, "get_transfer_recommendations", fake_get_transfer_recommendations)
+
+    async def fake_get_stockout_risk() -> dict:
+        return {"items": [{"productId": 75, "warehouseId": 1, "riskLevel": "OUT_OF_STOCK"}]}
+
+    monkeypatch.setattr(insights_tools_module, "get_stockout_risk", fake_get_stockout_risk)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/stock-insights/dead-stock":
-            return httpx.Response(200, json=[])
         if request.url.path == "/warehouses":
             return httpx.Response(200, json=[{"id": 1, "name": "Main Warehouse", "location": None, "maxCapacity": None, "isActive": True, "createdAt": "2026-01-01T00:00:00.000Z"}])
         if request.url.path == "/suppliers":
@@ -804,6 +874,206 @@ def test_recommend_stockout_fix_reports_no_solution_honestly(monkeypatch: pytest
     assert result["productName"] == "Mechanical Keyboard"
     assert result["transfer"] is None
     assert result["supplierRecommendation"] is None
+
+
+def _restock_solution_entry(*, recommended_quantity: int = 10, pending_incoming: int = 0) -> dict:
+    return {
+        "productId": 75,
+        "productName": "Mechanical Keyboard",
+        "warehouseId": 1,
+        "warehouseName": "Main Warehouse",
+        "available": 5,
+        "pendingIncomingQuantity": pending_incoming,
+        "projectedAvailable": 5 + pending_incoming,
+        "reorderThreshold": 5 + pending_incoming + recommended_quantity,
+        "riskLevel": "AT_RISK",
+        "projectedRiskLevel": "AT_RISK",
+        "recommendedQuantity": recommended_quantity,
+        "avgDailyConsumption": 1.0,
+        "daysOfSupply": 5.0,
+        "reason": "transfer_available",
+        "explanation": "Backend restock evidence.",
+    }
+
+
+def _restock_transfer(*, source_id: int, source_name: str, quantity: int, dead_stock: bool) -> dict:
+    return {
+        "productId": 75,
+        "productName": "Mechanical Keyboard",
+        "fromWarehouseId": source_id,
+        "fromWarehouseName": source_name,
+        "toWarehouseId": 1,
+        "toWarehouseName": "Main Warehouse",
+        "transferQuantity": quantity,
+        "fromWarehouseAvailableAfterTransfer": 20,
+        "toWarehouseProjectedAvailableAfterTransfer": 15,
+        "sourcePendingIncomingQuantity": 0,
+        "sourceIsDeadStock": dead_stock,
+        "destinationRiskLevel": "AT_RISK",
+        "destinationAvgDailyConsumption": 1.0,
+        "destinationDaysOfSupply": 5.0,
+        "reason": "Backend-qualified transfer.",
+    }
+
+
+def _ranked_supplier() -> dict:
+    return {
+        "supplierId": 7,
+        "supplierName": "Acme Supply Co",
+        "productId": 75,
+        "totalTransactions": 5,
+        "completedTransactions": 5,
+        "cancelledTransactions": 0,
+        "cancellationRate": 0.0,
+        "unitCost": 10.0,
+        "pricedItemCount": 5,
+        "leadTimeDays": 5,
+        "reliabilityScore": 0.9,
+        "evaluatedForOnTimeCount": 5,
+        "purchaseFrequency": 2.0,
+        "firstPurchaseDate": "2026-01-01T00:00:00.000Z",
+        "lastPurchaseDate": "2026-06-01T00:00:00.000Z",
+        "overallScore": 88.5,
+        "rank": 1,
+        "insufficientData": False,
+        "insufficientDataReasons": [],
+        "componentScores": {
+            "price": 50.0,
+            "onTimeDelivery": 90.0,
+            "cancellationPerformance": 100.0,
+            "productSupplyHistory": 60.0,
+        },
+    }
+
+
+def _patch_restock_solution_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    restock: dict,
+    transfers: list[dict],
+    supplier: dict | None,
+) -> list[int]:
+    supplier_calls: list[int] = []
+
+    async def fake_restock() -> dict:
+        return {"recommendations": [restock]}
+
+    async def fake_transfers() -> dict:
+        return {"recommendations": transfers}
+
+    async def fake_suppliers(product_id: int) -> dict:
+        supplier_calls.append(product_id)
+        return {"recommendedSupplier": supplier}
+
+    monkeypatch.setattr(insights_tools_module, "get_restock_recommendations", fake_restock)
+    monkeypatch.setattr(insights_tools_module, "_get_restock_dead_stock_transfers", fake_transfers)
+    monkeypatch.setattr(insights_tools_module, "compare_suppliers", fake_suppliers)
+    return supplier_calls
+
+
+def test_recommend_restock_fix_uses_valid_60_day_dead_stock_donor(monkeypatch: pytest.MonkeyPatch) -> None:
+    supplier_calls = _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=8),
+        transfers=[_restock_transfer(source_id=2, source_name="Beirut Warehouse", quantity=8, dead_stock=True)],
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "transfer_in"
+    assert result["totalTransferQuantity"] == 8
+    assert result["purchaseQuantity"] == 0
+    assert result["transfers"] == [{"sourceWarehouseId": 2, "sourceWarehouseName": "Beirut Warehouse", "quantity": 8}]
+    assert supplier_calls == []
+
+
+def test_restock_solution_uses_narrow_backend_transfer_feed(monkeypatch: pytest.MonkeyPatch) -> None:
+    requested_paths: list[str] = []
+
+    async def fake_load(path: str) -> dict:
+        requested_paths.append(path)
+        return {"recommendations": []}
+
+    monkeypatch.setattr(insights_tools_module, "_load_transfer_recommendations", fake_load)
+
+    result = asyncio.run(_get_restock_dead_stock_transfers())
+
+    assert result == {"recommendations": []}
+    assert requested_paths == ["/stock-insights/restock-dead-stock-transfers"]
+
+
+def test_recommend_restock_fix_rejects_donor_with_recent_customer_sale(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=8),
+        transfers=[_restock_transfer(source_id=2, source_name="Beirut Warehouse", quantity=8, dead_stock=False)],
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "order_from_supplier"
+    assert result["transfers"] == []
+    assert result["purchaseQuantity"] == 8
+    assert result["supplierRecommendation"]["supplierName"] == "Acme Supply Co"
+
+
+def test_recommend_restock_fix_combines_multiple_dead_stock_donors(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=10),
+        transfers=[
+            _restock_transfer(source_id=2, source_name="Beirut Warehouse", quantity=4, dead_stock=True),
+            _restock_transfer(source_id=3, source_name="Saida Warehouse", quantity=6, dead_stock=True),
+        ],
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "transfer_in"
+    assert result["totalTransferQuantity"] == 10
+    assert [transfer["quantity"] for transfer in result["transfers"]] == [4, 6]
+    assert result["purchaseQuantity"] == 0
+
+
+def test_recommend_restock_fix_combines_partial_transfer_with_purchase_remainder(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=10, pending_incoming=3),
+        transfers=[_restock_transfer(source_id=2, source_name="Beirut Warehouse", quantity=4, dead_stock=True)],
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "transfer_and_purchase"
+    assert result["totalTransferQuantity"] == 4
+    assert result["purchaseQuantity"] == 6
+    assert result["pendingIncomingQuantity"] == 3
+    assert "3 units are already pending incoming but are insufficient" in result["reason"]
+    assert "Purchase the remaining 6 units from Acme Supply Co" in result["reason"]
+
+
+def test_recommend_restock_fix_capacity_limited_transfer_is_not_presented_as_full_solution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_restock_solution_sources(
+        monkeypatch,
+        restock=_restock_solution_entry(recommended_quantity=10),
+        # The backend has already capped this transfer to destination
+        # capacity. The Restock layer must preserve 3 and purchase the other 7.
+        transfers=[_restock_transfer(source_id=2, source_name="Beirut Warehouse", quantity=3, dead_stock=True)],
+        supplier=_ranked_supplier(),
+    )
+
+    result = asyncio.run(recommend_restock_fix(product_id=75, warehouse_id=1))
+
+    assert result["action"] == "transfer_and_purchase"
+    assert result["totalTransferQuantity"] == 3
+    assert result["purchaseQuantity"] == 7
+    assert "full 10-unit restock need" not in result["reason"]
 
 
 def test_recommend_alternative_supplier_excludes_the_original_supplier(monkeypatch: pytest.MonkeyPatch) -> None:

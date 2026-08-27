@@ -50,11 +50,16 @@ export function SuppliersPage() {
 
   const suppliers = useMemo(() => suppliersFetch.data ?? [], [suppliersFetch.data]);
   const products = useMemo(() => productsFetch.data ?? [], [productsFetch.data]);
+  const productsSortedByName = useMemo(
+    () => [...products].sort((a, b) => a.name.localeCompare(b.name)),
+    [products],
+  );
   const warehouses = useMemo(() => warehousesFetch.data ?? [], [warehousesFetch.data]);
   const warehouseNames = useMemo(() => new Map(warehouses.map((w) => [w.id, w.name])), [warehouses]);
   const supplierNames = useMemo(() => new Map(suppliers.map((s) => [s.id, s.name])), [suppliers]);
 
   const [rankProductId, setRankProductId] = useState<number | null>(null);
+  const [rankProductSearch, setRankProductSearch] = useState("");
   const [perfSupplierId, setPerfSupplierId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [formMode, setFormMode] = useState<"create" | "edit" | null>(null);
@@ -72,6 +77,22 @@ export function SuppliersPage() {
   useEffect(() => {
     if (!suppliersFetch.loading && suppliers.length > 0 && perfSupplierId === null) setPerfSupplierId(suppliers[0].id);
   }, [suppliersFetch.loading, suppliers, perfSupplierId]);
+
+  // The Top Suppliers product selector, filtered by rankProductSearch but
+  // always keeping the currently selected product visible even when the
+  // search text no longer matches it — losing it from the list would
+  // silently reset the ranking away from what the user picked.
+  const rankProductOptions = useMemo(() => {
+    const query = rankProductSearch.trim().toLowerCase();
+    const filtered = query
+      ? productsSortedByName.filter((p) => p.name.toLowerCase().includes(query))
+      : productsSortedByName;
+    if (rankProductId !== null && !filtered.some((p) => p.id === rankProductId)) {
+      const selected = productsSortedByName.find((p) => p.id === rankProductId);
+      if (selected) return [selected, ...filtered];
+    }
+    return filtered;
+  }, [productsSortedByName, rankProductSearch, rankProductId]);
 
   const rankFetch = useFetch(() => (rankProductId !== null ? rankSuppliers(rankProductId) : Promise.resolve([])), [rankProductId]);
   const statsFetch = useFetch(() => (perfSupplierId !== null ? getSupplierStats(perfSupplierId) : Promise.resolve(null)), [perfSupplierId]);
@@ -180,11 +201,22 @@ export function SuppliersPage() {
               <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 13.5 }}>Top Suppliers</div>
               <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 2 }}>Ranked for the selected product</div>
             </div>
-            <select value={rankProductId ?? ""} onChange={(e) => setRankProductId(Number(e.target.value))} style={{ ...inputStyle, padding: "6px 9px", fontSize: 12 }}>
-              {products.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 170 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--color-surface-2)", border: "1px solid var(--color-border)", borderRadius: 8, padding: "5px 9px" }}>
+                <SearchIcon className="h-[12px] w-[12px] flex-shrink-0 text-[var(--color-text-muted)]" />
+                <input
+                  value={rankProductSearch}
+                  onChange={(e) => setRankProductSearch(e.target.value)}
+                  placeholder="Search products..."
+                  style={{ border: "none", outline: "none", background: "transparent", fontSize: 11.5, color: "var(--color-text)", width: "100%" }}
+                />
+              </div>
+              <select value={rankProductId ?? ""} onChange={(e) => setRankProductId(Number(e.target.value))} style={{ ...inputStyle, padding: "6px 9px", fontSize: 12 }}>
+                {rankProductOptions.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {rankFetch.loading ? (

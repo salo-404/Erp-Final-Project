@@ -692,30 +692,36 @@ class StockoutFixAction(str, Enum):
 class StockoutFixTransfer(BaseModel):
     sourceWarehouseId: int
     sourceWarehouseName: Optional[str] = None
-    quantity: int = Field(..., description="floor(source onHand / 2) - half its stock, rounded down.")
-    sourceDaysSinceLastOutgoingMovement: Optional[int] = Field(
-        None, description="None only when the source warehouse has never had an OUTGOING movement for this product."
+    quantity: int = Field(
+        ..., description="The real transferQuantity from get_transfer_recommendations() for this exact (productId, sourceWarehouseId -> warehouseId) pair - never independently recomputed."
+    )
+    sourcePendingIncomingQuantity: int = Field(
+        ..., description="The source warehouse's own pending incoming for this product - it may itself be about to be replenished."
+    )
+    sourceIsDeadStock: bool = Field(
+        ..., description="True when the source warehouse's surplus is also flagged as slow-moving/idle stock by getDeadStock() - useful context for why donating it is low-cost."
     )
 
 
 class RecommendStockoutFixResponse(BaseModel):
     """action selects which of the two Scenario-2 outcomes applies:
 
-    TRANSFER_IN: another warehouse has gone >= 60 days with no OUTGOING
-    movement of this product (real dead-stock criterion, same threshold as
-    recommend_dead_stock_transfer) - transfer is populated, half of ITS
-    on-hand, from the single such warehouse with the most on-hand to
-    donate. supplierRecommendation is None.
+    TRANSFER_IN: get_transfer_recommendations() already has a real,
+    backend-computed transfer INTO warehouseId for this exact product -
+    the SAME donor-eligibility rule used everywhere else in the system
+    (a warehouse's own available stock over its own reorder threshold,
+    never a dead-stock-only check) - transfer is populated with that
+    entry's real fields verbatim. supplierRecommendation is None.
 
-    ORDER_FROM_SUPPLIER: no other warehouse qualifies - supplierRecommendation
-    is the real compare_suppliers() top-ranked supplier for this product
-    (None only when compare_suppliers itself has no recommendation - see
+    ORDER_FROM_SUPPLIER: no such transfer recommendation exists for this
+    product/warehouse - supplierRecommendation is the real
+    compare_suppliers() top-ranked supplier for this product (None only
+    when compare_suppliers itself has no recommendation - see
     NO_SOLUTION). transfer is None.
 
-    NO_SOLUTION: no qualifying donor warehouse AND no supplier
-    recommendation available either (e.g. no suppliers have ever supplied
-    this product) - a genuine "nothing to recommend" answer, not missing
-    data.
+    NO_SOLUTION: no qualifying transfer AND no supplier recommendation
+    available either (e.g. no suppliers have ever supplied this product) -
+    a genuine "nothing to recommend" answer, not missing data.
     """
 
     productId: int
@@ -726,6 +732,47 @@ class RecommendStockoutFixResponse(BaseModel):
     transfer: Optional[StockoutFixTransfer] = None
     supplierRecommendation: Optional[SupplierScore] = None
     reason: str = Field(..., description="Plain-language basis for this action, built from real fields.")
+
+
+class RestockFixAction(str, Enum):
+    TRANSFER_IN = "transfer_in"
+    TRANSFER_AND_PURCHASE = "transfer_and_purchase"
+    ORDER_FROM_SUPPLIER = "order_from_supplier"
+    NO_SOLUTION = "no_solution"
+
+
+class RestockFixTransfer(BaseModel):
+    sourceWarehouseId: int
+    sourceWarehouseName: Optional[str] = None
+    quantity: int = Field(
+        ...,
+        gt=0,
+        description="Backend-computed transferQuantity from a donor whose sourceIsDeadStock flag is true.",
+    )
+
+
+class RecommendRestockFixResponse(BaseModel):
+    """Control Tower RESTOCK_RECOMMENDATION solution evidence.
+
+    This is deliberately separate from RecommendStockoutFixResponse. The
+    normal transfer/stockout paths may use any backend-qualified surplus
+    donor, while this Restock-only flow may use a donor only when the
+    backend also marks that exact product/warehouse stock as dead stock
+    (no customer OUTGOING for at least 60 days).
+    """
+
+    productId: int
+    productName: Optional[str] = None
+    warehouseId: int
+    warehouseName: Optional[str] = None
+    recommendedQuantity: int = Field(..., gt=0)
+    pendingIncomingQuantity: int = Field(..., ge=0)
+    action: RestockFixAction
+    transfers: list[RestockFixTransfer]
+    totalTransferQuantity: int = Field(..., ge=0)
+    purchaseQuantity: int = Field(..., ge=0)
+    supplierRecommendation: Optional[SupplierScore] = None
+    reason: str = Field(..., description="Deterministic explanation built only from validated backend evidence.")
 
 
 class AlternativeSupplierStatus(str, Enum):

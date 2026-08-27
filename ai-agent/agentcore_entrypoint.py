@@ -382,7 +382,7 @@ async def invoke(payload: object, context: object) -> AsyncIterator[dict[str, st
             to route to the deterministic Control Tower recommendation
             builder instead (see narration/control_tower_recommendation.py),
             where "prompt" is instead a JSON-encoded object shaped
-            {"category": "DEAD_STOCK"|"STOCKOUT_RISK"|"OVERDUE_TRANSACTION",
+            {"category": "DEAD_STOCK"|"STOCKOUT_RISK"|"RESTOCK_RECOMMENDATION"|"TRANSFER_RECOMMENDATION"|"OVERDUE_TRANSACTION",
             ...the category's real IDs - see build_recommendation()'s
             docstring for the exact per-category shape}; or
             "document_match" to route to the Document agent's real

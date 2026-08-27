@@ -78,4 +78,16 @@ export class StockInsightsController {
       referenceDate ? new Date(referenceDate) : undefined,
     );
   }
+
+  @Get('restock-dead-stock-transfers')
+  getRestockDeadStockTransfers(
+    @Query('consumptionWindowDays', new ParseIntPipe({ optional: true }))
+    consumptionWindowDays?: number,
+    @Query('referenceDate') referenceDate?: string,
+  ) {
+    return this.stockInsightsService.getRestockDeadStockTransfers(
+      consumptionWindowDays,
+      referenceDate ? new Date(referenceDate) : undefined,
+    );
+  }
 }

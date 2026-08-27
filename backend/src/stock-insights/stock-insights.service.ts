@@ -766,7 +766,9 @@ export class StockInsightsService {
       case 'transfer_available':
         return `Another warehouse currently holds surplus stock of this product, so the shortfall can be covered by an internal transfer instead of a new purchase.`;
       case 'purchase_required':
-        return `No pending incoming stock and no warehouse surplus are available for this product, so a new purchase is required to reach the reorder threshold (${entry.reorderThreshold}).`;
+        return entry.pendingIncomingQuantity > 0
+          ? `${entry.pendingIncomingQuantity} units are pending incoming, but they are insufficient and no warehouse surplus is available for this product, so a new purchase is required to reach the reorder threshold (${entry.reorderThreshold}).`
+          : `No pending incoming stock and no warehouse surplus are available for this product, so a new purchase is required to reach the reorder threshold (${entry.reorderThreshold}).`;
     }
   }
 
@@ -817,6 +819,7 @@ export class StockInsightsService {
     consumptionWindowDays = 30,
     referenceDate: Date = new Date(),
     tx?: Prisma.TransactionClient,
+    deadStockDonorsOnly = false,
   ): Promise<TransferRecommendation[]> {
     const riskEntries = await this.getStockoutRisk(
       consumptionWindowDays,
@@ -917,7 +920,14 @@ export class StockInsightsService {
           warehouseId: entry.warehouseId,
           remaining: Math.max(entry.available - entry.reorderThreshold, 0),
         }))
-        .filter((donor) => donor.remaining > 0)
+        .filter(
+          (donor) =>
+            donor.remaining > 0 &&
+            (!deadStockDonorsOnly ||
+              deadStockKeys.has(
+                this.inventoryKey(productId, donor.warehouseId),
+              )),
+        )
         .sort((a, b) => a.warehouseId - b.warehouseId);
 
       if (deficits.length === 0 || donors.length === 0) {
@@ -1010,6 +1020,29 @@ export class StockInsightsService {
         a.productId - b.productId ||
         a.fromWarehouseId - b.fromWarehouseId ||
         a.toWarehouseId - b.toWarehouseId,
+    );
+  }
+
+  /**
+   * Restock-specific transfer candidates. Uses the exact same reservation,
+   * donor-surplus, recipient-need, pending-incoming, and destination-capacity
+   * calculations as getTransferRecommendations(), but excludes every donor
+   * that is not confirmed dead stock for the same product (no customer
+   * OUTGOING for at least the existing 60-day dead-stock window).
+   *
+   * The normal transfer recommendation endpoint remains generic and is not
+   * affected by this narrower Control Tower Restock policy.
+   */
+  getRestockDeadStockTransfers(
+    consumptionWindowDays = 30,
+    referenceDate: Date = new Date(),
+    tx?: Prisma.TransactionClient,
+  ): Promise<TransferRecommendation[]> {
+    return this.getTransferRecommendations(
+      consumptionWindowDays,
+      referenceDate,
+      tx,
+      true,
     );
   }
 

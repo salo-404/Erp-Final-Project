@@ -165,7 +165,7 @@ export const agentCoreService: AgentService = {
 // Mints its own fresh session ID per call (never reused, never persisted),
 // so it never touches the user's real chat history in AgentContext/
 // localStorage, and sends "mode": "control_tower_recommendation" so
-// agentcore_entrypoint.py routes it to the scripted, 3-scenario
+// agentcore_entrypoint.py routes it to the scripted, category-locked
 // recommendation agent instead of the general Supervisor - see that
 // module's invoke() docstring and narration/control_tower_recommendation.py.
 export async function* sendControlTowerRecommendation(

@@ -159,6 +159,8 @@ export interface RestockRecommendation {
   avgDailyConsumption: number;
   daysOfSupply: number | null;
   reason: string;
+  transferSourceWarehouseIds: number[];
+  predictedStockoutDate: string | null;
   explanation: string;
 }
 

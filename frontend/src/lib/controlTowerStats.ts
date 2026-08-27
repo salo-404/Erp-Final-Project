@@ -4,12 +4,50 @@ import type {
   ControlTowerAlertSeverity,
   DeadStockAlertData,
   OverdueTransactionAlertData,
+  PendingDocumentReviewAlertData,
+  RestockRecommendation,
   StockoutRiskAlertData,
   TransferRecommendationAlertData,
 } from "../types/domain";
 
+/**
+ * A stable identity for one alert - NOT the array index. Alerts have no
+ * database id of their own (they're a computed snapshot, not a stored
+ * row), but every category's real data has enough real fields to build a
+ * unique key from. This exists specifically so React can key list items
+ * by real identity: an index-based key lets React reuse a
+ * RecommendSolutionAction's mounted instance (and its open/text state)
+ * for a DIFFERENT alert after a filter/category change reorders the
+ * list - a real, confirmed bug where a stockout-risk recommendation kept
+ * showing under a restock-recommendation card that happened to land at
+ * the same list position afterward.
+ */
+export function alertKey(alert: ControlTowerAlert): string {
+  switch (alert.category) {
+    case "DEAD_STOCK":
+    case "CONSUMPTION_ANOMALY":
+    case "STOCKOUT_RISK":
+    case "RESTOCK_RECOMMENDATION": {
+      const d = alert.data as unknown as { productId: number; warehouseId: number };
+      return `${alert.category}:${d.productId}:${d.warehouseId}`;
+    }
+    case "TRANSFER_RECOMMENDATION": {
+      const d = alert.data as unknown as TransferRecommendationAlertData;
+      return `${alert.category}:${d.productId}:${d.fromWarehouseId}:${d.toWarehouseId}`;
+    }
+    case "OVERDUE_TRANSACTION": {
+      const d = alert.data as unknown as OverdueTransactionAlertData;
+      return `${alert.category}:${d.id}`;
+    }
+    case "PENDING_DOCUMENT_REVIEW": {
+      const d = alert.data as unknown as PendingDocumentReviewAlertData;
+      return `${alert.category}:${d.id}`;
+    }
+  }
+}
+
 // The Control Tower "Recommend Solution" feature (see
-// components/control-tower/RecommendSolutionAction.tsx) supports exactly 3
+// components/control-tower/RecommendSolutionAction.tsx) supports exactly 5
 // fixed scenarios, one per alert category - routed server-side by
 // ai-agent/narration/control_tower_recommendation.py, which now calls the
 // matching tool deterministically in Python rather than asking a model to
@@ -31,6 +69,30 @@ export function buildScenarioPayload(alert: ControlTowerAlert): string | null {
   if (alert.category === "STOCKOUT_RISK") {
     const d = alert.data as unknown as StockoutRiskAlertData;
     return JSON.stringify({ category: "STOCKOUT_RISK", productId: d.productId, warehouseId: d.warehouseId });
+  }
+  if (alert.category === "RESTOCK_RECOMMENDATION") {
+    // The AI side routes this to the Restock-only solution policy: only a
+    // backend-qualified 60-day dead-stock donor may be transferred, with
+    // supplier purchasing used for any uncovered remainder. The card itself
+    // still shows facts only; this action reveals the plan on demand.
+    const d = alert.data as unknown as RestockRecommendation;
+    return JSON.stringify({ category: "RESTOCK_RECOMMENDATION", productId: d.productId, warehouseId: d.warehouseId });
+  }
+  if (alert.category === "TRANSFER_RECOMMENDATION") {
+    // Unlike DEAD_STOCK/STOCKOUT_RISK/RESTOCK_RECOMMENDATION, there's no
+    // hidden transfer-vs-purchase decision here - the alert itself already
+    // IS the real, deterministic recommendation (getTransferRecommendations()
+    // already picked this exact transfer). The AI side re-fetches it fresh
+    // by these same real ids (never trusts the client-held copy as
+    // authoritative) and narrates WHY, the same one-shot pattern as the
+    // other 3 scenarios.
+    const d = alert.data as unknown as TransferRecommendationAlertData;
+    return JSON.stringify({
+      category: "TRANSFER_RECOMMENDATION",
+      productId: d.productId,
+      fromWarehouseId: d.fromWarehouseId,
+      toWarehouseId: d.toWarehouseId,
+    });
   }
   if (alert.category === "OVERDUE_TRANSACTION") {
     const d = alert.data as unknown as OverdueTransactionAlertData;

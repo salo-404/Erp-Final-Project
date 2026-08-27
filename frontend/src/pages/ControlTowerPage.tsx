@@ -5,6 +5,7 @@ import { getControlTowerAlerts } from "../lib/controlTower.api";
 import { listWarehouses } from "../lib/warehouses.api";
 import { listProducts } from "../lib/products.api";
 import {
+  alertKey,
   CATEGORY_FILTERS,
   CATEGORY_LABELS,
   filterAlerts,
@@ -25,6 +26,7 @@ import type {
   OverdueTransactionAlertData,
   PendingDocumentReviewAlertData,
   Product,
+  RestockRecommendation,
   TransferRecommendationAlertData,
   Warehouse,
 } from "../types/domain";
@@ -90,12 +92,6 @@ export function ControlTowerPage() {
     return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   }
 
-  function joinNames(names: string[]): string {
-    if (names.length <= 1) return names[0] ?? "";
-    if (names.length === 2) return `${names[0]} and ${names[1]}`;
-    return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
-  }
-
   // The backend's own alert.message is deliberately id-only, plain text
   // (see getControlTowerAlerts()'s docstring in stock-insights.service.ts —
   // `data` is kept verbatim there for a future NotificationService/dashboard
@@ -138,23 +134,15 @@ export function ControlTowerPage() {
         // remains but is trending toward running out.
         return "Out of stock.";
       case "RESTOCK_RECOMMENDATION": {
-        const d = alert.data as unknown as {
-          available: number;
-          recommendedQuantity: number;
-          explanation: string;
-          transferSourceWarehouseIds: number[];
-          predictedStockoutDate: string | null;
-        };
-        // Never invented — only shown when the backend actually computed
-        // one (it's null whenever there's no usable recent consumption
-        // rate to project from).
+        // Operational facts only — deliberately never the backend's
+        // `reason` ('transfer_available'/'purchase_required'), `explanation`
+        // text, or `transferSourceWarehouseIds` here, all of which reveal
+        // the final decision. That decision is only ever surfaced through
+        // the Recommend Solution action below, on demand.
+        const d = alert.data as unknown as RestockRecommendation;
         const stockoutSuffix = d.predictedStockoutDate ? ` Predicted stockout: ${niceDate(d.predictedStockoutDate)}.` : "";
-        const availablePrefix = `${d.available} available — `;
-        if (d.transferSourceWarehouseIds.length > 0) {
-          const sources = joinNames(d.transferSourceWarehouseIds.map(warehouseName));
-          return `${availablePrefix}needs ${d.recommendedQuantity} more units, available as a transfer from ${sources}.${stockoutSuffix}`;
-        }
-        return `${availablePrefix}needs ${d.recommendedQuantity} more units. ${d.explanation}${stockoutSuffix}`;
+        const pendingSuffix = d.pendingIncomingQuantity > 0 ? ` ${d.pendingIncomingQuantity} units pending incoming.` : "";
+        return `${d.available} available — needs ${d.recommendedQuantity} more units.${pendingSuffix}${stockoutSuffix}`;
       }
       case "TRANSFER_RECOMMENDATION": {
         const d = alert.data as unknown as TransferRecommendationAlertData;
@@ -259,10 +247,10 @@ export function ControlTowerPage() {
             <div>
               <div style={sectionLabelStyle}>Needs Attention</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 900 }}>
-                {grouped.attention.map((alert, i) => {
+                {grouped.attention.map((alert) => {
                   const badge = severityBadge(alert.severity);
                   return (
-                    <div key={i} style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderLeft: `3px solid ${badge.color}`, borderRadius: 8, padding: "18px 20px" }}>
+                    <div key={alertKey(alert)} style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderLeft: `3px solid ${badge.color}`, borderRadius: 8, padding: "18px 20px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, marginBottom: 10 }}>
                         <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 15 }}>{attentionTitle(alert)}</div>
                         <div style={{ display: "flex", alignItems: "center", gap: 9, flexShrink: 0 }}>
@@ -287,14 +275,14 @@ export function ControlTowerPage() {
             <div>
               <div style={sectionLabelStyle}>Operational Insights</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, maxWidth: 900 }}>
-                {grouped.insights.map((alert, i) => {
+                {grouped.insights.map((alert) => {
                   const badge = severityBadge(alert.severity);
                   const productId =
                     alert.category === "DEAD_STOCK"
                       ? (alert.data as unknown as DeadStockAlertData).productId
                       : (alert.data as unknown as ConsumptionAnomalyAlertData).productId;
                   return (
-                    <div key={i} style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderLeft: `3px solid ${badge.color}`, borderRadius: 8, padding: "16px 18px" }}>
+                    <div key={alertKey(alert)} style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderLeft: `3px solid ${badge.color}`, borderRadius: 8, padding: "16px 18px" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 8 }}>
                         <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 14 }}>{productName(productId)}</div>
                         <div style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
@@ -327,7 +315,7 @@ export function ControlTowerPage() {
                   const d = alert.data as unknown as PendingDocumentReviewAlertData;
                   const badge = severityBadge(alert.severity);
                   return (
-                    <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: i < grouped.documents.length - 1 ? "1px solid var(--color-border)" : "none", gap: 12, flexWrap: "wrap" }}>
+                    <div key={alertKey(alert)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: i < grouped.documents.length - 1 ? "1px solid var(--color-border)" : "none", gap: 12, flexWrap: "wrap" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                         <div style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}>DOC-{d.id}</div>
                         <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>
