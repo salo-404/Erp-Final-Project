@@ -1,0 +1,18 @@
+[
+  {
+    "file": "sample-techsource-invoice.pdf",
+    "label": "Supplier invoice — TechSource Lebanon"
+  },
+  {
+    "file": "sample-cedar-invoice.pdf",
+    "label": "Supplier invoice — Cedar Electronics"
+  },
+  {
+    "file": "sample-levant-tripoli-invoice.pdf",
+    "label": "Supplier invoice — Levant Trading (Tripoli)"
+  },
+  {
+    "file": "sample-customer-order.pdf",
+    "label": "Customer order — Beirut delivery"
+  }
+]

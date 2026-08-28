@@ -1,0 +1,135 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+@import "tailwindcss";
+
+/* Design tokens extracted from the Claude-generated Nexora spec
+   (frontend/claude_plan/NEXORA_SPEC.md, section 2). */
+:root {
+  --color-bg: #fafafa;
+  --color-surface: #ffffff;
+  --color-surface-2: #f6f3fb;
+  --color-border: rgba(0, 0, 0, 0.08);
+  --color-text: #1a1b26;
+  --color-text-secondary: #4a4e5a;
+  --color-text-muted: #8a8f9c;
+  --color-accent: #6d3fd9;
+  /* Text/icon color for content sitting on top of --color-accent. Tied to
+     the theme (not per-accent-swatch) because the one confirmed contrast
+     failure is the dark theme's default gold accent with hardcoded white
+     text — light theme's purple default (and most accent swatches) read
+     fine with white. */
+  --color-on-accent: #ffffff;
+  --color-accent-tint: rgba(109, 63, 217, 0.14);
+  --color-danger: #ef4444;
+  --color-success: #22c55e;
+  --color-warning: #f4c430;
+
+  /* Sidebar uses the dark palette even in light mode, per spec. */
+  --color-sidebar-bg: #1a1b26;
+  --color-sidebar-text: #e8eaf0;
+
+  --font-heading: "Space Grotesk", sans-serif;
+  --font-body: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+[data-theme="dark"] {
+  --color-bg: #0e0e12;
+  --color-surface: #16171d;
+  --color-surface-2: #1f1f27;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-text: #e8eaf0;
+  --color-text-secondary: #a8b0c0;
+  --color-text-muted: #6b7280;
+  --color-accent: #f4c430;
+  --color-on-accent: #1a1b26;
+  --color-accent-tint: rgba(244, 196, 48, 0.16);
+
+  --color-sidebar-bg: #1a1b26;
+  --color-sidebar-text: #e8eaf0;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+}
+
+/* AI Agent — streaming cursor, thinking dots, panel entrance. */
+@keyframes agent-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@keyframes agent-dot-pulse {
+  0%, 80%, 100% { opacity: 0.25; transform: scale(0.85); }
+  40% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes agent-panel-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes agent-ring-ping {
+  0% { transform: scale(1); opacity: 0.7; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+
+@keyframes agent-msg-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes agent-glow-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-2%, 3%) scale(1.08); }
+}
+
+.agent-composer {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.agent-composer:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-surface-2);
+}
+
+.agent-suggestion-card {
+  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.agent-suggestion-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--color-accent);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+}
+
+.agent-conversation-actions {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.agent-conversation-row:hover .agent-conversation-actions,
+.agent-conversation-row:focus-within .agent-conversation-actions {
+  opacity: 1;
+}
+.agent-conversation-actions button:hover {
+  background: var(--color-surface) !important;
+  color: var(--color-text) !important;
+}
+
+@keyframes agent-float-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+
+.agent-float-button {
+  animation: agent-float-bob 3.2s ease-in-out infinite;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.agent-float-button:hover {
+  animation-play-state: paused;
+  transform: translateY(-5px) scale(1.08);
+  box-shadow: 0 14px 32px rgba(0,0,0,0.4) !important;
+}
+.agent-float-button:active {
+  transform: translateY(-2px) scale(1.02);
+}

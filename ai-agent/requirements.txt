@@ -1,0 +1,69 @@
+# [openai] pulls in the `openai` SDK (strands.models.openai.OpenAIModel) -
+# the one local-dev provider selected via MODEL_PROVIDER in .env (see
+# config/settings.py). Bedrock is both the deployment AND the local default
+# (MODEL_PROVIDER defaults to "bedrock"); [openai] stays available as an
+# explicit opt-in for local testing without AWS access.
+strands-agents[openai]>=1.52.0
+
+# Not imported directly anywhere in this codebase - a real dependency of
+# strands-agents and bedrock-agentcore (both declare it), relied on for
+# its default credential chain (environment, shared config/credentials
+# file, or IAM role) when MODEL_PROVIDER=bedrock - see
+# config/settings.py's own docstring for where that's actually used.
+boto3>=1.43.0
+
+# botocore's optional AWS Common Runtime dependency, needed for certain
+# auth-scheme/checksum/endpoint-routing paths (e.g. SigV4A signing) that
+# botocore itself refuses to perform without it, raising
+# botocore.exceptions.MissingDependencyException instead ("pip install
+# botocore[crt]"). Not declared by strands-agents or bedrock-agentcore, so
+# it was silently missing here even though boto3/botocore (both pulled in
+# transitively above) assume it's available for those paths - confirmed
+# via a live gate.is_in_scope() failure in the deployed AgentCore Runtime
+# environment specifically (does not reproduce with a static local IAM
+# user's credentials, only surfaced under the runtime's own execution
+# role's auth negotiation). Declared as its own line, matching how boto3
+# itself is pinned directly above despite also being "just" a transitive
+# need - not as a botocore[crt] extra, since botocore isn't declared
+# directly in this file at all (only boto3 is), and awscrt is a real,
+# standalone, importable package either way.
+awscrt>=0.36.0
+
+pydantic>=2.13.0
+pytest>=9.1.0
+python-dotenv>=1.2.0
+
+# Imported directly by backend_client.py (httpx.AsyncClient) and used
+# throughout tests/ (httpx.MockTransport, httpx.Response) - a real,
+# direct dependency of this codebase's own code, not just an
+# implementation detail hidden behind another package. Currently installs
+# only because strands-agents happens to declare it too, which works but
+# is fragile - pinned explicitly here so a future strands-agents version
+# dropping/changing its own httpx dependency can't silently break
+# backend_client.py with no signal in this file explaining why.
+httpx>=0.28.1
+
+# Fuzzy text matching for match_products()/find_supplier() (see
+# agents/document_agent/tools.py) - confirmed installs cleanly as a
+# prebuilt wheel (no build toolchain needed) and confirmed against real
+# product/supplier data before adopting; see the wiring investigation
+# for validated thresholds.
+rapidfuzz>=3.14.5
+
+# AgentCore Runtime deployment wrapper (agentcore_entrypoint.py) - provides
+# BedrockAgentCoreApp, the HTTP service shell around the existing Supervisor
+# agent. Model-agnostic: works regardless of which MODEL_PROVIDER is active,
+# since it only serves HTTP requests around build_supervisor_agent() - it
+# does not itself talk to Bedrock.
+bedrock-agentcore>=1.21.0
+
+# SQL-RAG PostgreSQL access and SQL AST validation.
+psycopg[binary]>=3.2
+sqlglot>=27.0
+
+# Local-dev-only auto-restart file watcher for scripts/dev_server.py
+# (uvicorn's reload=True). Never used by agentcore_entrypoint.py's own
+# production run path (BedrockAgentCoreApp.run()) or by Docker/AgentCore
+# Runtime - purely a local convenience so code changes take effect without
+# manually killing and restarting the process.
+watchfiles>=1.2.0

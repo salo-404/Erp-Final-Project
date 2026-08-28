@@ -1,0 +1,13 @@
+{
+  "MODEL_PROVIDER": "bedrock",
+  "BEDROCK_MODEL_ID": "mistral.ministral-3-14b-instruct",
+  "SUPERVISOR_MODEL_ID": "mistral.ministral-3-14b-instruct",
+  "INSIGHTS_MODEL_ID": "mistral.ministral-3-14b-instruct",
+  "DOCUMENT_MODEL_ID": "mistral.ministral-3-14b-instruct",
+  "GATE_MODEL_ID": "mistral.ministral-3-14b-instruct",
+  "NARRATION_MODEL_ID": "mistral.ministral-3-14b-instruct",
+  "BEDROCK_SQL_MODEL_ID": "mistral.ministral-3-14b-instruct",
+  "BEDROCK_EMBEDDING_MODEL_ID": "amazon.titan-embed-text-v2:0",
+  "EMBEDDING_DIMENSIONS": "512",
+  "AWS_REGION": "eu-west-1"
+}
