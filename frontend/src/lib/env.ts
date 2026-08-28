@@ -1,5 +1,11 @@
 export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000/api";
 
+// Local-dev-only Cognito bypass (see AuthContext.tsx's finishLocalLogin and
+// backend/src/common/guards/jwt-auth.guard.ts's LOCAL_AUTH_MODE branch) -
+// never true in a real deployment. Off by default even locally; must be
+// explicitly enabled in frontend/.env.
+export const LOCAL_AUTH_MODE = import.meta.env.VITE_LOCAL_AUTH_MODE === "true";
+
 export const COGNITO_USER_POOL_ID = import.meta.env.VITE_COGNITO_USER_POOL_ID ?? "";
 export const COGNITO_APP_CLIENT_ID = import.meta.env.VITE_COGNITO_APP_CLIENT_ID ?? "";
 

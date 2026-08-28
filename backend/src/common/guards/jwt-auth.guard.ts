@@ -26,6 +26,15 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('A valid Cognito access token is required');
     }
 
+    // Local-dev-only bypass, never active in a real deployment: no Cognito
+    // pool needed to run the app locally when one isn't reachable. Real
+    // Cognito verification (below) is completely untouched by this - flip
+    // LOCAL_AUTH_MODE back off (or unset it) to go straight back to it,
+    // nothing about that path was modified.
+    if (process.env.LOCAL_AUTH_MODE === 'true') {
+      return this.canActivateLocalAuth(token, request);
+    }
+
     try {
       const verifier = this.moduleRef.get(CognitoTokenVerifier, { strict: false });
       const prisma = this.moduleRef.get(PrismaService, { strict: false });
@@ -58,5 +67,39 @@ export class JwtAuthGuard implements CanActivate {
       if (error instanceof UnauthorizedException) throw error;
       throw new UnauthorizedException('Invalid or expired Cognito access token');
     }
+  }
+
+  /**
+   * LOCAL_AUTH_MODE only - no real Cognito token, no signature, no
+   * expiry. The bearer value is literally `local:<seeded user's email>`
+   * (see frontend/src/auth/AuthContext.tsx's finishLocalLogin, which
+   * mints exactly this string), so the only thing this can do is log in
+   * AS a real User row that already exists in the local database - never
+   * an arbitrary/invented identity. isAiService is always false here:
+   * the AI service concept only matters for the AgentCore-facing
+   * SEMANTIC_MATCH_SERVICE_URL/query-database endpoints, and there is no
+   * real AI service running in local-auth mode anyway (it needs Bedrock,
+   * which needs real AWS credentials independent of this).
+   */
+  private async canActivateLocalAuth(
+    token: string,
+    request: Request & { user?: AuthenticatedUser },
+  ): Promise<boolean> {
+    if (!token.startsWith('local:')) {
+      throw new UnauthorizedException('Invalid local dev token');
+    }
+    const email = token.slice('local:'.length);
+    const prisma = this.moduleRef.get(PrismaService, { strict: false });
+    const user = await prisma.user.findUnique({
+      where: { email },
+      select: { id: true, email: true, role: true },
+    });
+    if (!user) {
+      throw new UnauthorizedException(
+        `No local user with email ${email} - re-run \`npm run seed:app\` and use one of its seeded emails.`,
+      );
+    }
+    request.user = { ...user, isAiService: false };
+    return true;
   }
 }

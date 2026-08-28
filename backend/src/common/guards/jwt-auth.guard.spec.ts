@@ -9,7 +9,27 @@ function contextFor(request: Record<string, unknown>) {
   } as ExecutionContext;
 }
 
+// Real bug this exposed, not hypothetical: importing JwtAuthGuard
+// transitively loads PrismaService, whose module has `import
+// 'dotenv/config'` as a side effect - the very first test file to import
+// it in a given Jest worker silently pulls in a developer's real local
+// backend/.env, including LOCAL_AUTH_MODE=true if they have local dev
+// auth enabled (see jwt-auth.guard.ts's own LOCAL_AUTH_MODE branch), and
+// that leaks across every other test in the same worker for the rest of
+// the run. These tests must exercise the REAL Cognito path regardless of
+// what's in anyone's local .env, so LOCAL_AUTH_MODE is forced off here
+// unconditionally, restored after each test.
 describe('JwtAuthGuard Cognito authentication', () => {
+  const ORIGINAL_LOCAL_AUTH_MODE = process.env.LOCAL_AUTH_MODE;
+
+  beforeEach(() => {
+    delete process.env.LOCAL_AUTH_MODE;
+  });
+
+  afterEach(() => {
+    process.env.LOCAL_AUTH_MODE = ORIGINAL_LOCAL_AUTH_MODE;
+  });
+
   it('maps a valid access-token subject to the database user and DB role', async () => {
     const verifier = { verify: jest.fn().mockResolvedValue({ sub: 'cognito-sub', role: 'ADMIN' }) };
     const prisma = {
@@ -89,6 +109,66 @@ describe('JwtAuthGuard Cognito authentication', () => {
     } as never);
     await expect(
       guard.canActivate(contextFor({ headers: { authorization: 'Bearer valid' } })),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+});
+
+describe('JwtAuthGuard LOCAL_AUTH_MODE bypass', () => {
+  const ORIGINAL_LOCAL_AUTH_MODE = process.env.LOCAL_AUTH_MODE;
+
+  afterEach(() => {
+    process.env.LOCAL_AUTH_MODE = ORIGINAL_LOCAL_AUTH_MODE;
+  });
+
+  it('logs in as the real seeded user matching the local: token, never calling Cognito', async () => {
+    process.env.LOCAL_AUTH_MODE = 'true';
+    const verifier = { verify: jest.fn().mockRejectedValue(new Error('must not be called')) };
+    const prisma = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 1,
+          email: 'admin@minierp.demo',
+          role: UserRole.ADMIN,
+        }),
+      },
+    };
+    const request = { headers: { authorization: 'Bearer local:admin@minierp.demo' } };
+    const guard = new JwtAuthGuard({
+      get: (type: unknown) => (type === CognitoTokenVerifier ? verifier : prisma),
+    } as never);
+
+    await expect(guard.canActivate(contextFor(request))).resolves.toBe(true);
+    expect(verifier.verify).not.toHaveBeenCalled();
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { email: 'admin@minierp.demo' },
+      select: { id: true, email: true, role: true },
+    });
+    expect(request).toHaveProperty('user.role', UserRole.ADMIN);
+    expect(request).toHaveProperty('user.isAiService', false);
+  });
+
+  it('rejects a bearer value that is not the local: scheme', async () => {
+    process.env.LOCAL_AUTH_MODE = 'true';
+    const prisma = { user: { findUnique: jest.fn() } };
+    const guard = new JwtAuthGuard({ get: () => prisma } as never);
+
+    await expect(
+      guard.canActivate(
+        contextFor({ headers: { authorization: 'Bearer some-real-looking-jwt' } }),
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('rejects a local: token for an email with no matching seeded user', async () => {
+    process.env.LOCAL_AUTH_MODE = 'true';
+    const prisma = { user: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const guard = new JwtAuthGuard({ get: () => prisma } as never);
+
+    await expect(
+      guard.canActivate(
+        contextFor({ headers: { authorization: 'Bearer local:nobody@example.com' } }),
+      ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 });

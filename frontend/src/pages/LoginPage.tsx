@@ -6,6 +6,7 @@ import loginHero from "../assets/login-hero.png";
 import { getNewPasswordValidationError } from "../auth/passwordPolicy";
 import { confirmPasswordReset, requestPasswordReset } from "../auth/auth.api";
 import { PASSWORD_RESET_CODE_SENT_MESSAGE } from "../auth/passwordResetFlow";
+import { LOCAL_AUTH_MODE } from "../lib/env";
 
 // Layout, copy, and styling below are ported 1:1 from the Nexora Claude
 // Design export (frontend/claude_plan handoff) — see the "isLoginPage"
@@ -400,6 +401,12 @@ export function LoginPage() {
               </div>
 
               <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {LOCAL_AUTH_MODE && (
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", textAlign: "center", lineHeight: 1.5 }}>
+                    Local dev mode — password is ignored. Sign in with a seeded email:{" "}
+                    <strong>admin@minierp.demo</strong> or <strong>employee@minierp.demo</strong>.
+                  </div>
+                )}
                 {notice && (
                   <div style={{ fontSize: 12.5, color: "var(--color-success)", textAlign: "center" }}>{notice}</div>
                 )}

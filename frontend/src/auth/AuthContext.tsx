@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { fetchCurrentIdentity, login as loginRequest } from "./auth.api";
 import { getStoredToken, setStoredToken, SESSION_EXPIRED_EVENT } from "../lib/api-client";
+import { LOCAL_AUTH_MODE } from "../lib/env";
 import type { User } from "../types/api";
 
 const USER_STORAGE_KEY = "nexora.user";
@@ -113,8 +114,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("authenticated");
   }, []);
 
+  // LOCAL_AUTH_MODE only (see lib/env.ts) - no real Cognito involved at
+  // all. The bearer value is literally `local:<email>`; the backend's own
+  // LOCAL_AUTH_MODE branch (jwt-auth.guard.ts) only accepts this scheme
+  // and looks up a REAL, already-seeded User row by that exact email - it
+  // can never mint access to an identity that doesn't already exist in
+  // the local database. The password field is intentionally never used
+  // here - the real Cognito login below is untouched and still requires
+  // one.
+  const finishLocalLogin = useCallback(async (email: string) => {
+    setStoredToken(`local:${email}`);
+    const identity = await fetchCurrentIdentity();
+    const resolved: User = {
+      id: identity.id,
+      email: identity.email,
+      role: identity.role,
+      name: identity.email,
+      createdAt: "",
+      updatedAt: "",
+    };
+    writeCachedUser(resolved);
+    setUser(resolved);
+    setStatus("authenticated");
+  }, []);
+
   const login = useCallback(
     async (email: string, password: string): Promise<LoginOutcome> => {
+      if (LOCAL_AUTH_MODE) {
+        await finishLocalLogin(email.trim());
+        return { status: "success" };
+      }
       const result = await loginRequest(email, password);
       if (result.status === "success") {
         await finishLogin(result.accessToken, result.name);
@@ -128,7 +157,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
       };
     },
-    [finishLogin],
+    [finishLogin, finishLocalLogin],
   );
 
   const logout = useCallback(() => {
