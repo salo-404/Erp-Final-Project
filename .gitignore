@@ -5,6 +5,9 @@
 **/node_modules/
 **/dist/
 
+# Windows folder-view metadata
+desktop.ini
+
 # Logs
 logs
 *.log
