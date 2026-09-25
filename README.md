@@ -1,106 +1,105 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Nexora ERP
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A mini ERP system for warehouse and inventory operations — products, warehouses,
+stock, suppliers, purchase/customer orders, transfers, document review (invoice
+extraction), and an AI assistant for inventory questions and recommendations.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Architecture
 
-## Description
+This is a monorepo with three independent apps and one shared database:
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+| Directory   | Stack                                                              | What it is                                                                 |
+| ----------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `backend/`  | NestJS + Prisma + PostgreSQL (pgvector)                            | The REST API (`/api/*`) — all business logic, auth, and data access.       |
+| `frontend/` | React 19 + Vite + Tailwind CSS 4                                    | The web app.                                                               |
+| `ai-agent/` | Python + [Strands Agents SDK](https://strandsagents.com) + AWS Bedrock | The AI assistant (chat + Control Tower recommendations), deployable as an AWS Bedrock AgentCore Runtime. |
+
+The backend is the only thing that talks to the database directly. The
+frontend and the AI agent both go through the backend's REST API — the AI
+agent never has its own database credential (see `ai-agent/README.md`'s
+SQL-RAG section for why).
+
+## Local setup
+
+**1. Database** (repo root) — starts PostgreSQL with the `pgvector` extension
+pre-installed, on `localhost:5433`:
+
+```bash
+docker compose up -d
+```
+
+**2. Backend** (`backend/`):
+
+```bash
+cd backend
+npm install
+copy .env.example .env      # fill in the values described in that file
+npx prisma migrate deploy
+npm run seed:app            # core demo data (products, warehouses, orders, ...)
+npm run start:dev           # http://localhost:3000/api
+```
+
+**3. Frontend** (`frontend/`):
+
+```bash
+cd frontend
+npm install
+copy .env.example .env      # fill in the values described in that file
+npm run dev                 # http://localhost:5173
+```
+
+**4. AI agent** (`ai-agent/`, optional — the rest of the app works without it):
+
+```bash
+cd ai-agent
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env      # fill in the values described in that file
+set PORT=8081
+python agentcore_entrypoint.py
+```
+
+Port **8081** matters — `frontend/vite.config.ts` proxies `/agentcore` there
+for local dev (the local AgentCore dev server can't answer a browser's CORS
+preflight on its own). See `ai-agent/README.md` for the full architecture,
+including the Supervisor/Insights/Document agents, SQL-RAG, and Control
+Tower narration.
+
+### Signing in without a real AWS/Cognito account
+
+Real deployments authenticate through Amazon Cognito. For local development
+without a Cognito pool (or any AWS account at all), both the backend and
+frontend support `LOCAL_AUTH_MODE`:
+
+- `backend/.env`: `LOCAL_AUTH_MODE="true"`
+- `frontend/.env`: `VITE_LOCAL_AUTH_MODE="true"`
+
+With both set, sign in with any already-seeded user's email (e.g.
+`admin@minierp.demo` or `employee@minierp.demo` after `npm run seed:app`) and
+any password — the password field is ignored. This can only log in as a user
+that already exists in the local database; it never invents an identity. The
+real Cognito path is untouched and still used whenever `LOCAL_AUTH_MODE` is
+off (the default) — never enable it in a real deployment.
 
 ## Backend API routing
 
 The NestJS backend exposes every controller under the global `/api` prefix.
-The local API base is `http://localhost:3000/api`, and the existing root
-controller is available at `GET /api` for repository-owned health checks.
-External deployments must route `/api/*` to the backend and use `/api` as the
-backend health-check path.
+The local API base is `http://localhost:3000/api`, and the root controller is
+available at `GET /api` for health checks. A production deployment must route
+`/api/*` to the backend and use `/api` as its health-check path.
 
-## Project setup
-
-```bash
-$ npm install
-```
-
-## Compile and run the project
+## Tests
 
 ```bash
-# development
-$ npm run start
+# backend (from backend/)
+npm run test        # unit
+npm run test:e2e     # end-to-end
+npm run test:cov     # coverage
 
-# watch mode
-$ npm run start:dev
+# ai-agent (from ai-agent/)
+pytest
 
-# production mode
-$ npm run start:prod
+# frontend (from frontend/)
+npm run test
 ```
-
-## Run tests
-
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
